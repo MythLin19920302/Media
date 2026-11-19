@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCM 里的频率变化</title>
+<style>
+:root{--text-primary:#1f1f1d;--text-secondary:#5f5e5a;--text-muted:#888780;--accent:#185FA5;--danger:#E24B4A;--border:rgba(0,0,0,.12);--border-strong:rgba(0,0,0,.25);--radius:8px;--font-sans:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:#ffffff;--card:#f5f4f0}
+@media (prefers-color-scheme: dark){:root{--text-primary:#ececea;--text-secondary:#b4b2a9;--text-muted:#888780;--accent:#85B7EB;--danger:#F09595;--border:rgba(255,255,255,.15);--border-strong:rgba(255,255,255,.3);--bg:#1f1f1d;--card:#2a2a28}}
+body{background:var(--bg);color:var(--text-primary);font-family:var(--font-sans);max-width:860px;margin:24px auto;padding:0 16px}
+h1{font-size:18px;font-weight:500;margin:0 0 4px}
+.sub{font-size:13px;color:var(--text-secondary);margin:0 0 14px;line-height:1.7}
+.sec{font-size:13px;color:var(--text-secondary);margin:18px 0 8px}
+audio{width:100%;margin:0 0 6px}
+.spec{display:grid;grid-template-columns:56px minmax(0,1fr);gap:0}
+.yaxis{position:relative;font-size:11px;color:var(--text-muted);font-family:var(--font-mono)}
+.yaxis span{position:absolute;right:8px;transform:translateY(-50%)}
+.imgwrap{position:relative;border-radius:4px;overflow:hidden;cursor:crosshair}
+.imgwrap img{display:block;width:100%;height:auto}
+#head{position:absolute;top:0;bottom:0;width:2px;background:#fff;left:0;opacity:.9}
+#hover{position:absolute;left:0;right:0;height:1px;background:rgba(255,255,255,.6);display:none;pointer-events:none}
+#hoverTxt{position:absolute;right:6px;font-size:12px;color:#fff;font-family:var(--font-mono);display:none;pointer-events:none;transform:translateY(-120%)}
+.notes{display:grid;grid-template-columns:56px repeat(4,minmax(0,1fr));font-size:12px;color:var(--text-secondary);margin-top:6px;text-align:center;line-height:1.5}
+.notes b{font-weight:500;color:var(--text-primary)}
+.waves{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+.wave{background:var(--card);border-radius:var(--radius);padding:8px 10px}
+.wave .k{font-size:12px;color:var(--text-secondary);margin-bottom:4px}
+.wave canvas{width:100%;height:90px;display:block}
+</style>
+</head>
+<body>
+<h1>同一段 PCM 里，振动频率一直在变</h1>
+<p class="sub">这是一段 3 秒的 PCM：44100 Hz、单声道。<b>采样率从头到尾都是 44100</b>，变的是数据内容：前三段各是一个音（do、mi、sol），最后一段三个音同时响（和弦）。每个音除了基频，还带 2 倍、3 倍的泛音，模拟乐器的音色。</p>
+<audio id="au" controls src="melody.wav"></audio>
+<div class="sec">时频图（横轴是时间，纵轴是频率，越亮表示这个频率的振动越强）。播放时白线跟着走；鼠标放在图上可以看对应的频率</div>
+<div class="spec">
+<div class="yaxis" id="yaxis"></div>
+<div class="imgwrap" id="wrap"><img id="img" src="spectrum.png" alt="时频图"><div id="head"></div><div id="hover"></div><div id="hoverTxt"></div></div>
+</div>
+<div class="notes"><div></div>
+<div><b>do（C4）</b><br>261.6 Hz<br>+ 523、785 泛音</div>
+<div><b>mi（E4）</b><br>329.6 Hz<br>+ 659、989 泛音</div>
+<div><b>sol（G4）</b><br>392.0 Hz<br>+ 784、1176 泛音</div>
+<div><b>三个音一起（和弦）</b><br>9 个频率同时出现<br>（785 和 784 重合，所以是 8 条线）</div>
+</div>
+<div class="sec">同一段 PCM 里每一段的原始数值（各取 10 ms ≈ 441 帧）：起伏的快慢和形状都在变</div>
+<div class="waves" id="waves"></div>
+<script>
+const MAXF=1500;
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.body).getPropertyValue(n).trim();
+const y=$('yaxis');
+[0,250,500,750,1000,1250,1500].forEach(f=>{const s=document.createElement('span');s.textContent=f+' Hz';s.style.top=(100-f/MAXF*100)+'%';y.appendChild(s);});
+const au=$('au'),head=$('head');
+function tick(){const d=au.duration||3;head.style.left=(au.currentTime/d*100)+'%';requestAnimationFrame(tick);}
+tick();
+const wrap=$('wrap'),hv=$('hover'),ht=$('hoverTxt');
+wrap.addEventListener('mousemove',e=>{const r=wrap.getBoundingClientRect(),fy=(e.clientY-r.top)/r.height,hz=Math.round((1-fy)*MAXF);hv.style.display=ht.style.display='block';hv.style.top=(fy*100)+'%';ht.style.top=(fy*100)+'%';ht.textContent='约 '+hz+' Hz';});
+wrap.addEventListener('mouseleave',()=>{hv.style.display=ht.style.display='none';});
+wrap.addEventListener('click',e=>{const r=wrap.getBoundingClientRect();au.currentTime=(e.clientX-r.left)/r.width*(au.duration||3);au.play();});
+const N=(f,t)=>0.30*Math.sin(2*Math.PI*f*t)+0.15*Math.sin(2*Math.PI*2*f*t)+0.08*Math.sin(2*Math.PI*3*f*t);
+const segs=[['do 261.6 Hz：10 ms 里来回约 2.6 次',t=>N(261.63,t)],['mi 329.6 Hz：约 3.3 次',t=>N(329.63,t)],['sol 392 Hz：约 3.9 次',t=>N(392,t)],['和弦：三种振动相加，形状变复杂',t=>(N(261.63,t)+N(329.63,t)+N(392,t))/3]];
+const waves=$('waves');
+segs.forEach(([label,fn])=>{const box=document.createElement('div');box.className='wave';box.innerHTML='<div class="k">'+label+'</div><canvas></canvas>';waves.appendChild(box);
+  const cv=box.querySelector('canvas'),dpr=window.devicePixelRatio||1,W=cv.clientWidth||180,H=90;cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
+  g.strokeStyle=css('--border-strong');g.beginPath();g.moveTo(0,H/2);g.lineTo(W,H/2);g.stroke();
+  g.strokeStyle=css('--accent');g.lineWidth=1.5;g.beginPath();
+  for(let n=0;n<=441;n++){const v=fn(n/44100),x=n/441*W,yy=H/2-v/0.6*(H/2-4);n?g.lineTo(x,yy):g.moveTo(x,yy);}g.stroke();});
+</script>
+</body>
+</html>

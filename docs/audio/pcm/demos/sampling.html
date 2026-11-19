@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCM 采样演示</title>
+<style>
+:root{--text-primary:#1f1f1d;--text-secondary:#5f5e5a;--text-muted:#888780;--wave:#B4B2A9;--text-accent:#185FA5;--text-danger:#A32D2D;--bg-accent:#E6F1FB;--border:rgba(0,0,0,.12);--border-strong:rgba(0,0,0,.25);--radius:8px;--font-mono:ui-monospace,Menlo,monospace;--font-sans:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;--bg:#ffffff}
+@media (prefers-color-scheme: dark){:root{--text-primary:#ececea;--text-secondary:#b4b2a9;--text-muted:#888780;--wave:#5F5E5A;--text-accent:#85B7EB;--text-danger:#F09595;--bg-accent:#0C447C;--border:rgba(255,255,255,.15);--border-strong:rgba(255,255,255,.3);--bg:#1f1f1d}}
+body{background:var(--bg);color:var(--text-primary);font-family:var(--font-sans);max-width:720px;margin:24px auto;padding:0 16px}
+.row{display:flex;align-items:center;gap:12px;margin:0 0 12px}
+.row label{font-size:14px;color:var(--text-secondary);min-width:56px}
+.row output{font-size:14px;font-weight:500;min-width:64px;text-align:right}
+.cells{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px;margin:12px 0 16px}
+.cell{border:0.5px solid var(--border);border-radius:var(--radius);padding:6px 8px;font-family:var(--font-mono)}
+.cell .i{color:var(--text-secondary);font-size:12px}
+.cell .t{color:var(--text-muted);font-size:11px}
+.cell .v{font-size:14px}
+.cell .v.over{color:var(--text-danger)}
+.note{font-size:13px;color:var(--text-secondary);margin:8px 0 0;line-height:1.6}
+button{font:inherit;font-size:14px;padding:8px 14px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:transparent;color:var(--text-primary);cursor:pointer}
+button:active{transform:scale(.98)}
+</style>
+</head>
+<body>
+<div class="row"><label for="f">音高</label><input type="range" id="f" min="200" max="2000" step="10" value="440" style="flex:1"><output id="fo">440 Hz</output></div>
+<div class="row"><label for="a">音量</label><input type="range" id="a" min="0" max="1" step="0.05" value="0.8" style="flex:1"><output id="ao">0.80</output></div>
+<div class="row"><input type="checkbox" id="m"><label for="m" style="min-width:auto">再叠加一个声音（2 倍音高，音量 0.3）</label></div>
+<canvas id="c" style="width:100%;height:260px;display:block"></canvas>
+<p class="note" id="info"></p>
+<div class="cells" id="cells"></div>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<button id="p48">按 48000 Hz 播放这个数组（1 秒）</button>
+<button id="p24">同一个数组按 24000 Hz 播放</button>
+</div>
+<script>
+const RATE=48000,WIN=48,SHOW=12;
+const $=id=>document.getElementById(id);
+const f=$('f'),a=$('a'),m=$('m'),cv=$('c'),ctx=cv.getContext('2d');
+function sample(n,freq,amp,mix){let v=amp*Math.sin(2*Math.PI*freq*n/RATE);if(mix)v+=0.3*Math.sin(2*Math.PI*2*freq*n/RATE);return v;}
+function css(name){return getComputedStyle(document.body).getPropertyValue(name).trim()||'#888';}
+function draw(){
+  const freq=+f.value,amp=+a.value,mix=m.checked;
+  $('fo').textContent=freq+' Hz';$('ao').textContent=amp.toFixed(2);
+  const dpr=window.devicePixelRatio||1,W=cv.clientWidth||600,H=260;
+  cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const L=34,R=14,T=8,B=40,pw=W-L-R,ph=H-T-B,mid=T+ph/2,ys=ph/2/1.4;
+  const X=n=>L+n/WIN*pw,Y=v=>mid-v*ys;
+  ctx.fillStyle=css('--bg-accent');ctx.fillRect(X(-0.5),T,X(SHOW-0.5)-X(-0.5),ph);
+  ctx.strokeStyle=css('--border-strong');ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(L,mid);ctx.lineTo(W-R,mid);ctx.stroke();
+  ctx.setLineDash([4,4]);ctx.strokeStyle=css('--text-danger');
+  [1,-1].forEach(v=>{ctx.beginPath();ctx.moveTo(L,Y(v));ctx.lineTo(W-R,Y(v));ctx.stroke();});ctx.setLineDash([]);
+  ctx.fillStyle=css('--text-secondary');ctx.font='11px '+css('--font-sans');ctx.textAlign='right';ctx.textBaseline='middle';
+  [['+1',1],['0',0],['-1',-1]].forEach(([t,v])=>ctx.fillText(t,L-6,Y(v)));
+  ctx.textAlign='center';ctx.textBaseline='top';
+  for(let n=0;n<=WIN;n+=12){const x=Math.min(Math.max(X(n),L+14),W-R-22);ctx.fillText('第 '+n+' 格',x,T+ph+6);ctx.fillText((n/RATE*1000).toFixed(2)+' ms',x,T+ph+21);}
+  ctx.strokeStyle=css('--wave');ctx.lineWidth=2.5;ctx.beginPath();
+  for(let i=0;i<=600;i++){const n=i/600*WIN,y=Y(sample(n,freq,amp,mix));i?ctx.lineTo(X(n),y):ctx.moveTo(X(n),y);}
+  ctx.stroke();
+  const acc=css('--text-accent'),dan=css('--text-danger');
+  for(let n=0;n<WIN;n++){const v=sample(n,freq,amp,mix),x=X(n),y=Y(v),c=Math.abs(v)>1?dan:acc;
+    ctx.strokeStyle=c;ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x,mid);ctx.lineTo(x,y);ctx.stroke();
+    ctx.fillStyle=c;ctx.beginPath();ctx.arc(x,y,3.5,0,Math.PI*2);ctx.fill();}
+  $('info').textContent='灰色粗线是真实的声波，每根蓝色竖线和圆点是一格：那一刻量到的数。图里放大的是前 1 毫秒 = 48 格；这个音高一次上下摆动约 '+(RATE/freq).toFixed(1)+' 格；1 秒一共 48000 格。红色虚线是 ±1，超出的格子变红，播放时会被截断（破音）。下面是浅蓝底色里前 12 格的数组内容：';
+  const cells=$('cells');cells.innerHTML='';
+  for(let n=0;n<SHOW;n++){const v=sample(n,freq,amp,mix),d=document.createElement('div');d.className='cell';
+    d.innerHTML='<div class="i">pcm['+n+']</div><div class="t">'+(n/RATE*1000).toFixed(3)+' ms</div><div class="v'+(Math.abs(v)>1?' over':'')+'">'+(v>=0?'+':'')+v.toFixed(3)+'</div>';cells.appendChild(d);}
+}
+let ac=null;
+function play(rate){
+  ac=ac||new (window.AudioContext||window.webkitAudioContext)();if(ac.state==='suspended')ac.resume();
+  const freq=+f.value,amp=+a.value,mix=m.checked,len=RATE,fade=480;
+  const buf=ac.createBuffer(1,len,rate),d=buf.getChannelData(0);
+  for(let n=0;n<len;n++){const v=sample(n,freq,amp,mix),g=Math.min(1,n/fade,(len-1-n)/fade);d[n]=Math.max(-1,Math.min(1,v))*g;}
+  const src=ac.createBufferSource(),gain=ac.createGain();gain.gain.value=0.3;src.buffer=buf;src.connect(gain);gain.connect(ac.destination);src.start();
+}
+$('p48').addEventListener('click',()=>play(48000));
+$('p24').addEventListener('click',()=>play(24000));
+[f,a].forEach(el=>el.addEventListener('input',draw));m.addEventListener('change',draw);
+new ResizeObserver(()=>draw()).observe(cv);draw();
+</script>
+</body>
+</html>

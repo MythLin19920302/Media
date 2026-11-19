@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>采样率与最高音</title>
+<style>
+:root{--text-primary:#1f1f1d;--text-secondary:#5f5e5a;--text-muted:#888780;--wave:#D3D1C7;--accent:#185FA5;--danger:#A32D2D;--success:#3B6D11;--danger-bg:#FCEBEB;--success-bg:#EAF3DE;--border:rgba(0,0,0,.12);--border-strong:rgba(0,0,0,.25);--radius:8px;--font-sans:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:#ffffff}
+@media (prefers-color-scheme: dark){:root{--text-primary:#ececea;--text-secondary:#b4b2a9;--text-muted:#888780;--wave:#5F5E5A;--accent:#85B7EB;--danger:#F09595;--success:#97C459;--danger-bg:#501313;--success-bg:#173404;--border:rgba(255,255,255,.15);--border-strong:rgba(255,255,255,.3);--bg:#1f1f1d}}
+body{background:var(--bg);color:var(--text-primary);font-family:var(--font-sans);max-width:760px;margin:24px auto;padding:0 16px}
+h1{font-size:18px;font-weight:500;margin:0 0 4px}
+.sub{font-size:13px;color:var(--text-secondary);margin:0 0 16px;line-height:1.6}
+.row{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+.row label{font-size:14px;color:var(--text-secondary);min-width:150px}
+.row output{font-size:14px;font-weight:500;min-width:96px;text-align:right;font-family:var(--font-mono)}
+.presets{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px}
+button{font:inherit;font-size:13px;padding:6px 12px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:transparent;color:var(--text-primary);cursor:pointer}
+.status{border-radius:var(--radius);padding:10px 12px;font-size:14px;line-height:1.6;margin:10px 0 0}
+.status.ok{background:var(--success-bg);color:var(--success)}
+.status.bad{background:var(--danger-bg);color:var(--danger)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary);margin:6px 0 0}
+.legend span::before{content:"";display:inline-block;width:18px;height:3px;vertical-align:middle;margin-right:6px;background:var(--c)}
+</style>
+</head>
+<body>
+<h1>每秒多少帧，决定了能让喇叭振得多快</h1>
+<p class="sub">为了看清每一帧，这里把时间放慢：横轴是 1 秒，采样率默认每秒 20 帧（真实的是 44100 帧，道理完全一样）。每个圆点是一帧，也就是发给喇叭的一个位置指令。</p>
+<div class="row"><label for="f">声音的振动（每秒来回几次）</label><input type="range" id="f" min="0" max="40" step="1" value="3" style="flex:1"><output id="fo"></output></div>
+<div class="row"><label for="fs">采样率（每秒几帧）</label><input type="range" id="fs" min="6" max="40" step="1" value="20" style="flex:1"><output id="fso"></output></div>
+<div class="presets">
+<button data-f="3">慢：3 次/秒</button>
+<button data-f="10">刚好到极限：10 次/秒</button>
+<button data-f="13">超过极限：13 次/秒</button>
+<button data-f="18">更快：18 次/秒</button>
+<button data-f="20">和采样率一样快：20 次/秒</button>
+</div>
+<canvas id="c" style="width:100%;height:260px;display:block"></canvas>
+<div class="legend"><span style="--c:var(--wave)">真实的声音</span><span style="--c:var(--accent)">喇叭实际的运动（DAC 把圆点抹平后）</span></div>
+<div class="status" id="st"></div>
+<script>
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.body).getPropertyValue(n).trim();
+const f=$('f'),fs=$('fs'),cv=$('c'),g=cv.getContext('2d');
+function alias(fr,rate){const r=((fr%rate)+rate)%rate;return r<=rate/2?r:rate-r;}
+function draw(){
+  const F=+f.value,R=+fs.value,A=alias(F,R),lim=R/2;
+  $('fo').textContent=F+' 次/秒';$('fso').textContent=R+' 帧/秒';
+  const dpr=window.devicePixelRatio||1,W=cv.clientWidth||700,H=260;
+  cv.width=W*dpr;cv.height=H*dpr;g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  const L=30,Rm=10,T=12,B=28,pw=W-L-Rm,ph=H-T-B,mid=T+ph/2,ys=ph/2*0.85;
+  const X=t=>L+t*pw,Y=v=>mid-v*ys;
+  g.strokeStyle=css('--border-strong');g.lineWidth=1;g.beginPath();g.moveTo(L,mid);g.lineTo(W-Rm,mid);g.stroke();
+  g.fillStyle=css('--text-muted');g.font='11px '+css('--font-sans');g.textAlign='right';g.textBaseline='middle';
+  g.fillText('前',L-6,Y(1));g.fillText('0',L-6,mid);g.fillText('后',L-6,Y(-1));
+  g.textAlign='center';g.textBaseline='top';g.fillText('0 秒',L+10,T+ph+8);g.fillText('1 秒',W-Rm-10,T+ph+8);
+  for(let n=0;n<=R;n++){const x=X(n/R);g.strokeStyle=css('--border');g.beginPath();g.moveTo(x,T);g.lineTo(x,T+ph);g.stroke();}
+  g.strokeStyle=css('--wave');g.lineWidth=4;g.beginPath();
+  for(let i=0;i<=1600;i++){const t=i/1600,y=Y(Math.cos(2*Math.PI*F*t));i?g.lineTo(X(t),y):g.moveTo(X(t),y);}g.stroke();
+  g.strokeStyle=css('--accent');g.lineWidth=2;g.beginPath();
+  for(let i=0;i<=1600;i++){const t=i/1600,y=Y(Math.cos(2*Math.PI*A*t));i?g.lineTo(X(t),y):g.moveTo(X(t),y);}g.stroke();
+  g.fillStyle=css('--accent');
+  for(let n=0;n<=R;n++){const t=n/R;g.beginPath();g.arc(X(t),Y(Math.cos(2*Math.PI*F*t)),4.5,0,Math.PI*2);g.fill();}
+  const per=F>0?(R/F).toFixed(1):'∞';
+  const st=$('st');
+  if(F<=lim){st.className='status ok';
+    st.textContent='每次来回分到 '+per+' 个点（至少要 2 个：一个前、一个后）。喇叭照原样振动 '+F+' 次/秒。这个采样率最快能表示 '+lim+' 次/秒。';}
+  else{st.className='status bad';
+    st.textContent='每次来回只分到 '+per+' 个点，不够 2 个。这些圆点连起来，描述的其实是一个 '+A+' 次/秒的振动，喇叭就按 '+A+' 次/秒去振（蓝线），真实的 '+F+' 次/秒丢了，还多出一个假的低音。这个采样率最快只能表示 '+lim+' 次/秒。';}
+}
+document.querySelectorAll('[data-f]').forEach(b=>b.addEventListener('click',()=>{f.value=b.dataset.f;fs.value=20;draw();}));
+[f,fs].forEach(el=>el.addEventListener('input',draw));
+new ResizeObserver(()=>draw()).observe(cv);
+const h=new URLSearchParams(location.hash.slice(1));if(h.get('f'))f.value=h.get('f');if(h.get('fs'))fs.value=h.get('fs');
+draw();
+</script>
+</body>
+</html>
