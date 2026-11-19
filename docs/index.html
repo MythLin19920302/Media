@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
-<link rel="stylesheet" href="assets/kb.css">
+<link rel="stylesheet" href="assets/kb.css?v=3">
 </head>
 <body>
 <main class="home">
@@ -17,25 +17,27 @@
     <p class="lede">做这个工程时整理的学习笔记。这一页只是大纲：按类目列出主题，点进主题再看文章和演示。</p>
   </header>
 
-  <!-- 新增主题：在对应类目的 <ul> 里加一个 <li>；新增类目：复制一个 <section> -->
+  <!-- 新增主题：在对应类目的 .cards 里加一个 <a class="card">；新增类目：复制一个 <section> -->
   <section>
     <h2><span class="n">audio/</span>音频</h2>
-    <ul class="outline">
-      <li><a href="audio/pcm/index.html">
-        <span class="t">PCM</span><span class="p">audio/pcm/</span>
+    <div class="cards">
+      <a class="card" href="audio/pcm/index.html">
+        <span class="t">PCM</span>
         <span class="d">未压缩的声音数据：它是什么、怎么播、怎么加工。</span>
-      </a></li>
-    </ul>
+        <span class="m">1 篇文章 · 4 个交互演示</span>
+      </a>
+    </div>
   </section>
 
   <section>
     <h2><span class="n">build/</span>构建</h2>
-    <ul class="outline">
-      <li><a href="build/cross-compile/index.html">
-        <span class="t">交叉编译</span><span class="p">build/cross-compile/</span>
+    <div class="cards">
+      <a class="card" href="build/cross-compile/index.html">
+        <span class="t">交叉编译</span>
         <span class="d">在 Mac 上编出给 Android 运行的原生库。</span>
-      </a></li>
-    </ul>
+        <span class="m">1 篇文章</span>
+      </a>
+    </div>
   </section>
 </main>
 </body>
