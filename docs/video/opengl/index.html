@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenGL 渲染 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../../index.html">知识库</a><span class="sep">/</span>视频<span class="sep">/</span>OpenGL 渲染</nav>
+  <header class="hero">
+    <div class="eyebrow">视频</div>
+    <h1>OpenGL 渲染</h1>
+    <p class="lede">把解码出来的 YUV 画到屏幕上。</p>
+  </header>
+
+  <div class="label">文章<span class="c">1</span></div>
+  <div class="topics">
+    <a class="topic" href="yuv-gl-render.html">
+      <span class="t">用 OpenGL 把 YUV 画到屏幕</span>
+      <span class="d">三个平面当成三张纹理，画一个铺满的矩形，让着色器对每个像素做一次矩阵乘法。对着工程里的 YuvGlRenderer 讲纹理上传、着色器、旋转和两个线程之间的帧交接。</span>
+      <span class="m">11 节 · 对应 player/YuvGlRenderer.kt</span>
+    </a>
+  </div>
+
+  <div class="label">前一步</div>
+  <div class="demos">
+    <a class="demo" href="../yuv/index.html"><span class="t">← YUV 与像素格式</span><span class="d">三个平面里装的是什么，换算公式从哪来。</span></a>
+  </div>
+</main>
+</body>
+</html>

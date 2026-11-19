@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
-<link rel="stylesheet" href="../../assets/kb.css?v=3">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
 <style>
 /* 本页独有：三台机器的对照卡片 */
 .trio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:4px 0 18px}
@@ -135,6 +135,7 @@ fi</code></pre>
 <section id="configure">
   <h2><span class="n">04</span>configure 的七组参数</h2>
   <p><code>ffmpeg/configure_android.sh</code> 里传给 configure 的参数按用途分成七组。前四组回答"用什么工具、给谁编"，是交叉编译本身；后三组回答"编成什么样"，是 FFmpeg 的裁剪。</p>
+  <p>这里只给概览。每个参数的默认值、不写的后果、裁剪列表里每个组件的含义，以及去哪里查参数，见 <a href="configure-options.html">configure_android.sh 参数详解</a>。</p>
   <div class="tbl"><table>
     <thead><tr><th>组</th><th>参数</th><th>在回答什么问题</th></tr></thead>
     <tbody>

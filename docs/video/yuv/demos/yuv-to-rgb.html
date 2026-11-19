@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YUV → RGB 换算器</title>
+<style>
+:root{--bg:#F5F7F7;--surface:#fff;--fg:#162125;--muted:#52646A;--rule:#D7E0E2;--accent:#0A6884;--warn:#94500A;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif}
+@media (prefers-color-scheme: dark){:root{--bg:#0E1416;--surface:#151D20;--fg:#E1E9EB;--muted:#93A4A9;--rule:#28353A;--accent:#5DC1DD;--warn:#F2A54C;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.7}
+main{max-width:860px;margin:0 auto;padding:32px 16px 64px}
+a{color:var(--accent)}
+h1{font-size:26px;margin:8px 0 6px}
+.sub{color:var(--muted);margin:0 0 24px}
+.panel{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:18px 20px;margin-bottom:14px}
+.row{display:grid;grid-template-columns:28px minmax(0,1fr) 52px;gap:12px;align-items:center;margin-bottom:8px}
+.row b{font-family:var(--mono)}
+.row output{font-family:var(--mono);text-align:right}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.opts{display:flex;flex-wrap:wrap;gap:18px;margin-top:10px;font-size:14px}
+.opts label{display:flex;gap:6px;align-items:center}
+.presets{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+button{font:inherit;font-size:13.5px;padding:5px 12px;border-radius:999px;border:1px solid var(--rule);background:var(--bg);color:var(--fg);cursor:pointer}
+button:hover{border-color:var(--accent)}
+.out{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.res{background:var(--surface);border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+.res.cur{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.res .c{height:110px}
+.res .t{padding:10px 14px;font-size:13.5px}
+.res .t b{display:block}
+.res .t code{font-family:var(--mono);color:var(--muted)}
+.steps{font-family:var(--mono);font-size:13px;white-space:pre;overflow-x:auto;margin:0;color:var(--fg)}
+.note{font-size:13.5px;color:var(--muted)}
+@media (max-width:560px){.out{grid-template-columns:minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<main>
+  <a href="../yuv-pixel-format.html">← YUV 与像素格式</a>
+  <h1>YUV → RGB 换算器</h1>
+  <p class="sub">同一组 Y、U、V，按不同的标准和范围换算，颜色不一样。拖动滑块或点预设，看四种组合的差别。</p>
+
+  <div class="panel">
+    <div class="row"><b>Y</b><input id="y" type="range" min="0" max="255" value="219"><output id="yo"></output></div>
+    <div class="row"><b>U</b><input id="u" type="range" min="0" max="255" value="16"><output id="uo"></output></div>
+    <div class="row"><b>V</b><input id="v" type="range" min="0" max="255" value="138"><output id="vo"></output></div>
+    <div class="opts">
+      <label>这组数据实际是：</label>
+      <label><input type="radio" name="std" value="709" checked>BT.709</label>
+      <label><input type="radio" name="std" value="601">BT.601</label>
+      <label><input type="radio" name="rng" value="l" checked>有限范围</label>
+      <label><input type="radio" name="rng" value="f">全范围</label>
+    </div>
+    <div class="presets" id="presets"></div>
+  </div>
+
+  <div class="out" id="out"></div>
+
+  <div class="panel" style="margin-top:14px">
+    <pre class="steps" id="steps"></pre>
+  </div>
+  <p class="note">蓝框是按你选的"实际标准和范围"换算的结果，也就是正确的颜色；其余三块是换算时弄错标准或范围会看到的颜色。预设取自 music_demo 的 <code>landscape_720p.mp4</code> 第一帧（BT.709、有限范围）。公式与工程里的 <code>YuvColorMatrix</code> 相同。</p>
+</main>
+<script>
+const STD={709:{name:'BT.709',kr:.2126,kb:.0722},601:{name:'BT.601',kr:.299,kb:.114}};
+const PRE=[['黑',16,128,128],['白',235,128,128],['青',188,154,16],['品红',78,214,230],['黄',219,16,138],['绿',173,42,26],['红',63,102,240],['蓝',32,240,118],['只有 Y（U=V=0）',128,0,0]];
+const $=id=>document.getElementById(id);
+function conv(y,u,v,std,full){
+  const {kr,kb}=STD[std],kg=1-kr-kb,ys=full?1:255/219,cs=full?1:255/224;
+  const yy=(y-(full?0:16))*ys,uu=(u-128)*cs,vv=(v-128)*cs;
+  const raw=[yy+2*(1-kr)*vv, yy-2*kb*(1-kb)/kg*uu-2*kr*(1-kr)/kg*vv, yy+2*(1-kb)*uu];
+  return {raw,rgb:raw.map(c=>Math.max(0,Math.min(255,Math.round(c)))),k:{ys,rv:2*(1-kr)*cs,gu:-2*kb*(1-kb)/kg*cs,gv:-2*kr*(1-kr)/kg*cs,bu:2*(1-kb)*cs,off:full?0:16}};
+}
+function draw(){
+  const y=+$('y').value,u=+$('u').value,v=+$('v').value;
+  $('yo').textContent=y;$('uo').textContent=u;$('vo').textContent=v;
+  const std=document.querySelector('[name=std]:checked').value,full=document.querySelector('[name=rng]:checked').value==='f';
+  let h='';
+  for(const s of ['709','601'])for(const f of [false,true]){
+    const r=conv(y,u,v,s,f).rgb,cur=s===std&&f===full;
+    h+=`<div class="res${cur?' cur':''}"><div class="c" style="background:rgb(${r})"></div><div class="t"><b>${STD[s].name} · ${f?'全范围':'有限范围'}${cur?'（正确）':''}</b><code>R ${r[0]}  G ${r[1]}  B ${r[2]}</code></div></div>`;
+  }
+  $('out').innerHTML=h;
+  const c=conv(y,u,v,std,full),k=c.k,f3=n=>(n<0?'− ':'+ ')+Math.abs(n).toFixed(3),r1=n=>n.toFixed(1).padStart(7);
+  $('steps').textContent=
+`按 ${STD[std].name}、${full?'全范围':'有限范围'}：
+R = ${k.ys.toFixed(3)} × (${y} − ${k.off})                       ${f3(k.rv)} × (${v} − 128) = ${r1(c.raw[0])} → ${c.rgb[0]}
+G = ${k.ys.toFixed(3)} × (${y} − ${k.off}) ${f3(k.gu)} × (${u} − 128) ${f3(k.gv)} × (${v} − 128) = ${r1(c.raw[1])} → ${c.rgb[1]}
+B = ${k.ys.toFixed(3)} × (${y} − ${k.off}) ${f3(k.bu)} × (${u} − 128)                       = ${r1(c.raw[2])} → ${c.rgb[2]}
+超出 0–255 的结果会被截断到边界。`;
+}
+PRE.forEach(([n,y,u,v])=>{const b=document.createElement('button');b.textContent=n;b.onclick=()=>{$('y').value=y;$('u').value=u;$('v').value=v;draw();};$('presets').append(b);});
+document.querySelectorAll('input').forEach(e=>e.addEventListener('input',draw));
+draw();
+</script>
+</body>
+</html>
