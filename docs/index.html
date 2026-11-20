@@ -176,7 +176,9 @@ h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
     扩展方式
     · 加主题：在对应类目的 <section class="cat"> 里复制一个 <a class="card">，
       改 href、标题、说明，并填 data-articles / data-demos（文章数 / 演示数）。
-      类目内的顺序按"数据流动的先后"排，比如音频编码在 PCM 前面。
+      类目内的顺序按"数据流动的先后"排，比如音频解码在 PCM 前面。
+      主题页里再按格式或类型分组（解码按编码格式，封装格式按容器类型），首页不展开到那一层。
+      "通用"放不专属于音频或视频的知识：封装格式、构建，以后的同步、播放器结构也放这里。
     · 加类目：复制一个 <section class="cat">，改 id、标题、路径，
       data-tone 从 sky / peach / mint / violet / sand 里选一个没用过的颜色。
     顶部的类目跳转、首屏四个统计数字、卡片上的"N 篇文章"都是脚本生成的。
@@ -193,19 +195,21 @@ h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
   <main class="cats">
     <section class="cat" id="audio" data-tone="sky" data-name="音频">
       <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h2l2-6 4 12 3-9 2 5 2-2h3"/></svg></span>音频<small>audio/</small></h2>
-      <a class="card" href="audio/codec/index.html" data-articles="1" data-demos="0"><span class="t">音频编码</span><span class="d">PCM 之前的那一步：压缩数据是什么，怎么解成 PCM。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
+      <a class="card" href="audio/codec/index.html" data-articles="2" data-demos="0"><span class="t">音频解码</span><span class="d">PCM 之前的那一步：压缩数据怎么解成 PCM。总览，再按格式分：AAC。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
       <a class="card" href="audio/pcm/index.html" data-articles="1" data-demos="4"><span class="t">PCM</span><span class="d">未压缩的声音数据：它是什么、怎么播、怎么加工。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
     </section>
 
     <section class="cat" id="video" data-tone="peach" data-name="视频">
       <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 10 5-3v10l-5-3"/></svg></span>视频<small>video/</small></h2>
+      <a class="card" href="video/codec/index.html" data-articles="1" data-demos="0"><span class="t">视频解码</span><span class="d">YUV 之前的那一步：几百字节怎么变回一帧画面。按格式分：H.264。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
       <a class="card" href="video/yuv/index.html" data-articles="1" data-demos="1"><span class="t">YUV 与像素格式</span><span class="d">解码后的一帧画面：三个平面怎么排，怎么换算成 RGB。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
       <a class="card" href="video/opengl/index.html" data-articles="1" data-demos="0"><span class="t">OpenGL 渲染</span><span class="d">把解码出来的 YUV 画到屏幕上。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
     </section>
 
-    <section class="cat" id="build" data-tone="mint" data-name="构建">
-      <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/></svg></span>构建<small>build/</small></h2>
-      <a class="card" href="build/cross-compile/index.html" data-articles="2" data-demos="0"><span class="t">交叉编译</span><span class="d">在 Mac 上编出给 Android 运行的原生库。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
+    <section class="cat" id="general" data-tone="mint" data-name="通用">
+      <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4-9 5 9 5 9-5-9-5ZM3 14l9 5 9-5"/></svg></span>通用<small>general/</small></h2>
+      <a class="card" href="general/container/index.html" data-articles="1" data-demos="0"><span class="t">封装格式</span><span class="d">把音视频和时间戳装进一个文件的容器。按类型分：MP4。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
+      <a class="card" href="general/build/index.html" data-articles="2" data-demos="0"><span class="t">构建</span><span class="d">交叉编译：在 Mac 上编出给 Android 运行的原生库。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
     </section>
   </main>
 

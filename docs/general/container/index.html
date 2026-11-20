@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>封装格式 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../../index.html">知识库</a><span class="sep">/</span>通用<span class="sep">/</span>封装格式</nav>
+  <header class="hero">
+    <div class="eyebrow">通用</div>
+    <h1>封装格式</h1>
+    <p class="lede">把音轨、视频轨、时间戳和解码参数装进一个文件的格式，也叫容器。按容器类型分开讲。</p>
+  </header>
+
+  <!-- 这个主题按容器类型分组：每种容器一个 .label + .topics。新增容器时照着 MP4 那一组复制 -->
+  <div class="label">MP4<span class="c">1</span></div>
+  <div class="topics">
+    <a class="topic" href="mp4-format.html">
+      <span class="t">MP4 封装格式：文件里除了音视频还有什么</span>
+      <span class="d">把示例文件按字节拆开：盒子结构和完整的盒子树，每一帧的位置、大小、时间是怎么记的，关键帧表和跳转，moov 在前在后的区别，fMP4，以及和别的容器的对比。</span>
+      <span class="m">14 节 · 盒子树逐字节解析自 landscape_720p.mp4</span>
+    </a>
+  </div>
+  <p class="caption" style="margin-top:14px">还没写的容器：MKV / WebM、MPEG-TS、FLV。它们和 MP4 的差别先看上面那篇的第 12 节。</p>
+
+  <div class="label">接着读</div>
+  <div class="demos">
+    <a class="demo" href="../../video/codec/index.html"><span class="t">视频解码 →</span><span class="d">从容器里读出来的视频包怎么变回画面。</span></a>
+    <a class="demo" href="../../audio/codec/index.html"><span class="t">音频解码 →</span><span class="d">从容器里读出来的音频包怎么变回 PCM。</span></a>
+  </div>
+</main>
+</body>
+</html>

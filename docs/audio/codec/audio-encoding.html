@@ -20,7 +20,7 @@
 <body>
 <div class="wrap">
 <nav class="toc" aria-label="目录">
-  <a class="back" href="index.html">← 音频编码</a>
+  <a class="back" href="index.html">← 音频解码</a>
   <div class="tl">目录</div>
   <ol>
     <li><a href="#why">为什么要压缩</a></li>
@@ -166,6 +166,7 @@ AAC   346 个包合计                          =    64,492 字节 ≈ 64 KB
 }
 avcodec_send_packet(dec, NULL);                     // 读完后送空包，把解码器里剩下的帧取干净</code></pre>
   <p>"送"和"收"不是一一对应的：解码器内部可能攒着数据，送进一个包不一定马上出一帧，所以收的那一层是循环，结束时还要冲刷一次。</p>
+  <p>解码器内部每一步具体怎么算，拿一个包按位拆开看，见 <a href="aac-decoding.html">AAC 解码</a>。</p>
   <h3>解出来的 PCM 是什么格式</h3>
   <p>解码器输出什么格式由解码器自己决定，不由你决定。FFmpeg 自带的几个解码器：</p>
   <div class="tbl"><table>
@@ -207,6 +208,7 @@ avcodec_send_packet(dec, NULL);                     // 读完后送空包，把�
       <tr><td>裸 <code>.aac</code>（ADTS）</td><td>每个包前面都有一个 7 字节的 ADTS 头，重复写着采样率和声道数</td><td>由 <code>aac</code> 解析器读出</td></tr>
     </tbody>
   </table></div>
+  <p>那 5 个字节和 ADTS 头的每一位是什么，见 <a href="aac-decoding.html#asc">AAC 解码</a>。</p>
   <p>这是同一种编码的两种包装。把 ADTS 的 AAC 写进 MP4 时，要去掉每个包的头、改成一份全局配置，做这件事的就是码流过滤器 <code>aac_adtstoasc</code>。</p>
   <p>打开解码器时要把容器里读到的参数交给它，否则它不知道怎么解：</p>
 <pre><code>avcodec_parameters_to_context(dec, stream-&gt;codecpar);   // 包括 extradata
@@ -226,7 +228,7 @@ avcodec_open2(dec, codec, NULL);</code></pre>
       <tr><td>格式转换</td><td><code>libswresample</code>，滤镜 <code>aresample</code>、<code>aformat</code></td><td>解码后统一采样格式和采样率</td></tr>
     </tbody>
   </table></div>
-  <p>WAV 没有对应的解码器条目：这个构建没有点名 <code>pcm_s16le</code> 这类 PCM 解码器，所以 WAV 目前能拆开容器但解不出数据，要播放 WAV 需要在裁剪列表里补上。每个参数的含义和怎么补，见 <a href="../../build/cross-compile/configure-options.html#g7">configure_android.sh 参数详解</a>。</p>
+  <p>WAV 没有对应的解码器条目：这个构建没有点名 <code>pcm_s16le</code> 这类 PCM 解码器，所以 WAV 目前能拆开容器但解不出数据，要播放 WAV 需要在裁剪列表里补上。每个参数的含义和怎么补，见 <a href="../../general/build/configure-options.html#g7">configure_android.sh 参数详解</a>。</p>
   <p>目前工程里的 JNI 代码只接了视频解码，音频解码还没有接进 App。</p>
 </section>
 

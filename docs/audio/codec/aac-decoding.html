@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AAC 解码：一个包怎么变回 1024 个采样</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+<style>
+/* 本页独有：按位拆开的字段 */
+.bits{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;font-family:var(--font-mono);font-size:13px}
+.bits div{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:7px 10px;line-height:1.5}
+.bits b{display:block;color:var(--accent);font-weight:500;letter-spacing:.04em}
+.bits span{font-family:var(--font-body);font-size:12.5px;color:var(--muted)}
+.bits .dim b{color:var(--muted)}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 音频解码</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#family">AAC 是一族编码</a></li>
+    <li><a href="#asc">开工前的 5 个字节</a></li>
+    <li><a href="#adts">另一种包装：ADTS</a></li>
+    <li><a href="#elements">一个包里装了什么</a></li>
+    <li><a href="#ics">声道数据的开头</a></li>
+    <li><a href="#bands">频带和码本</a></li>
+    <li><a href="#dequant">从整数还原成频谱</a></li>
+    <li><a href="#imdct">从频谱回到波形</a></li>
+    <li><a href="#window">长窗和短窗</a></li>
+    <li><a href="#heaac">HE-AAC：多出来的两层</a></li>
+    <li><a href="#ffmpeg">FFmpeg 的 aac 解码器</a></li>
+    <li><a href="#android">Android 自带的解码器</a></li>
+    <li><a href="#project">落到 music_demo</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Android 音视频学习笔记</div>
+  <h1>AAC 解码：一个包怎么变回 1024 个采样</h1>
+  <p class="lede">总览里把解码器当成一个黑盒：送进去一个包，出来 1024 个采样。这份笔记把黑盒打开，拿示例音轨里一个 163 字节的包，按位拆开看解码器依次读到了什么，又是怎么一步步算回波形的。</p>
+  <div class="journey" aria-label="一个 AAC 包的解码过程">
+    <div class="step"><span class="k">一个包</span><span class="v hex">163 字节</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">解出整数，还原成</span><span class="v">1024 条谱线</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">反变换，和上一帧叠加</span><span class="v">1024 个采样</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">float PCM</span><span class="v">4096 字节</span></div>
+  </div>
+  <p class="caption">示例是工程里 <code>landscape_720p.mp4</code> 的音轨：AAC-LC、44100 Hz、单声道、346 个包，内容是一段 1000 Hz 的正弦波。包里的字段是按 AAC 规范逐位解析出来的。压缩为什么成立、包和帧的关系、解码循环怎么写，先读 <a href="audio-encoding.html">音频编码：PCM 之前的那一步</a>。</p>
+</header>
+
+<section id="family">
+  <h2><span class="n">01</span>AAC 是一族编码</h2>
+  <p>"AAC"不是一种固定的格式，而是一组可以叠加的工具。码流里用一个数字说明自己用了哪一组，这个数字叫音频对象类型（AOT）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th class="num">AOT</th><th>在上一级基础上加了什么</th><th>常见码率</th></tr></thead>
+    <tbody>
+      <tr><td>AAC-LC</td><td class="num">2</td><td>基础档，本文讲的就是它</td><td>96–256 kbps</td></tr>
+      <tr><td>HE-AAC（AAC+）</td><td class="num">5</td><td>LC + 频带复制（SBR）：只编码低频，高频靠低频推出来</td><td>32–64 kbps</td></tr>
+      <tr><td>HE-AAC v2</td><td class="num">29</td><td>再加参数立体声（PS）：只编码单声道，立体声靠参数还原</td><td>16–32 kbps</td></tr>
+      <tr><td>AAC-LD、AAC-ELD</td><td class="num">23、39</td><td>低延迟版本，帧更短</td><td>通话</td></tr>
+      <tr><td>xHE-AAC（USAC）</td><td class="num">42</td><td>把语音编码和音乐编码合在一起</td><td>12 kbps 起</td></tr>
+    </tbody>
+  </table></div>
+  <p>示例音轨是 AAC-LC。音乐文件、视频里的音轨绝大多数是 LC；低码率的网络电台和直播常见 HE-AAC。HE-AAC 的核心仍然是一个 LC 解码器，所以先看懂 LC。</p>
+</section>
+
+<section id="asc">
+  <h2><span class="n">02</span>开工前的 5 个字节</h2>
+  <p>MP4 里的 AAC 包不带任何头，解码器要的参数集中放在容器里，叫 AudioSpecificConfig。示例文件里它在 <code>esds</code> 盒子中，一共 5 个字节：</p>
+<pre><code>12 08 56 E5 00</code></pre>
+  <p>前两个字节是必须有的部分，按位拆开：</p>
+  <div class="bits">
+    <div><b>00010</b><span>对象类型 = 2<br>AAC-LC</span></div>
+    <div><b>0100</b><span>采样率序号 = 4<br>44100 Hz</span></div>
+    <div><b>0001</b><span>声道配置 = 1<br>单声道</span></div>
+    <div><b>0</b><span>帧长标志<br>0 = 1024</span></div>
+    <div class="dim"><b>0</b><span>依赖核心<br>编码器</span></div>
+    <div class="dim"><b>0</b><span>扩展<br>标志</span></div>
+  </div>
+  <p>采样率不直接写数值，而是写一个序号，查下面这张固定的表。序号 15 表示表里没有，后面另外用 24 位写出真实的采样率。</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">序号</th><th class="num">0</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">4</th><th class="num">5</th><th class="num">6</th><th class="num">7</th><th class="num">8</th><th class="num">11</th></tr></thead>
+    <tbody>
+      <tr><td>采样率</td><td class="num">96000</td><td class="num">88200</td><td class="num">64000</td><td class="num">48000</td><td class="num">44100</td><td class="num">32000</td><td class="num">24000</td><td class="num">22050</td><td class="num">16000</td><td class="num">8000</td></tr>
+    </tbody>
+  </table></div>
+  <p>声道配置 1 是单声道，2 是立体声，6 是 5.1。写 0 表示声道布局另外用一个专门的元素描述。</p>
+  <p>后三个字节 <code>56 E5 00</code> 是可选的扩展：</p>
+  <div class="bits">
+    <div><b>010 1011 0111</b><span>同步字 0x2B7<br>"后面有扩展信息"</span></div>
+    <div><b>00101</b><span>扩展的对象类型 = 5<br>SBR</span></div>
+    <div><b>0</b><span>SBR 是否存在<br>0 = 没有</span></div>
+    <div class="dim"><b>0000000</b><span>补齐到整字节</span></div>
+  </div>
+  <p>意思是"我明确告诉你，这条流里没有 SBR"。写不写这三个字节，声音都一样；写了的好处是解码器不用自己去猜，见第 10 节。</p>
+  <div class="key">拿到一条 AAC 流先看这两个字节，就知道解出来是什么样的 PCM。FFmpeg 里它是 <code>AVCodecParameters.extradata</code>，Android 里是 <code>MediaFormat</code> 的 <code>csd-0</code>。打开解码器之前必须把它交过去。</div>
+</section>
+
+<section id="adts">
+  <h2><span class="n">03</span>另一种包装：ADTS</h2>
+  <p>扩展名是 <code>.aac</code> 的文件没有容器，参数没地方集中放，于是每个包前面都加一个 7 字节的头，这种包装叫 ADTS。把示例里那个 163 字节的包转成 ADTS，前面多出来的头是：</p>
+<pre><code>FF F1 50 40 15 5F FC</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>位数</th><th>字段</th><th>这个包里的值</th></tr></thead>
+    <tbody>
+      <tr><td class="num">12</td><td>同步字，固定全 1</td><td><code>FFF</code></td></tr>
+      <tr><td class="num">1 + 2 + 1</td><td>MPEG 版本、层、是否没有校验</td><td>0、0、1（没有 CRC）</td></tr>
+      <tr><td class="num">2</td><td>档次 = 对象类型 − 1</td><td>1，即 AAC-LC</td></tr>
+      <tr><td class="num">4</td><td>采样率序号</td><td>4，即 44100 Hz</td></tr>
+      <tr><td class="num">1 + 3</td><td>私有位、声道配置</td><td>0、1（单声道）</td></tr>
+      <tr><td class="num">4</td><td>原创、版权等标志</td><td>全 0</td></tr>
+      <tr><td class="num">13</td><td>整帧长度，包含头</td><td>170 = 163 + 7</td></tr>
+      <tr><td class="num">11</td><td>缓冲区充满度</td><td><code>7FF</code>，表示可变码率</td></tr>
+      <tr><td class="num">2</td><td>这一帧里有几个数据块，减 1</td><td>0，即 1 个</td></tr>
+    </tbody>
+  </table></div>
+  <p>和上一节对照，采样率序号、声道配置是同样的数，只是换了个地方写，而且每个包都重复一遍。示例音轨转成 ADTS 后从 64,492 字节变成 66,914 字节，多出来的正好是 346 × 7。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>MP4、M4A 里</th><th>ADTS（<code>.aac</code>、MPEG-TS、部分直播流）</th></tr></thead>
+    <tbody>
+      <tr><td>参数在哪</td><td>容器里一份 AudioSpecificConfig</td><td>每个包的头里</td></tr>
+      <tr><td>包的边界</td><td>容器的采样表</td><td>靠同步字和帧长度自己找</td></tr>
+      <tr><td>能从中间开始</td><td>要先读到容器的索引</td><td>能，找到下一个同步字就行</td></tr>
+      <tr><td>互相转换</td><td colspan="2">MP4 → ADTS：每个包前加头；ADTS → MP4：去掉头，生成一份配置（FFmpeg 的码流过滤器 <code>aac_adtstoasc</code>）</td></tr>
+    </tbody>
+  </table></div>
+  <p>ADTS 的档次只有 2 位，表达不了 HE-AAC，所以 ADTS 里的 HE-AAC 一律写成 LC，是不是 HE 要解码器自己发现。</p>
+</section>
+
+<section id="elements">
+  <h2><span class="n">04</span>一个包里装了什么</h2>
+  <p>去掉包装之后，一个包是一串"元素"首尾相接。每个元素以 3 位的类型号开头：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">类型号</th><th>缩写</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0</td><td>SCE</td><td>一个声道的数据</td></tr>
+      <tr><td class="num">1</td><td>CPE</td><td>一对声道（左右）的数据，可以共用一部分信息</td></tr>
+      <tr><td class="num">3</td><td>LFE</td><td>低音炮声道</td></tr>
+      <tr><td class="num">4</td><td>DSE</td><td>附带的数据，解码器不管内容</td></tr>
+      <tr><td class="num">5</td><td>PCE</td><td>声道布局的详细描述</td></tr>
+      <tr><td class="num">6</td><td>FIL</td><td>填充，也用来夹带扩展数据</td></tr>
+      <tr><td class="num">7</td><td>END</td><td>这个包结束了</td></tr>
+    </tbody>
+  </table></div>
+  <p>单声道的包是 <code>SCE + END</code>，立体声是 <code>CPE + END</code>，5.1 是 <code>SCE + CPE + CPE + LFE + END</code>。示例是单声道，346 个包里有 344 个以 SCE 开头。</p>
+  <p>另外 2 个（第 1 个和第 257 个）以 FIL 开头。第 1 个包的头 16 个字节是：</p>
+<pre><code>DE 02 00 4C 61 76 63 36 32 2E 31 31 2E 31 30 30
+         L  a  v  c  6  2  .  1  1  .  1  0  0</code></pre>
+  <p><code>DE</code> 的头 3 位是 <code>110</code>，类型号 6。跳过几位长度信息之后，是一段明文：编码器把自己的版本号 <code>Lavc62.11.100</code> 塞进了填充元素，每 256 帧重复一次。解码器读到 FIL 直接跳过，对声音没有影响。</p>
+  <p>FIL 可以被无视这一点很有用。HE-AAC 的 SBR 数据就藏在 FIL 里：不认识 SBR 的老解码器把它当填充跳过，照样能解出低频部分的声音，只是采样率减半、听起来发闷。</p>
+</section>
+
+<section id="ics">
+  <h2><span class="n">05</span>声道数据的开头</h2>
+  <p>取示例的第 4 个包（163 字节，时间戳 2048）。它的头 4 个字节是 <code>00 E4 36 19</code>，写成二进制从左往右读：</p>
+  <div class="bits">
+    <div><b>000</b><span>类型号 0<br>SCE</span></div>
+    <div class="dim"><b>0000</b><span>元素编号<br>0</span></div>
+    <div><b>01110010</b><span>全局增益<br>114</span></div>
+    <div class="dim"><b>0</b><span>保留位</span></div>
+    <div><b>00</b><span>窗序列 0<br>一个长窗</span></div>
+    <div><b>1</b><span>窗形状 1<br>KBD 窗</span></div>
+    <div><b>101100</b><span>最大频带数<br>44</span></div>
+    <div class="dim"><b>0</b><span>预测<br>不用</span></div>
+    <div><b>0110 01…</b><span>频带信息开始<br>见下一节</span></div>
+  </div>
+  <p>这 26 位已经定下了这一帧的大框架：</p>
+  <ul>
+    <li><strong>全局增益</strong>是整帧的音量基准，后面每个频带的缩放系数都从它出发。示例 346 个包里它在 103 到 157 之间。</li>
+    <li><strong>窗序列</strong>决定这一帧是一整段处理，还是切成 8 小段，见第 09 节。</li>
+    <li><strong>最大频带数</strong>是这一帧实际存了多少个频带。44 个频带对应 0 到 17.2 kHz，再往上的频率直接不存，解码时当成 0。</li>
+  </ul>
+  <p>接下来的内容顺序是固定的：每个频带用哪本码本 → 每个频带的缩放系数 → 几个可选工具的开关和参数 → 最后才是量化后的频谱数据本身。前面这些"关于数据的说明"占一个包的小头，大部分字节是最后那部分。</p>
+</section>
+
+<section id="bands">
+  <h2><span class="n">06</span>频带和码本</h2>
+  <p>一帧有 1024 条谱线，每条代表一个频率上的强度，相邻两条相隔 44100 ÷ 2048 ≈ 21.5 Hz。解码器不逐条处理，而是把它们分成 49 个频带，每个频带共用一个缩放系数和一本码本。频带的宽度是规范写死的，低频窄、高频宽，和耳朵的分辨能力一致：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>频带</th><th>谱线</th><th>每个频带的宽度</th><th>频率范围</th></tr></thead>
+    <tbody>
+      <tr><td>0–9</td><td>0–39</td><td>4 条，约 86 Hz</td><td>0–861 Hz</td></tr>
+      <tr><td>10–17</td><td>40–107</td><td>8–12 条</td><td>861 Hz–2.3 kHz</td></tr>
+      <tr><td>18–28</td><td>108–319</td><td>12–28 条</td><td>2.3–6.9 kHz</td></tr>
+      <tr><td>29–47</td><td>320–927</td><td>32 条，约 689 Hz</td><td>6.9–20 kHz</td></tr>
+      <tr><td>48</td><td>928–1023</td><td>96 条</td><td>20–22 kHz</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">44100 Hz 和 48000 Hz 共用这张表。别的采样率各有各的表。</p>
+  <p>量化后的数用哈夫曼编码存放：出现得多的数用短码，少的用长码。规范准备了 11 本码本，能表示的数值范围从小到大，编码器给每一段频带挑一本最省的：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>码本</th><th>能表示的数值</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>全是 0</td><td>这个频带什么都不存</td></tr>
+      <tr><td>1、2</td><td>−1 到 1</td><td>4 个数编成一个码字</td></tr>
+      <tr><td>3、4</td><td>0 到 2</td><td>4 个数一组，符号另外存</td></tr>
+      <tr><td>5、6</td><td>−4 到 4</td><td>2 个数一组</td></tr>
+      <tr><td>7、8</td><td>0 到 7</td><td>2 个数一组</td></tr>
+      <tr><td>9、10</td><td>0 到 12</td><td>2 个数一组</td></tr>
+      <tr><td>11</td><td>0 到 16，更大的数用转义码</td><td>唯一能存大数的一本</td></tr>
+      <tr><td>13</td><td>不存数值，只存这个频带的能量</td><td>解码器自己生成同样能量的噪声，叫感知噪声替代（PNS）</td></tr>
+      <tr><td>14、15</td><td>不存数值</td><td>立体声专用：右声道照抄左声道再乘一个比例</td></tr>
+    </tbody>
+  </table></div>
+  <p>示例那个包的码本分配，正好能看出里面是什么声音：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>频带</th><th>频率范围</th><th>码本</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>0–7</td><td>0–689 Hz</td><td>6</td><td>小的数</td></tr>
+      <tr><td>8–11</td><td>689–1206 Hz</td><td>11</td><td>全帧最大的数在这里</td></tr>
+      <tr><td>12–24</td><td>1.2–4.7 kHz</td><td>8</td><td>中等的数</td></tr>
+      <tr><td>25–43</td><td>4.7–17.2 kHz</td><td>19 个频带里 14 个是 13</td><td>大部分只存能量，让解码器填噪声</td></tr>
+    </tbody>
+  </table></div>
+  <p>音轨的内容是 1000 Hz 的正弦波。1000 ÷ 21.5 ≈ 46，落在第 46 条谱线上，属于频带 10，正在用了最大码本的那一段里。高频本来就没有内容，剩下的只是极轻的底噪，编码器不值得为它们逐个存数，标成"噪声"就够了。</p>
+  <p>全部 345 个长窗包合计 15,180 个频带里，码本 11 占 10.6%，噪声替代占 4.8%。</p>
+</section>
+
+<section id="dequant">
+  <h2><span class="n">07</span>从整数还原成频谱</h2>
+  <p>哈夫曼解码得到的是 1024 个小整数，大多数是 0、±1、±2。把它们还原成频谱要两步：</p>
+<pre><code>① 反量化      x = sign(q) × |q|^(4/3)
+② 乘缩放系数  谱线 = x × 2^((sf − 100) / 4)</code></pre>
+  <ul>
+    <li><strong>4/3 次方</strong>让量化的台阶不均匀：q 从 1 到 2，还原出来的数差 1.5；从 15 到 16 差 3.3。数值越大记得越粗，因为响的声音里藏一点误差更不容易被听见。</li>
+    <li><strong>缩放系数 sf 每个频带一个。</strong>每加 1，这个频带放大 2 的 1/4 次方，约 1.19 倍，也就是 1.5 dB。第一个频带的 sf 就是全局增益，后面每个频带只存和前一个的差。</li>
+  </ul>
+  <p>编码时丢信息的就是这一步的反方向：编码器把每条谱线除以缩放系数再取整，缩放系数选得越大，取整丢掉的就越多。解码器只能按整数还原，丢掉的小数部分回不来。码率不够时，编码器只好把缩放系数调大，这就是低码率 AAC 发闷、有"水声"的来源。</p>
+  <h3>还原之后的几个可选工具</h3>
+  <p>频谱还原出来之后、变回波形之前，还可能经过几道处理，用没用都写在包里：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>工具</th><th>做什么</th><th>解码器的动作</th></tr></thead>
+    <tbody>
+      <tr><td>感知噪声替代（PNS）</td><td>听起来像噪声的频带不存具体数值</td><td>按存下来的能量生成随机数填进去</td></tr>
+      <tr><td>M/S 立体声</td><td>左右很像时，改存"和"与"差"</td><td>加减一次还原出左、右</td></tr>
+      <tr><td>强度立体声</td><td>高频只存一个声道和左右的比例</td><td>按比例复制出另一个声道</td></tr>
+      <tr><td>时域噪声整形（TNS）</td><td>控制量化噪声在时间上的分布，不让它跑到突发音之前</td><td>沿频率方向对频谱做一次滤波</td></tr>
+    </tbody>
+  </table></div>
+  <p>示例是单声道，两个立体声工具用不上。噪声替代用得很多，见上一节。</p>
+  <div class="key">因为有噪声替代，解码结果里有一部分是解码器自己生成的随机数。不同的解码器解同一个包，得到的 PCM 不会逐个数相同；同一个解码器跳转之后再解到这个包，结果也可能不同。验证 AAC 解码对不对，要比听感或者比误差的大小，不能要求数值相等。</div>
+</section>
+
+<section id="imdct">
+  <h2><span class="n">08</span>从频谱回到波形</h2>
+  <p>最后一步是反变换（IMDCT）：1024 条谱线进去，出来的不是 1024 个采样，而是 2048 个。这 2048 个值横跨两帧的时间，并且单独拿出来是不对的。要把它的前一半和上一个包留下的后一半相加，才得到 1024 个正确的采样；它自己的后一半留着，等下一个包。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 232" role="img" aria-label="相邻三个包各解出 2048 个值，每个横跨两帧；相邻两个包重叠的 1024 个位置相加，得到一帧输出">
+      <rect class="hot" x="180" y="52" width="110" height="98"/>
+      <line class="axis" x1="40" y1="150" x2="560" y2="150"/>
+      <line class="lead" x1="70" y1="150" x2="70" y2="158"/><line class="lead" x1="180" y1="150" x2="180" y2="158"/><line class="lead" x1="290" y1="150" x2="290" y2="158"/><line class="lead" x1="400" y1="150" x2="400" y2="158"/><line class="lead" x1="510" y1="150" x2="510" y2="158"/>
+      <path class="ghostline" d="M70 150 Q180 6 290 150"/>
+      <path class="out" d="M180 150 Q290 6 400 150"/>
+      <path class="ghostline" d="M290 150 Q400 6 510 150"/>
+      <text x="126" y="64" text-anchor="middle" class="m">上一个包</text>
+      <text x="345" y="40" text-anchor="middle" class="a">这个包解出的 2048 个值</text>
+      <text x="456" y="64" text-anchor="middle" class="m">下一个包</text>
+      <text x="70" y="172" text-anchor="middle" class="t">−1024</text><text x="180" y="172" text-anchor="middle" class="t">0</text><text x="290" y="172" text-anchor="middle" class="t">1024</text><text x="400" y="172" text-anchor="middle" class="t">2048</text><text x="510" y="172" text-anchor="middle" class="t">3072</text>
+      <text x="282" y="196" text-anchor="end" class="a">这个包到了就能输出</text>
+      <text x="282" y="214" text-anchor="end" class="m">上一个的后半 + 这个的前半</text>
+      <text x="298" y="196" class="m">这个包的后半先存着</text>
+      <text x="298" y="214" class="m">等下一个包来了再相加</text>
+    </svg>
+    </div>
+    <figcaption>每个包解出的 2048 个值乘过一个两头低、中间高的窗。相邻两个包各取一半相加，窗的形状保证加起来正好还原。横轴是采样序号。</figcaption>
+  </figure>
+  <p>这样设计是为了消除帧与帧之间的接缝。如果每帧各管各的 1024 个采样，量化误差会让相邻两帧在交界处对不上，听起来是每 23 毫秒一次的"咔哒"声。重叠相加让每个采样都由两帧共同决定，交界处是平滑过渡的。</p>
+  <p>代价是解码器有了记忆：它总是存着上一个包的后半段。很多现象都是从这里来的：</p>
+  <ul>
+    <li><strong>文件的第一个包解不完整。</strong>它前面没有包，缺了要相加的那一半。所以编码器在最前面垫一个包，见 <a href="audio-encoding.html#priming">开头多出来的一个包</a>。</li>
+    <li><strong>跳转之后的第一帧是错的。</strong>解码器里存的还是跳转之前的后半段。要先清空解码器的状态，再从目标前一个包开始解，丢掉第一帧的输出。MP4 里专门有一个标记写着"要往前多解 1 包"，见 <a href="../../general/container/mp4-format.html#seek">MP4 封装格式</a>。</li>
+    <li><strong>不能把两段 AAC 直接接起来。</strong>接缝处前后两个包不是连续编码的，叠加的结果是一小段杂音。</li>
+  </ul>
+</section>
+
+<section id="window">
+  <h2><span class="n">09</span>长窗和短窗</h2>
+  <p>一个长窗横跨 2048 个采样，约 46 毫秒。量化误差会均匀地摊在这 46 毫秒里。如果窗的后半段有一下鼓声，前半段本来是安静的，误差就在鼓声之前露了出来，听起来像提前漏出一点声音，叫预回声。</p>
+  <p>所以编码器发现突发音时，把这一帧改成 8 个短窗：每个只管 256 个采样、128 条谱线。时间上精确了 8 倍，误差被关在几毫秒之内；代价是频率分辨率差了 8 倍，压缩效率低。窗序列字段的 2 位就是在说这件事：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">值</th><th>含义</th><th>谱线</th><th class="num">示例里的包数</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0</td><td>一个长窗</td><td>1024 条，每条约 21.5 Hz</td><td class="num">343</td></tr>
+      <tr><td class="num">1</td><td>长窗，后半边收窄，为接短窗做准备</td><td>1024 条</td><td class="num">1</td></tr>
+      <tr><td class="num">2</td><td>8 个短窗</td><td>8 × 128 条，每条约 172 Hz</td><td class="num">1</td></tr>
+      <tr><td class="num">3</td><td>长窗，前半边收窄，从短窗接回来</td><td>1024 条</td><td class="num">1</td></tr>
+    </tbody>
+  </table></div>
+  <p>示例里这三个特殊的包正好是最开头的三个，顺序是 1、2、3。正弦波在第 0 个采样突然从无到有，对编码器来说这就是一次突发，于是它用了一帧短窗，前后各用一个过渡窗接上，之后 343 个包声音平稳，全是长窗。</p>
+  <p>无论哪种窗，一个包解出来都是 1024 个采样。短窗只改变包内部怎么切，不改变包的时长。</p>
+</section>
+
+<section id="heaac">
+  <h2><span class="n">10</span>HE-AAC：多出来的两层</h2>
+  <p>HE-AAC 在 LC 解码器的输出后面再接一到两级处理：</p>
+<pre><code>AAC-LC      包 ─▶ LC 解码 ─▶ 1024 个采样，44100 Hz
+HE-AAC      包 ─▶ LC 解码 ─▶ 1024 个采样，22050 Hz ─▶ SBR ─▶ 2048 个采样，44100 Hz
+HE-AAC v2   包 ─▶ LC 解码 ─▶ 单声道 ─▶ SBR ─▶ PS ─▶ 立体声</code></pre>
+  <ul>
+    <li><strong>SBR（频带复制）</strong>：核心只编码一半采样率的声音，也就是只有低频。高频部分不存，只存一点"高频大概长什么样"的参数，解码时把低频搬到高频再按参数整形。</li>
+    <li><strong>PS（参数立体声）</strong>：核心只编码单声道，另存一点左右声道的强弱和相位差，解码时还原出立体声。</li>
+  </ul>
+  <p>麻烦在于流怎么声明自己是 HE-AAC，有两种写法：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>写法</th><th>配置里写的</th><th>解码器什么时候知道</th></tr></thead>
+    <tbody>
+      <tr><td>明确声明</td><td>对象类型 5 或 29，带着核心和输出两个采样率</td><td>打开时就知道</td></tr>
+      <tr><td>不声明（为了兼容老解码器）</td><td>AAC-LC、22050 Hz、单声道</td><td>解第一个包，在 FIL 里看到 SBR 数据时才知道</td></tr>
+    </tbody>
+  </table></div>
+  <p>第二种写法下，容器和配置都说是"22050 Hz 单声道"，解出来却是 44100 Hz 立体声，每帧 2048 个采样。如果按容器里的参数去建 AudioTrack，声音会慢一半、低八度。<strong>采样率、声道数和每帧采样数，一律以解码器输出的那一帧为准</strong>：FFmpeg 看 <code>AVFrame</code> 的 <code>sample_rate</code>、<code>ch_layout</code>、<code>nb_samples</code>，MediaCodec 看 <code>INFO_OUTPUT_FORMAT_CHANGED</code> 之后的输出格式。</p>
+  <p>示例文件那三个扩展字节做的就是预先排除这种情况：明确写上"没有 SBR"，解码器就不用等到第一帧才确定。</p>
+</section>
+
+<section id="ffmpeg">
+  <h2><span class="n">11</span>FFmpeg 的 aac 解码器</h2>
+  <p>工程用的 FFmpeg n8.1.3 里，AAC 解码器的代码在 <code>libavcodec/aac/</code>。前面几节的步骤和函数大致这样对应：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>步骤</th><th>函数</th><th>文件</th></tr></thead>
+    <tbody>
+      <tr><td>入口：一个包进来，按元素类型分发</td><td><code>aac_decode_frame</code></td><td><code>aacdec.c</code></td></tr>
+      <tr><td>读每个频带的码本</td><td><code>decode_band_types</code></td><td><code>aacdec.c</code></td></tr>
+      <tr><td>读缩放系数</td><td><code>decode_scalefactors</code></td><td><code>aacdec.c</code></td></tr>
+      <tr><td>哈夫曼解码、反量化、乘缩放系数</td><td><code>decode_spectrum_and_dequant</code></td><td><code>aacdec_proc_template.c</code></td></tr>
+      <tr><td>可选工具，然后调用反变换</td><td><code>spectral_to_sample</code></td><td><code>aacdec.c</code></td></tr>
+      <tr><td>时域噪声整形</td><td><code>apply_tns</code></td><td><code>aacdec_dsp_template.c</code></td></tr>
+      <tr><td>反变换、加窗、重叠相加</td><td><code>imdct_and_windowing</code></td><td><code>aacdec_dsp_template.c</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>同一份代码编出两个解码器：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>解码器名</th><th>内部运算</th><th>输出采样格式</th></tr></thead>
+    <tbody>
+      <tr><td><code>aac</code></td><td>浮点</td><td><code>fltp</code>（平面 float）</td></tr>
+      <tr><td><code>aac_fixed</code></td><td>定点整数，给没有浮点单元的 CPU 用</td><td><code>s32p</code>（平面 32 位整数）</td></tr>
+    </tbody>
+  </table></div>
+  <p>用的时候要知道的几件事：</p>
+  <ul>
+    <li><strong>一个包出一帧，没有延迟。</strong>和视频解码器不同，送进一个包马上能收到对应的那一帧。</li>
+    <li><strong>MP4 来的包必须带 <code>extradata</code>。</strong><code>avcodec_parameters_to_context</code> 会把它从流参数拷到解码器上。ADTS 的包自带头，不需要。</li>
+    <li><strong>跳转后要调 <code>avcodec_flush_buffers</code>。</strong>它清掉上一节说的"上一个包的后半段"，否则跳转后的第一帧会混进跳转前的声音。</li>
+    <li><strong>HE-AAC、HE-AAC v2 和 xHE-AAC 都由同一个 <code>aac</code> 解码器处理</strong>，不用换名字。</li>
+  </ul>
+</section>
+
+<section id="android">
+  <h2><span class="n">12</span>Android 自带的解码器</h2>
+  <p>不用 FFmpeg 的话，Android 的 <code>MediaCodec</code> 也能解 AAC。它是软件解码器，基于 Fraunhofer 的 FDK AAC 库，所有设备上都有。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>FFmpeg <code>aac</code></th><th>MediaCodec</th></tr></thead>
+    <tbody>
+      <tr><td>怎么选中</td><td><code>avcodec_find_decoder(AV_CODEC_ID_AAC)</code></td><td>MIME 类型 <code>audio/mp4a-latm</code></td></tr>
+      <tr><td>配置从哪给</td><td><code>extradata</code></td><td><code>MediaFormat</code> 的 <code>csd-0</code>，<code>MediaExtractor</code> 会自动填好</td></tr>
+      <tr><td>输入 ADTS</td><td>直接送</td><td>格式里设 <code>KEY_IS_ADTS = 1</code></td></tr>
+      <tr><td>默认输出</td><td>平面 float，每个声道一个数组</td><td>16 位整数，左右交错</td></tr>
+      <tr><td>送给 AudioTrack 之前</td><td>要用 <code>swr_convert</code> 转成交错排列</td><td>可以直接写</td></tr>
+      <tr><td>开头垫的那一包</td><td>解封装器打上丢弃标记</td><td><code>MediaExtractor</code> 把长度放进格式的 <code>encoder-delay</code>，解码器据此丢掉</td></tr>
+    </tbody>
+  </table></div>
+  <p>两边解同一个文件，听起来一样，数值不会逐个相同，原因见第 07 节。</p>
+</section>
+
+<section id="project">
+  <h2><span class="n">13</span>落到 music_demo</h2>
+  <p>工程的 FFmpeg 裁剪列表里，和 AAC 有关的组件已经齐了：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>组件</th><th>名字</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td>解码器</td><td><code>aac</code></td><td>本文讲的这个</td></tr>
+      <tr><td>解析器</td><td><code>aac</code></td><td>读 ADTS 流时找包的边界</td></tr>
+      <tr><td>解封装器</td><td><code>aac</code>、<code>mov</code></td><td>裸 <code>.aac</code> 文件；MP4 和 M4A</td></tr>
+      <tr><td>码流过滤器</td><td><code>aac_adtstoasc</code></td><td>把 ADTS 的包装进 MP4</td></tr>
+      <tr><td>编码器</td><td><code>aac</code></td><td>导出视频时压音轨</td></tr>
+    </tbody>
+  </table></div>
+  <p>但 App 里现在还没有声音。<code>video_decoder.c</code> 的读包循环里，音频包读出来就直接丢掉了：</p>
+<pre><code>if (d-&gt;pkt-&gt;stream_index != d-&gt;video_index) {  // 音频包直接丢掉
+  av_packet_unref(d-&gt;pkt);
+  continue;
+}</code></pre>
+  <p>要把声音接上，需要补的是这条线上解码之后的部分：给音轨也开一个解码器，把解出的 <code>fltp</code> 用 <code>libswresample</code> 转成交错排列，再写给 AudioTrack。后两步见 <a href="../pcm/pcm-to-speaker.html">从 PCM 到喇叭</a>。画面也要改成跟着声音的进度走，而不是现在这样跟着系统时钟走。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>解码器打不开，或者第一个包就报数据无效</td><td>MP4 来的包没有配上 AudioSpecificConfig</td><td>打开前调 <code>avcodec_parameters_to_context</code>；MediaCodec 检查 <code>csd-0</code></td></tr>
+      <tr><td>声音慢一半、低八度</td><td>HE-AAC 没有明确声明，按容器写的采样率建了 AudioTrack</td><td>以解码输出的采样率和声道数为准</td></tr>
+      <tr><td>从 MP4 里抽出的包存成 <code>.aac</code> 不能播</td><td>没有 ADTS 头，播放器找不到包的边界</td><td>用 ADTS 封装器写，或者自己给每个包加 7 字节头</td></tr>
+      <tr><td>把 <code>.aac</code> 的包写进 MP4 后不能播</td><td>包里还带着 ADTS 头，容器里又没有配置</td><td>过一遍 <code>aac_adtstoasc</code></td></tr>
+      <tr><td>跳转后开头有一声杂音</td><td>解码器里还留着跳转前的后半段</td><td>清空解码器，从目标前一个包开始解，丢掉第一帧</td></tr>
+      <tr><td>两段音频拼接处有"咔"的一声</td><td>接缝两边的包不是连续编码的</td><td>解成 PCM 后再拼，需要的话重新编码</td></tr>
+      <tr><td>两个解码器的输出逐个数对不上</td><td>噪声替代用的是随机数，浮点和定点的舍入也不同</td><td>比误差大小，不比相等</td></tr>
+      <tr><td>包数 × 1024 和时长对不上</td><td>开头垫了一包，最后一包没有填满</td><td>以容器的时间戳为准</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">包头字段、码本分配和窗序列的统计，是按 ISO/IEC 14496-3 的语法从 music_demo 工程的 <code>landscape_720p.mp4</code> 逐位解析的，345 个长窗包的频带信息全部解析到刚好对齐。ADTS 头取自 <code>ffmpeg -c:a copy -f adts</code> 的输出。函数名和解码器的输出格式取自工程里的 FFmpeg n8.1.3 源码。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

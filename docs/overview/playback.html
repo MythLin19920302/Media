@@ -351,7 +351,7 @@ h1 span{animation:sheen 7s linear infinite}
       <div><span class="k">ANDROID 系统</span><code>MediaExtractor.setDataSource(fd)</code></div>
       <div class="me"><span class="k">本工程</span>把 fd 传给 FFmpeg 的 fd 协议，见 <code>video_decoder.c</code></div>
     </div>
-    <div class="more"><span class="k">细看</span><span class="todo">容器与 MP4 结构 · 还没写</span></div>
+    <div class="more"><span class="k">细看</span><a href="../general/container/mp4-format.html">MP4 封装格式</a></div>
   </section>
 
   <div class="flow" aria-hidden="true"><i class="n"></i><span>字节</span></div>
@@ -375,7 +375,7 @@ h1 span{animation:sheen 7s linear infinite}
       <div><span class="k">ANDROID 系统</span><code>MediaExtractor.readSampleData()</code></div>
       <div class="me"><span class="k">本工程</span>用 <code>av_read_frame()</code> 读包；读到音频包直接丢掉，音频还没接</div>
     </div>
-    <div class="more"><span class="k">细看</span><span class="todo">解封装与时间戳 · 还没写</span></div>
+    <div class="more"><span class="k">细看</span><a href="../general/container/mp4-format.html#where">MP4：每一帧在哪、什么时候显示</a></div>
   </section>
 
   <div class="flow" aria-hidden="true"><i class="v"></i><i class="a"></i><span>视频包 + 音频包</span></div>
@@ -418,7 +418,7 @@ h1 span{animation:sheen 7s linear infinite}
       <div><span class="k">ANDROID 系统</span><code>MediaCodec</code>，Media3 默认用它</div>
       <div class="me"><span class="k">本工程</span>视频走软解，按 CPU 核数多线程；音频解码还没接。编译 FFmpeg 时只留了 8 个解码器</div>
     </div>
-    <div class="more"><span class="k">细看</span><a href="../audio/codec/index.html">音频编码</a><a href="../audio/pcm/index.html">PCM</a><a href="../video/yuv/index.html">YUV 与像素格式</a><a href="../build/cross-compile/index.html">交叉编译</a><span class="todo">视频编码与 I/P/B 帧 · 还没写</span><span class="todo">MediaCodec 硬解 · 还没写</span></div>
+    <div class="more"><span class="k">细看</span><a href="../video/codec/h264-decoding.html">H.264 解码</a><a href="../audio/codec/aac-decoding.html">AAC 解码</a><a href="../audio/codec/audio-encoding.html">音频编码总览</a><a href="../audio/pcm/index.html">PCM</a><a href="../video/yuv/index.html">YUV 与像素格式</a><a href="../general/build/index.html">构建</a><span class="todo">MediaCodec 硬解 · 还没写</span></div>
   </section>
 
   <div class="flow" aria-hidden="true"><i class="v"></i><i class="a"></i><span>YUV 帧 + PCM</span></div>
