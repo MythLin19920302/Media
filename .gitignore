@@ -18,3 +18,6 @@ local.properties
 /ffmpeg/out/
 # 每次构建现编出来的桥接库（debug/release 会互相覆盖），不入库；FFmpeg 的预编译库要入库
 /app/libs/*/libffmpeg_bridge.so
+# 个人 IDE 状态，会随使用自动变化，不入库
+/.idea/appInsightsSettings.xml
+/.idea/deploymentTargetSelector.xml
