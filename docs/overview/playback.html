@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>一个视频是怎么播出来的 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<style>
+/* 总览页，和首页同一套「晴空」配色。全页只有两种数据色：橙 = 视频，蓝 = 音频；紫 = 同步信号和"本工程"标记。
+   页面从上到下就是流水线本身：六个站点，站点之间的竖线是数据在往下流。 */
+:root{--bg:#FBFAF6;--fg:#1D2330;--muted:#687083;--card:#FFFFFF;--chip:rgba(255,255,255,.75);--chip-b:rgba(29,35,48,.08);--line:rgba(29,35,48,.2);--shadow:rgba(29,35,48,.5);
+  --g1:#2F6BDE;--g2:#7B5CF0;--g3:#D9582B;--blob1:#BFD9FF;--blob2:#FFD3BD;--blob3:#BDEBD5;
+  --sky:#DCEBFF;--sky-d:#2F6BDE;--peach:#FFE4D6;--peach-d:#D9582B;--mint:#D8F3E6;--mint-d:#128A5B;--violet:#E9E2FF;--violet-d:#6B4FE0;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;--sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--chip:rgba(255,255,255,.06);--chip-b:rgba(255,255,255,.12);--line:rgba(255,255,255,.24);--shadow:rgba(0,0,0,.8);
+  --g1:#7FB0FF;--g2:#A995FF;--g3:#FF9A73;--blob1:#1B3A6B;--blob2:#5A2E1F;--blob3:#16483A;
+  --sky:#16233D;--sky-d:#7FB0FF;--peach:#37221A;--peach-d:#FF9A73;--mint:#14302A;--mint-d:#5FD4A4;--violet:#251F42;--violet-d:#A995FF;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--chip:rgba(255,255,255,.06);--chip-b:rgba(255,255,255,.12);--line:rgba(255,255,255,.24);--shadow:rgba(0,0,0,.8);
+  --g1:#7FB0FF;--g2:#A995FF;--g3:#FF9A73;--blob1:#1B3A6B;--blob2:#5A2E1F;--blob3:#16483A;
+  --sky:#16233D;--sky-d:#7FB0FF;--peach:#37221A;--peach-d:#FF9A73;--mint:#14302A;--mint-d:#5FD4A4;--violet:#251F42;--violet-d:#A995FF;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:78px}
+body{margin:0;color:var(--fg);font-family:var(--sans);line-height:1.75;-webkit-font-smoothing:antialiased;background:var(--bg);overflow-x:hidden;position:relative;min-height:100vh}
+a{color:inherit;text-decoration:none}
+a:focus-visible{outline:2px solid var(--g1);outline-offset:3px;border-radius:8px}
+code{font-family:var(--mono);font-size:.86em;background:var(--bg);padding:1px 6px;border-radius:6px;overflow-wrap:anywhere}
+
+.blob{position:fixed;border-radius:50%;filter:blur(70px);z-index:0;pointer-events:none}
+.blob.b1{width:520px;height:520px;left:-200px;top:120px;background:radial-gradient(circle,var(--blob1),transparent 70%)}
+.blob.b2{width:600px;height:600px;right:-220px;top:-120px;background:radial-gradient(circle,var(--blob2),transparent 70%)}
+.blob.b3{width:520px;height:520px;right:-140px;bottom:-220px;background:radial-gradient(circle,var(--blob3),transparent 70%)}
+
+.page{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:22px 40px 64px}
+.crumb{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.crumb a{padding:6px 14px;border-radius:999px;background:var(--chip);border:1px solid var(--chip-b);color:var(--fg)}
+.crumb a:hover{border-color:var(--muted)}
+
+/* 首屏 */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px;align-items:end;padding:50px 0 30px}
+.eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--g1)}
+h1{font-size:clamp(38px,6.2vw,78px);line-height:1.1;font-weight:900;margin:10px 0 0;letter-spacing:-.02em;width:fit-content;view-transition-name:page-title}
+h1 span{background:linear-gradient(100deg,var(--g1),var(--g2) 30%,var(--g3) 55%,var(--g2) 80%,var(--g1));background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{max-width:44ch;color:var(--muted);font-size:17px;margin:18px 0 0}
+.stats{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.stat{background:var(--card);border-radius:20px;padding:14px 20px;min-width:104px;box-shadow:0 10px 30px -18px var(--shadow)}
+.stat b{display:block;font-size:30px;line-height:1.15;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat span{font-size:12.5px;color:var(--muted)}
+
+/* 流水线总图 */
+.map{margin:0;background:var(--card);border-radius:30px;padding:18px 18px 16px;box-shadow:0 18px 40px -30px var(--shadow)}
+.map-scroll{overflow-x:auto}
+.map svg{display:block;width:100%;min-width:900px;height:auto;font-family:var(--sans)}
+.map figcaption{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin:10px 8px 0;font-size:13.5px;color:var(--muted)}
+.map figcaption i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.e{fill:none;stroke-width:2.5;stroke-linecap:round}
+.e.n{stroke:var(--muted)}.e.v{stroke:var(--peach-d)}.e.a{stroke:var(--sky-d)}.e.s{stroke:var(--violet-d);stroke-width:2;stroke-dasharray:5 6}
+.ah.n{fill:var(--muted)}.ah.v{fill:var(--peach-d)}.ah.a{fill:var(--sky-d)}.ah.s{fill:var(--violet-d)}
+.dot.v{fill:var(--peach-d)}.dot.a{fill:var(--sky-d)}
+.nd rect{fill:var(--card);stroke:var(--line);stroke-width:1.5;transition:stroke .18s}
+.nd.v rect{fill:var(--peach);stroke:transparent}.nd.a rect{fill:var(--sky);stroke:transparent}
+.nd .ck{fill:var(--violet);stroke:var(--violet-d);stroke-width:2;transition:stroke-width .18s}
+.nd .hand{stroke:var(--violet-d);stroke-width:2.5;stroke-linecap:round}
+.nd .nm{font-size:17px;font-weight:700;fill:var(--fg)}
+.nd .sb{font-size:12px;font-family:var(--mono);fill:var(--muted)}
+.nd .bd{fill:var(--fg)}.nd .bn{fill:var(--bg);font-size:11px;font-family:var(--mono);font-weight:500}
+a.nd:hover rect{stroke:var(--fg)}a.nd:hover .ck{stroke-width:3.5}
+.gate{fill:var(--card);stroke:var(--violet-d);stroke-width:2.5}
+.lb{font-size:13px;fill:var(--muted)}.lb.v{fill:var(--peach-d)}.lb.a{fill:var(--sky-d)}.lb.s{fill:var(--violet-d)}
+
+/* 进度条：滚到哪一步，哪一步亮 */
+.rail{position:sticky;top:10px;z-index:5;display:flex;gap:4px;width:fit-content;max-width:100%;margin:22px auto 0;padding:6px;overflow-x:auto;border-radius:999px;background:color-mix(in srgb,var(--card) 80%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--chip-b);box-shadow:0 12px 30px -22px var(--shadow)}
+.rail a{display:flex;align-items:center;gap:7px;padding:6px 14px;border-radius:999px;font-size:13.5px;white-space:nowrap;color:var(--muted);transition:background .25s,color .25s}
+.rail a b{font-family:var(--mono);font-weight:500;font-size:11.5px}
+.rail a:hover{color:var(--fg)}
+.rail a.on{background:linear-gradient(120deg,var(--g1),var(--g2));color:var(--bg)}
+
+/* 站点 */
+.st,.panel{background:var(--card);border-radius:30px;padding:30px 30px 28px;box-shadow:0 18px 40px -30px var(--shadow)}
+.st:first-of-type{margin-top:26px}
+.st-h{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 18px;align-items:center}
+.st-n{grid-row:1/3;font-size:62px;font-weight:900;line-height:1;font-variant-numeric:tabular-nums;background:linear-gradient(135deg,var(--g1),var(--g2));-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{margin:0;font-size:27px;font-weight:900;line-height:1.3}
+.one{margin:0;color:var(--muted);font-size:16px}
+.st p,.panel p{margin:14px 0 0;max-width:74ch}
+h3{margin:24px 0 0;font-size:16.5px;font-weight:700}
+.note{font-size:14px;color:var(--muted)}
+
+/* 站点之间：数据往下流 */
+.flow{position:relative;height:72px;display:flex;justify-content:center;gap:12px}
+.flow i{width:4px;border-radius:2px;opacity:.85;background:linear-gradient(to bottom,var(--c) 50%,transparent 50%) 0 0/100% 14px repeat-y;animation:flow .7s linear infinite}
+.flow i.n{--c:var(--muted)}.flow i.v{--c:var(--peach-d)}.flow i.a{--c:var(--sky-d)}
+.flow span{position:absolute;left:calc(50% + 26px);top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+@keyframes flow{to{background-position:0 14px}}
+
+/* 通用小部件 */
+.box{border-radius:18px;padding:14px 16px;background:var(--tint)}
+.box.v{--tint:var(--peach);--tone:var(--peach-d)}.box.a{--tint:var(--sky);--tone:var(--sky-d)}
+.box .k{display:block;font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;color:var(--tone)}
+.box .big{display:block;font-size:21px;font-weight:900;line-height:1.4;font-variant-numeric:tabular-nums}
+.box .sm{display:block;font-size:13.5px;color:var(--muted)}
+.box p{margin:6px 0 0;font-size:14.5px}
+.morph{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1.3fr);gap:12px;align-items:stretch;margin-top:12px}
+.morph .to{align-self:center;text-align:center;font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.3}
+.morph .to b{display:block;font-size:20px;color:var(--fg)}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+.who{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:20px}
+.who>div{border:1px solid var(--line);border-radius:16px;padding:12px 14px;font-size:14px}
+.who .k{display:block;font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.who .me{border-color:transparent;background:var(--violet)}.who .me .k{color:var(--violet-d)}.who .me code{background:var(--card)}
+.tag{font-family:var(--mono);font-size:11px;font-weight:500;padding:2px 9px;border-radius:999px;background:var(--violet-d);color:var(--bg);white-space:nowrap}
+.more{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:20px;font-size:14px}
+.more .k{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-right:2px}
+.more a{padding:6px 14px;border-radius:999px;background:var(--bg);font-weight:500;border:1px solid transparent;transition:border-color .18s,transform .18s}
+.more a:hover{border-color:var(--g1);transform:translateY(-2px)}
+.more .todo{padding:6px 14px;border-radius:999px;border:1.5px dashed var(--line);color:var(--muted)}
+
+/* 01 文件构成 */
+.comp{display:flex;gap:2px;height:34px;margin-top:18px;border-radius:12px;overflow:hidden}
+.comp i{display:block}.comp .v{flex:84056;background:var(--peach-d)}.comp .a{flex:64492;background:var(--sky-d)}.comp .n{flex:10113;background:var(--muted);opacity:.5}
+.legend{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px;font-size:13.5px;color:var(--muted)}
+.legend b{display:block;font-size:18px;font-weight:900;color:var(--fg);font-variant-numeric:tabular-nums}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+/* 02 包 */
+.pk{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}
+.pk span{display:grid;place-items:center;min-width:50px;height:50px;padding:0 9px;border-radius:13px;font-family:var(--mono);font-size:11.5px;line-height:1.25;text-align:center;background:var(--tint)}
+.pk .v{--tint:var(--peach)}.pk .a{--tint:var(--sky)}
+.pk .key{background:var(--peach-d);color:var(--bg)}
+.pk b{display:block;font-weight:500;font-size:13px}
+.tags4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+.tags4 div{border:1px solid var(--line);border-radius:16px;padding:10px 14px;font-size:13.5px;color:var(--muted)}
+.tags4 b{display:block;font-size:15px;color:var(--fg)}
+/* 03 帧的顺序 */
+.order{display:grid;grid-template-columns:auto repeat(9,minmax(0,1fr));gap:6px;align-items:center;margin-top:12px;font-family:var(--mono);font-size:12.5px}
+.order .lab{font-family:var(--sans);font-size:13.5px;color:var(--muted);padding-right:8px;white-space:nowrap}
+.order .f{display:grid;place-items:center;height:38px;border-radius:10px;background:var(--peach)}
+.order .f.i{background:var(--peach-d);color:var(--bg)}
+.order .f.p{box-shadow:inset 0 0 0 2px var(--peach-d)}
+.way{border:1px solid var(--line);border-radius:18px;padding:16px 18px}
+.way h4{margin:0;font-size:16.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.way .by{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.way ul{margin:8px 0 0;padding-left:1.2em;font-size:14.5px}
+/* 04 同步小实验 */
+.sync{margin-top:16px;border-radius:20px;padding:18px 20px;background:var(--bg)}
+.sync-top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline;font-size:14.5px}
+.sync-top output{font-family:var(--mono);font-size:17px;font-weight:500}
+.slider{position:relative;height:28px;margin-top:12px}
+.zones{position:absolute;left:11px;right:11px;top:8px;height:12px;display:flex;border-radius:6px;overflow:hidden}
+.zones i{display:block}.zones .drop{flex:110;background:var(--peach-d)}.zones .now{flex:40;background:var(--mint-d)}.zones .wait{flex:150;background:var(--sky-d)}
+.slider input{position:absolute;inset:0;width:100%;height:28px;margin:0;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer}
+.slider input::-webkit-slider-runnable-track{height:28px;background:transparent}
+.slider input::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;margin-top:3px;border-radius:50%;background:var(--card);border:3px solid var(--fg);box-shadow:0 4px 10px -4px var(--shadow)}
+.slider input::-moz-range-track{background:transparent}
+.slider input::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--card);border:3px solid var(--fg)}
+.scale{display:flex;font-size:12px;color:var(--muted);margin:2px 11px 0;text-align:center;white-space:nowrap}
+.scale span{min-width:0}
+.verdict{margin:12px 0 0!important;padding:10px 14px;border-radius:12px;font-size:15px;font-weight:500;max-width:none!important}
+.verdict.drop{background:var(--peach)}.verdict.now{background:var(--mint)}.verdict.wait{background:var(--sky)}
+/* 05 三条画面路线 */
+.routes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}
+.route{border-radius:18px;padding:16px;background:var(--peach)}
+.route h4{margin:0 0 8px;font-size:16.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.chain{display:flex;flex-wrap:wrap;gap:4px 5px;align-items:center;font-family:var(--mono);font-size:12px;margin-bottom:8px}
+.chain i{font-style:normal;background:var(--card);padding:3px 9px;border-radius:999px}
+.route p{margin:0;font-size:14.5px}
+/* 对照表 */
+.panel{margin-top:26px}
+.tbl{overflow-x:auto;margin-top:14px}
+table{border-collapse:collapse;width:100%;min-width:680px;font-size:14.5px}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--chip-b);vertical-align:top}
+th{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--muted);border-bottom-color:var(--line)}
+td:first-child{font-weight:700;white-space:nowrap}
+.me-col{background:var(--violet)}th.me-col{color:var(--violet-d);border-radius:14px 14px 0 0}
+/* 播放和导出两条线 */
+.lines{display:grid;gap:10px;margin-top:16px}
+.line{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:14px}
+.line .nm{font-family:var(--mono);font-size:12px;color:var(--muted);width:40px}
+.line i{font-style:normal;padding:5px 13px;border-radius:999px;background:var(--bg)}
+.line i.same{background:var(--mint)}.line i.diff{background:var(--violet)}
+.line b{color:var(--muted);font-weight:400}
+.foot{margin-top:36px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+@media (max-width:760px){
+  .page{padding:18px max(16px,env(safe-area-inset-right,0px)) 44px max(16px,env(safe-area-inset-left,0px))}
+  .hero{grid-template-columns:minmax(0,1fr);padding:34px 0 24px}
+  .stats{justify-content:flex-start}.stat{min-width:0;padding:10px 16px;border-radius:16px}.stat b{font-size:24px}
+  .map{border-radius:24px;padding:12px}
+  .rail{margin-left:0;margin-right:0}
+  .st,.panel{border-radius:24px;padding:22px 16px 20px}
+  .st-n{font-size:44px}h2{font-size:22px}
+  .morph{grid-template-columns:minmax(0,1fr)}.morph .to b{display:inline;margin-right:6px}
+  .two,.who,.routes,.legend{grid-template-columns:minmax(0,1fr)}
+  .tags4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .order .lab{grid-column:1/-1;padding:6px 0 0}.order{grid-template-columns:repeat(9,minmax(0,1fr))}
+}
+
+/* ---- 动画 ---- 系统开了"减少动态效果"时全部关闭，流水线上的小点停在原地 */
+@keyframes rise{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:translateY(14px) scale(.92)}60%{transform:translateY(-2px) scale(1.03)}to{opacity:1;transform:none}}
+@keyframes sheen{to{background-position:200% 50%}}
+@keyframes drift1{to{transform:translate(70px,50px) scale(1.12)}}
+@keyframes drift2{to{transform:translate(-80px,60px) scale(1.08)}}
+@keyframes drift3{to{transform:translate(-50px,-70px) scale(1.15)}}
+.blob.b1{animation:drift1 16s ease-in-out infinite alternate}
+.blob.b2{animation:drift2 20s ease-in-out infinite alternate}
+.blob.b3{animation:drift3 18s ease-in-out infinite alternate}
+.crumb,.eyebrow{animation:rise .6s cubic-bezier(.2,.7,.2,1) both}
+h1{animation:rise .8s cubic-bezier(.2,.7,.2,1) .05s both}
+h1 span{animation:sheen 7s linear infinite}
+.lede{animation:rise .8s cubic-bezier(.2,.7,.2,1) .18s both}
+.stat{animation:pop .7s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(.3s + var(--i,0) * .08s)}
+.map{animation:rise .9s cubic-bezier(.2,.7,.2,1) .4s both}
+.js .st,.js .flow,.js .panel{opacity:0;transform:translateY(26px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
+.js .in{opacity:1;transform:none}
+/* 页面过渡：和首页、assets/kb.css 里的规则配套 */
+@view-transition{navigation:auto}
+@keyframes vt-out{to{opacity:0;transform:translateY(-12px)}}
+@keyframes vt-in{from{opacity:0;transform:translateY(18px)}}
+::view-transition-old(root){animation:vt-out .2s ease-in both}
+::view-transition-new(root){animation:vt-in .38s cubic-bezier(.2,.7,.2,1) .08s both}
+::view-transition-group(page-title){animation-duration:.45s;animation-timing-function:cubic-bezier(.2,.7,.2,1)}
+::view-transition-old(page-title),::view-transition-new(page-title){height:100%;object-fit:contain;object-position:left center}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}
+  .blob,.crumb,.eyebrow,h1,h1 span,.lede,.stat,.map,.flow i{animation:none}
+  .rail a,.more a{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="page">
+  <nav class="crumb" aria-label="位置"><a href="../index.html">← 知识库</a><span>/</span><span>总览</span></nav>
+
+  <header class="hero">
+    <div>
+      <div class="eyebrow">总览 · ANDROID 播放全流程</div>
+      <h1>一个视频是怎么<span>播出来</span>的</h1>
+      <p class="lede">从一个 MP4 文件，到屏幕亮起、喇叭出声，Android 上要走六步。这一页是知识库的总纲：每一步做什么，数据变成了什么样，去哪里细看。</p>
+    </div>
+    <div class="stats" aria-label="示例视频的数据量">
+      <div class="stat" style="--i:0"><b>159 KB</b><span>文件大小</span></div>
+      <div class="stat" style="--i:1"><b>333 MB</b><span>解码之后</span></div>
+      <div class="stat" style="--i:2"><b>2100 倍</b><span>播放时要还原的量</span></div>
+    </div>
+  </header>
+
+  <!-- 流水线总图。坐标都落在 10 的格子上；小点用 animateMotion 沿着连线走，begin 取负值，一打开就已经在路上 -->
+  <figure class="map">
+    <div class="map-scroll">
+    <svg viewBox="0 58 1180 276" role="img" aria-label="播放流水线：MP4 文件经解封装拆成视频包和音频包；视频包解码成 YUV 帧，经同步放行后渲染到屏幕；音频包解码成 PCM，写入 AudioTrack 后从喇叭播出；AudioTrack 的播放位置作为时钟，决定每帧画面等待还是丢弃。">
+      <defs>
+        <marker id="ah-n" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah n" d="M0 0 10 5 0 10z"/></marker>
+        <marker id="ah-v" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah v" d="M0 0 10 5 0 10z"/></marker>
+        <marker id="ah-a" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah a" d="M0 0 10 5 0 10z"/></marker>
+        <marker id="ah-s" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah s" d="M0 0 10 5 0 10z"/></marker>
+      </defs>
+
+      <!-- 连线 -->
+      <path id="p0" class="e n" d="M144 200H204" marker-end="url(#ah-n)"/>
+      <path id="pv1" class="e v" d="M334 190C392 190 382 110 438 110" marker-end="url(#ah-v)"/>
+      <path id="pa1" class="e a" d="M334 210C392 210 382 290 438 290" marker-end="url(#ah-a)"/>
+      <path id="pv2" class="e v" d="M568 110H798" marker-end="url(#ah-v)"/>
+      <path id="pa2" class="e a" d="M568 290H798" marker-end="url(#ah-a)"/>
+      <path id="pv3" class="e v" d="M928 110H1034" marker-end="url(#ah-v)"/>
+      <path id="pa3" class="e a" d="M928 290H1034" marker-end="url(#ah-a)"/>
+      <path class="e s" d="M864 260V200H732" marker-end="url(#ah-s)"/>
+      <path class="e s" d="M700 170V120" marker-end="url(#ah-s)"/>
+
+      <!-- 连线上流动的数据：小圆点是压缩包，方块是一帧画面，短条是一块 PCM -->
+      <g aria-hidden="true">
+        <circle class="dot v" r="4.5"><animateMotion dur="1.5s" begin="0s" repeatCount="indefinite"><mpath href="#p0"/></animateMotion></circle>
+        <circle class="dot a" r="4.5"><animateMotion dur="1.5s" begin="-0.5s" repeatCount="indefinite"><mpath href="#p0"/></animateMotion></circle>
+        <circle class="dot v" r="4.5"><animateMotion dur="1.5s" begin="-1s" repeatCount="indefinite"><mpath href="#p0"/></animateMotion></circle>
+        <circle class="dot v" r="4.5"><animateMotion dur="2.4s" begin="0s" repeatCount="indefinite"><mpath href="#pv1"/></animateMotion></circle>
+        <circle class="dot v" r="4.5"><animateMotion dur="2.4s" begin="-0.8s" repeatCount="indefinite"><mpath href="#pv1"/></animateMotion></circle>
+        <circle class="dot v" r="4.5"><animateMotion dur="2.4s" begin="-1.6s" repeatCount="indefinite"><mpath href="#pv1"/></animateMotion></circle>
+        <circle class="dot a" r="4.5"><animateMotion dur="2.4s" begin="-0.3s" repeatCount="indefinite"><mpath href="#pa1"/></animateMotion></circle>
+        <circle class="dot a" r="4.5"><animateMotion dur="2.4s" begin="-0.9s" repeatCount="indefinite"><mpath href="#pa1"/></animateMotion></circle>
+        <circle class="dot a" r="4.5"><animateMotion dur="2.4s" begin="-1.5s" repeatCount="indefinite"><mpath href="#pa1"/></animateMotion></circle>
+        <circle class="dot a" r="4.5"><animateMotion dur="2.4s" begin="-2.1s" repeatCount="indefinite"><mpath href="#pa1"/></animateMotion></circle>
+        <rect class="dot v" x="-9" y="-7" width="18" height="14" rx="3"><animateMotion dur="4.2s" begin="0s" repeatCount="indefinite"><mpath href="#pv2"/></animateMotion></rect>
+        <rect class="dot v" x="-9" y="-7" width="18" height="14" rx="3"><animateMotion dur="4.2s" begin="-1.4s" repeatCount="indefinite"><mpath href="#pv2"/></animateMotion></rect>
+        <rect class="dot v" x="-9" y="-7" width="18" height="14" rx="3"><animateMotion dur="4.2s" begin="-2.8s" repeatCount="indefinite"><mpath href="#pv2"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="4.2s" begin="-0.4s" repeatCount="indefinite"><mpath href="#pa2"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="4.2s" begin="-1.45s" repeatCount="indefinite"><mpath href="#pa2"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="4.2s" begin="-2.5s" repeatCount="indefinite"><mpath href="#pa2"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="4.2s" begin="-3.55s" repeatCount="indefinite"><mpath href="#pa2"/></animateMotion></rect>
+        <rect class="dot v" x="-9" y="-7" width="18" height="14" rx="3"><animateMotion dur="2.1s" begin="-0.2s" repeatCount="indefinite"><mpath href="#pv3"/></animateMotion></rect>
+        <rect class="dot v" x="-9" y="-7" width="18" height="14" rx="3"><animateMotion dur="2.1s" begin="-1.25s" repeatCount="indefinite"><mpath href="#pv3"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="2.1s" begin="-0.5s" repeatCount="indefinite"><mpath href="#pa3"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="2.1s" begin="-1.2s" repeatCount="indefinite"><mpath href="#pa3"/></animateMotion></rect>
+        <rect class="dot a" x="-10" y="-4" width="20" height="8" rx="4"><animateMotion dur="2.1s" begin="-1.9s" repeatCount="indefinite"><mpath href="#pa3"/></animateMotion></rect>
+      </g>
+      <circle class="gate" cx="700" cy="110" r="7"/>
+
+      <!-- 连线上的说明 -->
+      <text class="lb" x="174" y="188" text-anchor="middle">字节</text>
+      <text class="lb v" x="350" y="128" text-anchor="end">视频包 · H.264</text>
+      <text class="lb v" x="350" y="145" text-anchor="end">平均 350 字节</text>
+      <text class="lb a" x="350" y="264" text-anchor="end">音频包 · AAC</text>
+      <text class="lb a" x="350" y="281" text-anchor="end">平均 186 字节</text>
+      <text class="lb v" x="632" y="96" text-anchor="middle">YUV 帧 · 1.38 MB</text>
+      <text class="lb a" x="684" y="313" text-anchor="middle">PCM · 一块 1024 个采样</text>
+      <text class="lb v" x="981" y="96" text-anchor="middle">交给系统合成</text>
+      <text class="lb a" x="981" y="313" text-anchor="middle">交给系统混音</text>
+      <text class="lb s" x="798" y="191" text-anchor="middle">播到哪了</text>
+      <text class="lb s" x="686" y="151" text-anchor="end">早了等，晚了丢</text>
+
+      <!-- 节点：点了跳到下面对应的站点 -->
+      <a class="nd" href="#s1"><rect x="16" y="170" width="128" height="60" rx="18"/><text class="nm" x="80" y="197" text-anchor="middle">MP4 文件</text><text class="sb" x="80" y="216" text-anchor="middle">159 KB · 8 秒</text><circle class="bd" cx="30" cy="170" r="10"/><text class="bn" x="30" y="174" text-anchor="middle">1</text></a>
+      <a class="nd" href="#s2"><rect x="206" y="170" width="128" height="60" rx="18"/><text class="nm" x="270" y="197" text-anchor="middle">解封装</text><text class="sb" x="270" y="216" text-anchor="middle">拆成一个个包</text><circle class="bd" cx="220" cy="170" r="10"/><text class="bn" x="220" y="174" text-anchor="middle">2</text></a>
+      <a class="nd v" href="#s3"><rect x="440" y="80" width="128" height="60" rx="18"/><text class="nm" x="504" y="107" text-anchor="middle">视频解码</text><text class="sb" x="504" y="126" text-anchor="middle">H.264 → YUV</text><circle class="bd" cx="454" cy="80" r="10"/><text class="bn" x="454" y="84" text-anchor="middle">3</text></a>
+      <a class="nd a" href="#s3"><rect x="440" y="260" width="128" height="60" rx="18"/><text class="nm" x="504" y="287" text-anchor="middle">音频解码</text><text class="sb" x="504" y="306" text-anchor="middle">AAC → PCM</text><circle class="bd" cx="454" cy="260" r="10"/><text class="bn" x="454" y="264" text-anchor="middle">3</text></a>
+      <a class="nd" href="#s4"><circle class="ck" cx="700" cy="200" r="30"/><path class="hand" d="M700 200V184M700 200l11 7" fill="none"/><text class="nm" x="700" y="252" text-anchor="middle" style="font-size:14px">同步</text><circle class="bd" cx="676" cy="178" r="10"/><text class="bn" x="676" y="182" text-anchor="middle">4</text></a>
+      <a class="nd v" href="#s5"><rect x="800" y="80" width="128" height="60" rx="18"/><text class="nm" x="864" y="107" text-anchor="middle">渲染</text><text class="sb" x="864" y="126" text-anchor="middle">画到 Surface</text><circle class="bd" cx="814" cy="80" r="10"/><text class="bn" x="814" y="84" text-anchor="middle">5</text></a>
+      <a class="nd a" href="#s5"><rect x="800" y="260" width="128" height="60" rx="18"/><text class="nm" x="864" y="287" text-anchor="middle">AudioTrack</text><text class="sb" x="864" y="306" text-anchor="middle">写入 PCM</text><circle class="bd" cx="814" cy="260" r="10"/><text class="bn" x="814" y="264" text-anchor="middle">5</text></a>
+      <a class="nd v" href="#s6"><rect x="1036" y="80" width="128" height="60" rx="18"/><text class="nm" x="1100" y="107" text-anchor="middle">屏幕</text><text class="sb" x="1100" y="126" text-anchor="middle">每 16.7 ms 刷新</text><circle class="bd" cx="1050" cy="80" r="10"/><text class="bn" x="1050" y="84" text-anchor="middle">6</text></a>
+      <a class="nd a" href="#s6"><rect x="1036" y="260" width="128" height="60" rx="18"/><text class="nm" x="1100" y="287" text-anchor="middle">喇叭</text><text class="sb" x="1100" y="306" text-anchor="middle">每秒 44100 个值</text><circle class="bd" cx="1050" cy="260" r="10"/><text class="bn" x="1050" y="264" text-anchor="middle">6</text></a>
+    </svg>
+    </div>
+    <figcaption>
+      <span><i style="background:var(--peach-d)"></i>视频</span>
+      <span><i style="background:var(--sky-d)"></i>音频</span>
+      <span><i style="background:var(--violet-d)"></i>同步信号</span>
+      <span>小圆点是压缩包，解码后变成大块的原始数据。点任意一步看说明。</span>
+    </figcaption>
+  </figure>
+  <p class="note" style="margin:12px 8px 0">全页的数字来自工程里的示例视频 <code>landscape_720p.mp4</code>：8 秒、1280×720、30 帧，画面是一张彩条测试图。</p>
+
+  <nav class="rail" aria-label="六个步骤">
+    <a href="#s1"><b>1</b>文件</a><a href="#s2"><b>2</b>解封装</a><a href="#s3"><b>3</b>解码</a><a href="#s4"><b>4</b>同步</a><a href="#s5"><b>5</b>渲染</a><a href="#s6"><b>6</b>出画出声</a>
+  </nav>
+
+  <!-- ============ 1 文件 ============ -->
+  <section class="st" id="s1">
+    <div class="st-h"><div class="st-n">1</div><h2>文件：一个盒子，装着两条轨</h2><p class="one">MP4 是容器，不是编码。它只负责把压缩好的画面和声音装在一起。</p></div>
+    <div class="comp" role="img" aria-label="文件构成：视频轨 84056 字节，音频轨 64492 字节，索引和文件头 10113 字节"><i class="v"></i><i class="a"></i><i class="n"></i></div>
+    <div class="legend">
+      <div><i style="background:var(--peach-d)"></i>视频轨 · H.264<b>84,056 字节</b>240 个包</div>
+      <div><i style="background:var(--sky-d)"></i>音频轨 · AAC<b>64,492 字节</b>346 个包</div>
+      <div><i style="background:var(--muted);opacity:.5"></i>索引和文件头<b>10,113 字节</b>每个包在哪、多大、什么时间用</div>
+    </div>
+    <p>播放器先读索引，才知道去文件的哪个位置取数据；拖进度条也靠它。</p>
+    <p>Android 上的视频常常不是一个路径，而是 assets 或相册里的内容，拿到手的是一个文件描述符（fd）。</p>
+    <div class="who">
+      <div><span class="k">FFMPEG</span><code>avformat_open_input()</code>，地址写 <code>fd:</code></div>
+      <div><span class="k">ANDROID 系统</span><code>MediaExtractor.setDataSource(fd)</code></div>
+      <div class="me"><span class="k">本工程</span>把 fd 传给 FFmpeg 的 fd 协议，见 <code>video_decoder.c</code></div>
+    </div>
+    <div class="more"><span class="k">细看</span><span class="todo">容器与 MP4 结构 · 还没写</span></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="n"></i><span>字节</span></div>
+
+  <!-- ============ 2 解封装 ============ -->
+  <section class="st" id="s2">
+    <div class="st-h"><div class="st-n">2</div><h2>解封装：把两条轨拆成一个个包</h2><p class="one">只拆，不解压。按索引把文件切成小包，贴上标签，一个一个往外递。</p></div>
+    <div class="pk" aria-label="示例视频最先读出的 12 个包">
+      <span class="v key"><b>I 帧</b>7618</span><span class="v"><b>P</b>957</span><span class="a"><b>音</b>271</span><span class="v"><b>B</b>208</span><span class="a"><b>音</b>243</span><span class="a"><b>音</b>139</span><span class="v"><b>B</b>225</span><span class="a"><b>音</b>163</span><span class="v"><b>B</b>94</span><span class="a"><b>音</b>197</span><span class="a"><b>音</b>212</span><span class="v"><b>P</b>800</span>
+    </div>
+    <p class="note">示例视频最先读出来的 12 个包，数字是字节数。视频包和音频包交错存放，顺着读就能边读边播。</p>
+    <h3>每个包带四个标签</h3>
+    <div class="tags4">
+      <div><b>哪条轨</b>视频还是音频</div>
+      <div><b>pts</b>什么时候显示或播放</div>
+      <div><b>dts</b>什么时候送去解码</div>
+      <div><b>关键帧</b>能不能从这里开始解</div>
+    </div>
+    <div class="who">
+      <div><span class="k">FFMPEG</span><code>av_read_frame()</code>，每次给一个 <code>AVPacket</code></div>
+      <div><span class="k">ANDROID 系统</span><code>MediaExtractor.readSampleData()</code></div>
+      <div class="me"><span class="k">本工程</span>用 <code>av_read_frame()</code> 读包；读到音频包直接丢掉，音频还没接</div>
+    </div>
+    <div class="more"><span class="k">细看</span><span class="todo">解封装与时间戳 · 还没写</span></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="v"></i><i class="a"></i><span>视频包 + 音频包</span></div>
+
+  <!-- ============ 3 解码 ============ -->
+  <section class="st" id="s3">
+    <div class="st-h"><div class="st-n">3</div><h2>解码：把压缩包还原成原始数据</h2><p class="one">整条线上最费算力的一步，数据量在这里膨胀。</p></div>
+    <div class="morph">
+      <div class="box v"><span class="k">视频包 · H.264</span><span class="big">平均 350 字节</span><span class="sm">只记录和别的帧的差别</span></div>
+      <div class="to"><b>→</b>约 3950 倍</div>
+      <div class="box v"><span class="k">一帧 YUV 画面</span><span class="big">1,382,400 字节</span><span class="sm">1280×720，每个像素都写出来</span></div>
+    </div>
+    <div class="morph">
+      <div class="box a"><span class="k">音频包 · AAC</span><span class="big">平均 186 字节</span><span class="sm">去掉了耳朵听不出的部分</span></div>
+      <div class="to"><b>→</b>约 22 倍</div>
+      <div class="box a"><span class="k">一块 PCM</span><span class="big">4,096 字节</span><span class="sm">1024 个采样，能播 23.2 毫秒</span></div>
+    </div>
+    <p class="note">示例视频是彩条测试图，只有一条色带和一个数字在动，所以压得特别狠。实拍视频一般是几十到一两百倍。</p>
+
+    <h3>为什么视频包不按显示顺序排</h3>
+    <p>I 帧是一张完整画面，P 帧只记和前面的差别，B 帧同时参考前面和后面。B 帧要等它后面那一帧先解出来，所以文件里按解码顺序存，解码器内部排好再往外吐。数字是显示时的第几帧：</p>
+    <div class="order">
+      <span class="lab">文件里</span><span class="f i">I 1</span><span class="f p">P 5</span><span class="f">B 3</span><span class="f">B 2</span><span class="f">B 4</span><span class="f p">P 9</span><span class="f">B 7</span><span class="f">B 6</span><span class="f">B 8</span>
+      <span class="lab">屏幕上</span><span class="f i">I 1</span><span class="f">B 2</span><span class="f">B 3</span><span class="f">B 4</span><span class="f p">P 5</span><span class="f">B 6</span><span class="f">B 7</span><span class="f">B 8</span><span class="f p">P 9</span>
+    </div>
+
+    <h3>两条路：软解和硬解</h3>
+    <div class="two">
+      <div class="way">
+        <h4>软解 <span class="by">FFmpeg · libavcodec</span><span class="tag">本工程</span></h4>
+        <ul><li>用 CPU 算，格式全，各机型结果一致</li><li>每一帧 YUV 都在内存里，想怎么处理都行</li><li>费电，分辨率高了会吃力</li></ul>
+      </div>
+      <div class="way">
+        <h4>硬解 <span class="by">Android · MediaCodec</span></h4>
+        <ul><li>用芯片里的解码电路，省电，高分辨率也流畅</li><li>可以直接解到 Surface，画面不经过你的代码</li><li>支持哪些格式、细节行为，随机型不同</li></ul>
+      </div>
+    </div>
+    <div class="who">
+      <div><span class="k">FFMPEG</span><code>avcodec_send_packet()</code> 送包，<code>avcodec_receive_frame()</code> 收帧</div>
+      <div><span class="k">ANDROID 系统</span><code>MediaCodec</code>，Media3 默认用它</div>
+      <div class="me"><span class="k">本工程</span>视频走软解，按 CPU 核数多线程；音频解码还没接。编译 FFmpeg 时只留了 8 个解码器</div>
+    </div>
+    <div class="more"><span class="k">细看</span><a href="../audio/codec/index.html">音频编码</a><a href="../audio/pcm/index.html">PCM</a><a href="../video/yuv/index.html">YUV 与像素格式</a><a href="../build/cross-compile/index.html">交叉编译</a><span class="todo">视频编码与 I/P/B 帧 · 还没写</span><span class="todo">MediaCodec 硬解 · 还没写</span></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="v"></i><i class="a"></i><span>YUV 帧 + PCM</span></div>
+
+  <!-- ============ 4 同步 ============ -->
+  <section class="st" id="s4">
+    <div class="st-h"><div class="st-n">4</div><h2>同步：让画面跟上声音</h2><p class="one">画面每 33.3 毫秒一帧，声音每 23.2 毫秒一块，两边各走各的，只能靠时间戳对齐。</p></div>
+    <p>做法是选一个时钟当基准，通常选音频：声音一卡，耳朵马上听得出来，所以让声音照常走，画面去迁就它。每来一帧画面，就拿它的 pts 和时钟比。</p>
+    <div class="sync">
+      <div class="sync-top"><label for="sr">拖一下：这一帧到手时，比时钟</label><output id="sv" for="sr">早 20 毫秒</output></div>
+      <div class="slider"><div class="zones" aria-hidden="true"><i class="drop"></i><i class="now"></i><i class="wait"></i></div><input type="range" id="sr" min="-150" max="150" step="5" value="20"></div>
+      <div class="scale" aria-hidden="true"><span style="flex:110">← 晚太多：丢掉</span><span style="flex:40">显示</span><span style="flex:150">早了：等到点 →</span></div>
+      <p class="verdict wait" id="sd" aria-live="polite">还没到点：等 20 毫秒，再交给渲染线程。</p>
+    </div>
+    <div class="who">
+      <div><span class="k">MEDIA3</span>内置，以音频为准</div>
+      <div><span class="k">ANDROID 系统</span><code>AudioTrack.getTimestamp()</code> 当时钟，<code>releaseOutputBuffer(index, 时间)</code> 定时显示</div>
+      <div class="me"><span class="k">本工程</span>还没有声音，时钟暂时用系统时间；晚到超过 40 毫秒就丢帧，见 <code>SoftwareVideoPlayback.kt</code></div>
+    </div>
+    <div class="more"><span class="k">细看</span><span class="todo">音画同步 · 还没写</span></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="v"></i><i class="a"></i><span>到点的帧 + PCM</span></div>
+
+  <!-- ============ 5 渲染 ============ -->
+  <section class="st" id="s5">
+    <div class="st-h"><div class="st-n">5</div><h2>渲染：把原始数据交给系统</h2><p class="one">App 能管的最后一步。画面交给 Surface，声音交给 AudioTrack。</p></div>
+    <h3>画面有三条路</h3>
+    <div class="routes">
+      <div class="route">
+        <h4>硬解直通</h4>
+        <div class="chain"><i>MediaCodec</i>→<i>Surface</i></div>
+        <p>解码器直接把画面写进 Surface。最省事也最省电，但画面你碰不到。Media3 默认这样做，所以只要给它一个 Surface。</p>
+      </div>
+      <div class="route">
+        <h4>软解 + OpenGL <span class="tag">本工程</span></h4>
+        <div class="chain"><i>YUV 三个平面</i>→<i>三张纹理</i>→<i>着色器</i>→<i>GLSurfaceView</i></div>
+        <p>把 YUV 传给显卡，在着色器里换算成 RGB 再画出来。</p>
+      </div>
+      <div class="route">
+        <h4>硬解 + OpenGL</h4>
+        <div class="chain"><i>MediaCodec</i>→<i>SurfaceTexture</i>→<i>着色器</i>→<i>Surface</i></div>
+        <p>想给硬解的画面加滤镜、镜像时用：先解到一张纹理上，加工完再画出去。</p>
+      </div>
+    </div>
+    <h3>声音只有一条路</h3>
+    <div class="box a" style="margin-top:12px"><span class="k">PCM → AudioTrack.write()</span><p>把 PCM 写进 AudioTrack 的缓冲区，系统按采样率匀速取走。写得太慢会断音，所以音频要有自己的线程。采样率、声道排列和设备要求不一致时，先用 libswresample 转。</p></div>
+    <div class="more"><span class="k">细看</span><a href="../video/opengl/index.html">OpenGL 渲染</a><a href="../audio/pcm/index.html">PCM</a><span class="todo">Surface 与 SurfaceTexture · 还没写</span></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="v"></i><i class="a"></i><span>交给系统</span></div>
+
+  <!-- ============ 6 出画出声 ============ -->
+  <section class="st" id="s6">
+    <div class="st-h"><div class="st-n">6</div><h2>出画出声：系统接手之后</h2><p class="one">这一段 App 管不了，但它决定了延迟。</p></div>
+    <div class="two">
+      <div class="box v"><span class="k">屏幕</span><p>Surface 背后是一个缓冲队列。屏幕每刷新一次（60 Hz 是每 16.7 毫秒），SurfaceFlinger 取走最新的一帧，和状态栏等其他图层合成后送去显示。30 帧的视频，每帧正好停留两次刷新。</p></div>
+      <div class="box a"><span class="k">喇叭</span><p>AudioFlinger 把所有 App 的声音混在一起，交给音频硬件；DAC 把数字变成电压，功放推动振膜。从写入到出声有几十毫秒的延迟，蓝牙耳机更长，同步时要算进去。</p></div>
+    </div>
+    <div class="more"><span class="k">细看</span><a href="../audio/pcm/pcm-to-speaker.html">从 PCM 到喇叭</a></div>
+  </section>
+
+  <!-- ============ 对照表 ============ -->
+  <section class="panel">
+    <h2>同一条线，三种搭法</h2>
+    <p class="one">六步都得有人做，区别只在于哪些交给系统，哪些自己写。</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>步骤</th><th>Media3（ExoPlayer）</th><th>系统组件自己拼</th><th class="me-col">FFmpeg 软解 · 本工程</th></tr></thead>
+        <tbody>
+          <tr><td>文件</td><td><code>DataSource</code></td><td><code>setDataSource(fd)</code></td><td class="me-col"><code>fd:</code> 协议</td></tr>
+          <tr><td>解封装</td><td><code>Mp4Extractor</code> 等</td><td><code>MediaExtractor</code></td><td class="me-col">libavformat</td></tr>
+          <tr><td>解码</td><td><code>MediaCodec</code>，硬解为主</td><td><code>MediaCodec</code></td><td class="me-col">libavcodec，CPU</td></tr>
+          <tr><td>同步</td><td>内置，以音频为准</td><td>自己比 pts</td><td class="me-col">自己比 pts，暂时用系统时钟</td></tr>
+          <tr><td>画面</td><td>给一个 Surface</td><td>解到 Surface</td><td class="me-col">YUV → OpenGL → GLSurfaceView</td></tr>
+          <tr><td>声音</td><td>内置 <code>AudioTrack</code></td><td>自己写 <code>AudioTrack</code></td><td class="me-col">还没接</td></tr>
+          <tr><td>适合</td><td>正常播放</td><td>要控制细节</td><td class="me-col">系统不支持的格式，要逐帧处理</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 播放和导出 ============ -->
+  <section class="panel">
+    <h2>播放这条线上没有转码</h2>
+    <p class="one">播放只做解码。转码是解码之后再编码一遍、存成新文件，属于导出。</p>
+    <div class="lines">
+      <div class="line"><span class="nm">播放</span><i class="same">文件</i><b>→</b><i class="same">解封装</i><b>→</b><i class="same">解码</i><b>→</b><i>同步</i><b>→</b><i>渲染</i><b>→</b><i>屏幕和喇叭</i></div>
+      <div class="line"><span class="nm">导出</span><i class="same">文件</i><b>→</b><i class="same">解封装</i><b>→</b><i class="same">解码</i><b>→</b><i class="diff">裁剪、叠字、混音</i><b>→</b><i class="diff">编码</i><b>→</b><i class="diff">封装</i><b>→</b><i class="diff">新文件</i></div>
+    </div>
+    <p>两条线的前三步完全一样，分岔在解码之后。这个工程最后要做的歌词视频走的是导出这条线，所以 FFmpeg 里另外留了 <code>h264_mediacodec</code>、<code>aac</code> 两个编码器和 <code>mp4</code> 封装器。</p>
+    <div class="more"><span class="k">细看</span><span class="todo">导出与转码 · 还没写</span></div>
+  </section>
+
+  <div class="foot"><span>docs/overview/playback.html</span><span>数据来自 landscape_720p.mp4 · FFmpeg n8.1.3</span></div>
+</div>
+
+<script>
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(still)document.querySelector('.map svg').pauseAnimations();
+
+// 进度条：哪个站点在屏幕中间，哪一格亮
+const links=[...document.querySelectorAll('.rail a')];
+const spy=new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting)links.forEach(a=>a.classList.toggle('on',a.hash==='#'+e.target.id));
+}),{rootMargin:'-40% 0px -55% 0px'});
+document.querySelectorAll('.st').forEach(s=>spy.observe(s));
+
+// 入场：站点滚进屏幕时浮现。只在脚本能跑、且没开"减少动态效果"时才先藏起来
+if(!still){
+  document.documentElement.classList.add('js');
+  const io=new IntersectionObserver(es=>es.forEach(e=>{
+    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}
+  }),{rootMargin:'0px 0px -6% 0px'});
+  document.querySelectorAll('.st,.flow,.panel').forEach(el=>io.observe(el));
+}
+
+// 同步小实验：规则和 SoftwareVideoPlayback.kt 一致。早了就等；晚了不超过阈值照常显示；超过就丢。
+// 阈值是一帧时长，限制在 40～100 毫秒；30 帧的视频一帧 33.3 毫秒，所以是 40。
+const LATE_MS=40;
+const sr=document.getElementById('sr'),sv=document.getElementById('sv'),sd=document.getElementById('sd');
+function sync(){
+  const ms=+sr.value;
+  sv.textContent=ms>0?`早 ${ms} 毫秒`:ms<0?`晚 ${-ms} 毫秒`:'正好到点';
+  let cls,txt;
+  if(ms>0){cls='wait';txt=`还没到点：等 ${ms} 毫秒，再交给渲染线程。`;}
+  else if(ms>=-LATE_MS){cls='now';txt=ms===0?'正好到点：马上显示。':`晚了一点，没超过 ${LATE_MS} 毫秒：马上显示，基本看不出来。`;}
+  else{cls='drop';txt=`晚了超过 ${LATE_MS} 毫秒：这一帧不显示了，接着解下一帧追进度。`;}
+  sd.className='verdict '+cls;sd.textContent=txt;
+}
+sr.addEventListener('input',sync);sync();
+</script>
+</body>
+</html>
