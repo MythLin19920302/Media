@@ -8,6 +8,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
 <link rel="stylesheet" href="../assets/kb.css?v=6">
+<style>
+/* 承接句里的暗链（“放到线上”→ 案例页 ml/case-on-device-prediction.html）：有意不做成卡片，
+   颜色跟着正文，不加下划线，看起来和普通文字一样 */
+.bridge a.quiet{color:inherit;text-decoration:none}
+</style>
 </head>
 <body>
 <main class="home">
@@ -74,7 +79,7 @@
       <span class="d">准确率为什么会骗人，混淆矩阵、精确率和召回率，ROC 和 AUC，校准，训练、验证、测试怎么切，过拟合，600 条样本能分出多大的差别，离线和线上为什么对不上。</span>
       <span class="m">14 节 · 4 张图</span>
     </a>
-    <p class="bridge">放到线上：用户上亿、歌上千万，一次刷新只有一百来毫秒，同样的想法要怎么搭起来。</p>
+    <p class="bridge"><a class="quiet" href="ml/case-on-device-prediction.html">放到线上</a>：用户上亿、歌上千万，一次刷新只有一百来毫秒，同样的想法要怎么搭起来。</p>
     <a class="topic" href="ml/ctr-recommendation.html">
       <span class="no" aria-hidden="true">6</span>
       <span class="t">推荐和点击率预估：工业界怎么预测</span>
