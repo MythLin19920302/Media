@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>在 Mac 上编出 Android 的 FFmpeg</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：三台机器的对照卡片 */
+.trio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:4px 0 18px}
+.trio .lane ul{margin:0;padding-left:1.1em;font-size:14px;line-height:1.7}
+.trio .lane li{margin:0}
+.lanes.five{grid-template-columns:repeat(5,minmax(0,1fr))}
+.lanes.five .lane p{margin:0;font-size:13.5px;line-height:1.65;color:var(--muted)}
+@media (max-width:900px){.lanes.five{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:700px){.trio{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:520px){.lanes.five{grid-template-columns:minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#build">← 构建</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#what">什么是交叉编译</a></li>
+    <li><a href="#triple">ABI 与三元组</a></li>
+    <li><a href="#toolchain">工具链里有什么</a></li>
+    <li><a href="#configure">configure 的七组参数</a></li>
+    <li><a href="#probe">configure 怎么探测</a></li>
+    <li><a href="#build">一条命令的五步</a></li>
+    <li><a href="#verify">验证产物</a></li>
+    <li><a href="#app">接进 App</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+    <li><a href="#extend">升级与扩展</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">音视频 · 构建</div>
+  <h1>在 Mac 上编出 Android 的 FFmpeg</h1>
+  <p class="lede">交叉编译就是在一台机器上，编出给另一种机器运行的程序。这份笔记以 music_demo 里的 FFmpeg 构建为例走一遍：为什么不能直接用 Mac 的编译器，NDK 工具链里有什么，configure 的每组参数在回答什么问题，以及产物怎么验证、怎么接进 App。</p>
+  <div class="journey" aria-label="一个源文件的旅程">
+    <div class="step"><span class="k">FFmpeg 源码</span><span class="v">h264dec.c</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">Mac 上的 NDK clang</span><span class="v hex">--target=aarch64-linux-android24</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">产物</span><span class="v">ELF aarch64 .so</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">打进 APK</span><span class="v">lib/arm64-v8a/</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">手机</span><span class="v">dlopen 运行</span></div>
+  </div>
+  <p class="caption">本文的命令和输出都来自这个工程：FFmpeg n8.1.3、NDK 27.2.12479018（clang 18.0.3）、API 24，在 M 芯片 Mac 上构建 <code>arm64-v8a</code> 和 <code>armeabi-v7a</code> 两个 ABI。脚本在 <code>ffmpeg/configure_android.sh</code> 和 <code>ffmpeg/build_android.sh</code>。</p>
+</header>
+
+<section id="what">
+  <h2><span class="n">01</span>什么是交叉编译</h2>
+  <p>平时写程序，编译器和产物在同一台机器上：在 Mac 上编，在 Mac 上跑。交叉编译把这两件事拆开：编译器跑在 Mac 上，产物跑在手机上。手机上没有编译器和源码，也不适合编几千个文件，所以 Android 的原生代码都是这么来的。</p>
+  <p>两台机器有三处不同，每一处都让"直接用 Mac 的 <code>cc</code>"行不通：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>不同在哪</th><th>Mac（编译的机器）</th><th>Android 手机（运行的机器）</th><th>不对会怎样</th></tr></thead>
+    <tbody>
+      <tr><td>CPU 指令集</td><td>arm64 或 x86_64</td><td>arm64 或 32 位 arm</td><td>指令不认识，无法执行</td></tr>
+      <tr><td>可执行文件格式与内核</td><td>Mach-O，Darwin 内核</td><td>ELF，Linux 内核</td><td>系统加载器根本不认这个文件</td></tr>
+      <tr><td>C 标准库</td><td>libSystem</td><td>Bionic</td><td>找不到 <code>printf</code>、<code>malloc</code> 这些符号的实现</td></tr>
+    </tbody>
+  </table></div>
+  <div class="key">M 芯片 Mac 和手机的 CPU 都是 arm64，但后两行仍然不同，所以照样要交叉编译。"目标"指的是 CPU、系统、C 库三样合在一起，不只是 CPU。</div>
+  <h3>三个角色</h3>
+  <p>构建系统里常见 build、host、target 三个词，容易混：</p>
+  <div class="trio">
+    <div class="lane"><div class="who">BUILD · 编译发生的机器</div><ul><li>这里是 Mac</li><li>运行 clang、make、configure</li></ul></div>
+    <div class="lane"><div class="who">HOST · 产物运行的机器</div><ul><li>这里是 Android 手机</li><li>autotools 的叫法</li></ul></div>
+    <div class="lane"><div class="who">TARGET · 产物面向的机器</div><ul><li>只有编"编译器"时才和 host 不同</li><li>FFmpeg 用这个词指运行的机器</li></ul></div>
+  </div>
+  <p>FFmpeg 的 configure 是自己写的，不是 autotools，叫法也不一样：<code>--target-os</code>、<code>--arch</code> 指手机；它说的 <code>host</code> 反而是 Mac。构建日志里的这两行就是证据：</p>
+<pre><code>C compiler                …/bin/aarch64-linux-android24-clang     ← 编 FFmpeg 本体，产物给手机
+host C compiler           gcc                                     ← 编构建过程中要在 Mac 上跑的小工具</code></pre>
+  <p>交叉编译时确实需要两个编译器：FFmpeg 构建过程中会先编几个生成数据表的小程序并当场运行，它们必须是 Mac 的程序。</p>
+</section>
+
+<section id="triple">
+  <h2><span class="n">02</span>ABI 与三元组</h2>
+  <p>Android 用 <strong>ABI 名</strong>区分目标（APK 里 <code>lib/</code> 下的目录名），编译器用<strong>三元组</strong>（triple）区分。它们说的是同一件事，只是命名体系不同。每多支持一个 ABI，就要把所有原生代码完整编一遍。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Android ABI</th><th>FFmpeg <code>--arch</code></th><th><code>--cpu</code></th><th>编译器三元组</th><th><code>file</code> 看到的</th></tr></thead>
+    <tbody>
+      <tr><td><code>arm64-v8a</code></td><td><code>aarch64</code></td><td><code>armv8-a</code></td><td><code>aarch64-linux-android</code></td><td>ELF 64-bit, ARM aarch64</td></tr>
+      <tr><td><code>armeabi-v7a</code></td><td><code>arm</code></td><td><code>armv7-a</code></td><td><code>armv7a-linux-androideabi</code></td><td>ELF 32-bit, ARM, EABI5</td></tr>
+    </tbody>
+  </table></div>
+  <p>三元组拆开读是 <code>CPU - 内核 - 环境</code>：<code>aarch64</code> 是指令集，<code>linux</code> 是内核，<code>android</code> 表示用 Bionic 而不是桌面 Linux 的 glibc。32 位那个结尾多出的 <code>eabi</code> 是 ARM 32 位的调用约定名字。</p>
+  <h3>末尾的 24 是 API 级别</h3>
+  <p>编译器的文件名是 <code>aarch64-linux-android24-clang</code>，三元组后面跟着的数字是 API 级别。它决定链接时能用哪些系统函数：sysroot 里每个 API 级别有一份 <code>libc.so</code>，里面只有那个版本的 Android 已经提供的符号。</p>
+  <div class="callout"><b>API 级别要等于 App 的 minSdk。</b>写高了，编译能过，但在低版本手机上加载时报 <code>cannot locate symbol</code>；写低了没有危害，只是用不了新接口。这个工程两边都是 24：<code>configure_android.sh</code> 的 <code>API=24</code> 和 <code>app/build.gradle.kts</code> 的 <code>minSdk = 24</code>。</div>
+</section>
+
+<section id="toolchain">
+  <h2><span class="n">03</span>工具链里有什么</h2>
+  <p>工具链是"编译器 + 配套的二进制工具 + 目标系统的头文件和库"。NDK 把这一整套都放在一个目录下：</p>
+<pre><code>~/Library/Android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/darwin-x86_64/
+├── bin/
+│   ├── clang                              真正的编译器，一个程序能输出所有目标
+│   ├── aarch64-linux-android24-clang      包装脚本：替你加上 --target
+│   ├── armv7a-linux-androideabi24-clang
+│   ├── llvm-ar  llvm-nm  llvm-ranlib      打包和查看目标文件
+│   ├── llvm-strip                         去掉调试符号，减小体积
+│   └── llvm-readelf                       查看 ELF 结构，验证产物时用
+└── sysroot/usr/
+    ├── include/                           Android 的 C 头文件（Bionic）
+    └── lib/aarch64-linux-android/24/      libc.so、libm.so、libz.so、liblog.so、libmediandk.so …</code></pre>
+  <p>目录名是 <code>darwin-x86_64</code>，但 M 芯片 Mac 也用它：里面的 <code>clang</code> 是同时包含 x86_64 和 arm64 的通用二进制，名字只是历史遗留。</p>
+  <h3>包装脚本只有几行</h3>
+  <p>clang 天生就是交叉编译器，同一个程序用 <code>--target</code> 切换输出。带三元组名字的"编译器"只是替你把这个参数填好：</p>
+<pre><code>#!/usr/bin/env bash
+bin_dir=`dirname "$0"`
+if [ "$1" != "-cc1" ]; then
+    "$bin_dir/clang" --target=aarch64-linux-android24 "$@"
+else
+    "$bin_dir/clang" "$@"
+fi</code></pre>
+  <p>所以给 configure 传 <code>--cc=…/aarch64-linux-android24-clang</code>，等于同时指定了 CPU、系统和 API 级别。</p>
+  <h3>sysroot 是"假装的手机根目录"</h3>
+  <p>代码里写 <code>#include &lt;stdio.h&gt;</code>，编译器要去找这个文件。<code>--sysroot</code> 告诉它把哪个目录当成 <code>/</code>，这样找到的是 Android 的 <code>stdio.h</code> 而不是 Mac 的。链接时同理，<code>-lz</code> 找到的是 sysroot 里的 <code>libz.so</code>。</p>
+  <p>sysroot 里的 <code>.so</code> 是只有符号表的空壳，只为让链接通过。真正的实现在手机的 <code>/system/lib64/</code> 里，运行时由系统提供，所以这些系统库不用也不能打进 APK。</p>
+  <h3>为什么 ar、nm、strip 也要换</h3>
+  <p>Mac 自带的 <code>ar</code>、<code>strip</code> 只认 Mach-O，处理不了 ELF。LLVM 的这几个工具与格式无关，不分目标，所以它们的名字里没有三元组。</p>
+</section>
+
+<section id="configure">
+  <h2><span class="n">04</span>configure 的七组参数</h2>
+  <p><code>ffmpeg/configure_android.sh</code> 里传给 configure 的参数按用途分成七组。前四组回答"用什么工具、给谁编"，是交叉编译本身；后三组回答"编成什么样"，是 FFmpeg 的裁剪。</p>
+  <p>这里只给概览。每个参数的默认值、不写的后果、裁剪列表里每个组件的含义，以及去哪里查参数，见 <a href="configure-options.html">configure_android.sh 参数详解</a>。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>组</th><th>参数</th><th>在回答什么问题</th></tr></thead>
+    <tbody>
+      <tr><td>① 安装位置</td><td><code>--prefix=ffmpeg/out/&lt;abi&gt;</code></td><td><code>make install</code> 把 <code>.so</code> 和头文件放哪。每个 ABI 一个目录。</td></tr>
+      <tr><td>② 目标</td><td><code>--enable-cross-compile</code><br><code>--target-os=android</code><br><code>--arch</code> <code>--cpu</code></td><td>产物给谁跑。打开交叉编译后，configure 的测试程序只编不跑。</td></tr>
+      <tr><td>③ 工具</td><td><code>--cc</code> <code>--ar</code> <code>--nm</code><br><code>--ranlib</code> <code>--strip</code></td><td>用哪个编译器和二进制工具。全部指向 NDK。</td></tr>
+      <tr><td>④ 系统头文件和库</td><td><code>--sysroot</code></td><td>去哪找 <code>stdio.h</code> 和 <code>libc.so</code>。</td></tr>
+      <tr><td>⑤ 产物形态</td><td><code>--enable-shared --disable-static</code><br><code>--enable-pic</code><br><code>--extra-ldflags=-Wl,-z,max-page-size=16384</code><br><code>--disable-programs --disable-doc</code></td><td>要动态库 <code>.so</code>，不要命令行程序和文档；按 16 KB 页对齐。</td></tr>
+      <tr><td>⑥ Android 能力</td><td><code>--enable-jni</code><br><code>--enable-mediacodec</code><br><code>--enable-zlib</code></td><td>能通过 JNI 调用系统的 MediaCodec 硬编解码；PNG 解码需要 zlib。</td></tr>
+      <tr><td>⑦ 裁剪</td><td><code>--disable-everything</code><br><code>--enable-decoder=…</code> 等</td><td>先全关，再只打开用得到的格式。</td></tr>
+    </tbody>
+  </table></div>
+  <h3>每个 ABI 只有三样不同</h3>
+  <p>七组参数里，随 ABI 变化的只有脚本开头这三个变量，其余完全相同：</p>
+<pre><code>case "$ABI" in
+  arm64-v8a)   ARCH=aarch64; CPU=armv8-a; TRIPLE=aarch64-linux-android ;;
+  armeabi-v7a) ARCH=arm;     CPU=armv7-a; TRIPLE=armv7a-linux-androideabi ;;
+esac</code></pre>
+  <h3>动态库、PIC 与 16 KB 页</h3>
+  <ul>
+    <li><strong>为什么是 <code>.so</code>：</strong>Android 只能通过 <code>System.loadLibrary</code> 加载动态库；FFmpeg 默认配置是 LGPL，动态链接也是遵守它最简单的方式。</li>
+    <li><strong>PIC（位置无关代码）：</strong>动态库每次被加载到的内存地址不固定，代码里不能写死地址。Android 要求所有 <code>.so</code> 都是 PIC。</li>
+    <li><strong>16 KB 页对齐：</strong>Android 15 起有 64 位设备把内存页从 4 KB 改成 16 KB，<code>.so</code> 的各段必须按 16 KB 对齐才能加载。NDK 27 默认还是 4 KB，所以要显式传链接参数。32 位用不到，加了无害。</li>
+  </ul>
+  <h3>裁剪：先全关再点名</h3>
+  <p>完整的 FFmpeg 有几百个编解码器。<code>--disable-everything</code> 把组件全部关掉，再按类别点名打开。播放一个文件要经过协议 → 解封装 → 解析 → 解码，每一环都要有对应组件，缺一环就打不开。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>类别</th><th>作用</th><th>这个工程打开的</th></tr></thead>
+    <tbody>
+      <tr><td><code>protocol</code></td><td>数据从哪读</td><td><code>file</code>、<code>fd</code></td></tr>
+      <tr><td><code>demuxer</code></td><td>拆开容器</td><td><code>mov</code>（含 mp4）、<code>mp3</code>、<code>flac</code>、<code>wav</code>、<code>ogg</code>、<code>aac</code>、<code>matroska</code>、<code>concat</code>、<code>image2</code></td></tr>
+      <tr><td><code>parser</code></td><td>把码流切成一帧一帧</td><td><code>h264</code>、<code>hevc</code>、<code>aac</code>、<code>mpegaudio</code>、<code>flac</code>、<code>vorbis</code>、<code>opus</code>、<code>png</code></td></tr>
+      <tr><td><code>decoder</code></td><td>解压成 YUV / PCM</td><td><code>h264</code>、<code>hevc</code>、<code>aac</code>、<code>mp3</code>、<code>flac</code>、<code>vorbis</code>、<code>opus</code>、<code>png</code></td></tr>
+      <tr><td><code>encoder</code> / <code>muxer</code></td><td>压缩并封装输出</td><td><code>h264_mediacodec</code>、<code>aac</code> / <code>mp4</code></td></tr>
+      <tr><td><code>bsf</code></td><td>码流格式转换</td><td><code>h264_mp4toannexb</code>、<code>hevc_mp4toannexb</code>、<code>aac_adtstoasc</code>、<code>extract_extradata</code></td></tr>
+      <tr><td><code>filter</code></td><td>画面和声音加工</td><td><code>scale</code>、<code>crop</code>、<code>overlay</code>、<code>transpose</code>、<code>aresample</code> 等 13 个</td></tr>
+    </tbody>
+  </table></div>
+  <p>裁剪后 arm64 的 6 个库合计约 6 MB，其中 <code>libavcodec.so</code> 占一半。</p>
+</section>
+
+<section id="probe">
+  <h2><span class="n">05</span>configure 怎么探测</h2>
+  <p>configure 不查表，而是做实验：想知道目标有没有某个函数、编译器支不支持某个选项，就写一个几行的 C 程序去编译，看成不成功。本机编译时它还会运行这个程序看结果；交叉编译时产物是手机的程序，在 Mac 上跑不了，所以 <code>--enable-cross-compile</code> 的作用就是告诉它<strong>只编译、不运行</strong>。</p>
+  <p>探测结果写进构建目录的 <code>config.h</code>，源码里用 <code>#if</code> 按它取舍。两个 ABI 探测出的结果不同，所以各有一份：</p>
+<pre><code>// ffmpeg/build/arm64-v8a/config.h          // ffmpeg/build/armeabi-v7a/config.h
+#define ARCH_AARCH64 1                       #define ARCH_ARM 1
+#define HAVE_NEON 1                          #define HAVE_NEON 1
+#define HAVE_BIGENDIAN 0                     #define HAVE_ARMV6T2 1
+#define FFMPEG_LICENSE "LGPL version 2.1 or later"</code></pre>
+  <p>configure 结束时会打印一份摘要，其中 <code>C library  bionic</code> 这一行说明它确实找到了 Android 的 C 库。如果这里显示的是别的，说明 sysroot 或编译器没指对。</p>
+  <h3>源码外构建</h3>
+  <p>脚本先 <code>cd ffmpeg/build/&lt;abi&gt;</code> 再调用 <code>ffmpeg/src/configure</code>。configure 会把 <code>config.h</code>、<code>Makefile</code> 和之后的 <code>.o</code> 都生成在当前目录，源码目录保持干净。这样两个 ABI 共用一份源码、各用一个构建目录，互不干扰。</p>
+  <div class="callout"><b>源码目录里不能留有 <code>config.h</code>。</b>如果曾经在 <code>ffmpeg/src</code> 里直接跑过 configure，编译时会优先包含到源码目录那份旧的 <code>config.h</code>，产物和当前配置对不上。两个脚本都会检查这一点，<code>build_android.sh</code> 会自动 <code>make distclean</code>。</div>
+</section>
+
+<section id="build">
+  <h2><span class="n">06</span>一条命令的五步</h2>
+  <p><code>ffmpeg/build_android.sh</code> 把从下载源码到同步进 App 串成一条命令。不带参数编全部 ABI，带参数只编指定的。</p>
+<pre><code>ffmpeg/build_android.sh              # 编 arm64-v8a 和 armeabi-v7a
+ffmpeg/build_android.sh arm64-v8a    # 只编一个</code></pre>
+  <div class="lanes five">
+    <div class="lane"><div class="who">① 检查环境</div><p><code>git</code>、<code>make</code>、<code>file</code> 是否可用，ABI 参数是否合法。</p></div>
+    <div class="lane"><div class="who">② 准备源码</div><p>没有就按 <code>FFMPEG_TAG</code> 浅克隆；有就核对版本、清掉旧构建。</p></div>
+    <div class="lane"><div class="who">③ 逐个 ABI 构建</div><p>删旧目录 → configure → <code>make -j</code> → <code>make install</code>。</p></div>
+    <div class="lane"><div class="who">④ 校验产物</div><p>6 个 <code>.so</code> 是否都在，<code>file</code> 报的架构对不对。</p></div>
+    <div class="lane"><div class="who">⑤ 同步到 app</div><p><code>.so</code> 拷到 <code>app/libs/&lt;abi&gt;/</code>，头文件拷到 <code>cpp/include/</code>。</p></div>
+  </div>
+  <p>四个目录各管一件事，前三个不入库，只有同步进 <code>app/</code> 的产物入库：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>目录</th><th>内容</th><th>入库</th></tr></thead>
+    <tbody>
+      <tr><td><code>ffmpeg/src/</code></td><td>FFmpeg 源码，脚本按 tag 下载</td><td>否</td></tr>
+      <tr><td><code>ffmpeg/build/&lt;abi&gt;/</code></td><td><code>config.h</code>、<code>Makefile</code>、<code>.o</code>、<code>build.log</code></td><td>否</td></tr>
+      <tr><td><code>ffmpeg/out/&lt;abi&gt;/</code></td><td><code>make install</code> 的结果：<code>lib/</code>、<code>include/</code></td><td>否</td></tr>
+      <tr><td><code>app/libs/&lt;abi&gt;/</code>、<code>app/src/main/cpp/include/</code></td><td>App 实际使用的 <code>.so</code> 和头文件</td><td>是</td></tr>
+    </tbody>
+  </table></div>
+  <p>预编译库入库的好处是，拉下代码不用装 NDK 编 FFmpeg 就能直接构建 App；代价是每次重编都会产生二进制改动。头文件与 ABI 无关，取任意一个 ABI 的即可。</p>
+</section>
+
+<section id="verify">
+  <h2><span class="n">07</span>验证产物</h2>
+  <p>交叉编译的产物在 Mac 上跑不起来，没法"运行一下试试"。能做的是检查文件本身，三条命令覆盖最常出问题的三件事。</p>
+  <h3>架构对不对：<code>file</code></h3>
+<pre><code>$ file app/libs/*/libavcodec.so
+app/libs/arm64-v8a/libavcodec.so:   ELF 64-bit LSB shared object, ARM aarch64, …, stripped
+app/libs/armeabi-v7a/libavcodec.so: ELF 32-bit LSB shared object, ARM, EABI5, …, stripped</code></pre>
+  <p>如果这里出现 <code>Mach-O</code>，说明用成了 Mac 的编译器。</p>
+  <h3>依赖谁：<code>llvm-readelf -d</code></h3>
+<pre><code>$ llvm-readelf -d app/libs/arm64-v8a/libavformat.so | grep -E 'NEEDED|SONAME'
+(NEEDED)   Shared library: [libavcodec.so]      ← 我们自己打包的
+(NEEDED)   Shared library: [libavutil.so]       ← 我们自己打包的
+(NEEDED)   Shared library: [libm.so]            ← 系统提供
+(NEEDED)   Shared library: [libz.so]            ← 系统提供
+(NEEDED)   Shared library: [libc.so]            ← 系统提供
+(SONAME)   Library soname: [libavformat.so]</code></pre>
+  <p><code>NEEDED</code> 是加载这个库之前必须先加载的库。每一条要么是 Android 系统公开提供的，要么得一起打进 APK，否则运行时报 <code>library "…" not found</code>。<code>SONAME</code> 不带版本号也是 <code>--target-os=android</code> 的效果：桌面 Linux 上会是 <code>libavformat.so.62</code> 这种形式，而 APK 只打包以 <code>.so</code> 结尾的文件。</p>
+  <h3>页对齐：<code>llvm-readelf -l</code></h3>
+<pre><code>$ llvm-readelf -lW app/libs/arm64-v8a/libavcodec.so | grep LOAD
+LOAD  0x000000 …  R    0x4000
+LOAD  0x08bff0 …  R E  0x4000
+LOAD  0x2da7f0 …  RW   0x4000      最后一列是对齐：0x4000 = 16384 = 16 KB</code></pre>
+  <p>最后一列是 <code>0x1000</code> 就说明还是 4 KB 对齐，在 16 KB 页的设备上加载不了。</p>
+  <h3>体积</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>库</th><th class="num">arm64-v8a</th><th class="num">armeabi-v7a</th></tr></thead>
+    <tbody>
+      <tr><td><code>libavcodec.so</code></td><td class="num">3.08 MB</td><td class="num">2.64 MB</td></tr>
+      <tr><td><code>libswscale.so</code></td><td class="num">1.17 MB</td><td class="num">0.79 MB</td></tr>
+      <tr><td><code>libavformat.so</code></td><td class="num">0.82 MB</td><td class="num">0.80 MB</td></tr>
+      <tr><td><code>libavutil.so</code></td><td class="num">0.73 MB</td><td class="num">0.64 MB</td></tr>
+      <tr><td><code>libavfilter.so</code></td><td class="num">0.28 MB</td><td class="num">0.25 MB</td></tr>
+      <tr><td><code>libswresample.so</code></td><td class="num">0.10 MB</td><td class="num">0.09 MB</td></tr>
+      <tr><td><strong>合计</strong></td><td class="num"><strong>6.18 MB</strong></td><td class="num"><strong>5.21 MB</strong></td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">按 1 MB = 1,000,000 字节计，<code>make install</code> 时已经 strip 过。</p>
+</section>
+
+<section id="app">
+  <h2><span class="n">08</span>接进 App</h2>
+  <p>FFmpeg 是纯 C 接口，Kotlin 调不到。中间要有一个我们自己写的 JNI 桥接库 <code>libffmpeg_bridge.so</code>，它也是交叉编译出来的，只不过这一次由 Gradle 调 CMake 完成，工具链参数是 NDK 自带的 CMake 配置填好的，不用手写。</p>
+<pre><code>Kotlin  FFmpegBridge / FFmpegVideoDecoder
+   │  System.loadLibrary("ffmpeg_bridge")
+   ▼
+libffmpeg_bridge.so        ← app/src/main/cpp/*.c，Gradle + CMake 每次构建时编
+   │  NEEDED
+   ▼
+libavformat / libavcodec / libavfilter / libswscale / libswresample / libavutil
+                           ← ffmpeg/build_android.sh 预编译，放在 app/libs/&lt;abi&gt;/
+   │  NEEDED
+   ▼
+libc / libm / libz / liblog / libdl      ← 手机系统自带</code></pre>
+  <h3>CMake：把预编译库声明成导入目标</h3>
+<pre><code>add_library(avcodec SHARED IMPORTED)
+set_target_properties(avcodec PROPERTIES
+    IMPORTED_LOCATION "${APP_LIBS_DIR}/libavcodec.so")     # app/libs/${ANDROID_ABI}/</code></pre>
+  <p><code>IMPORTED</code> 的意思是这个库已经编好，CMake 只需要知道文件在哪。Gradle 会为每个 ABI 各跑一遍 CMake，<code>ANDROID_ABI</code> 分别是两个 ABI 名，所以路径里用它来选目录。被链接到的导入库会自动打进 APK。</p>
+  <h3>Gradle：三处要和 FFmpeg 那边对齐</h3>
+  <div class="tbl"><table>
+    <thead><tr><th><code>app/build.gradle.kts</code></th><th>要和谁一致</th><th>不一致的后果</th></tr></thead>
+    <tbody>
+      <tr><td><code>ndkVersion = "27.2.12479018"</code></td><td><code>configure_android.sh</code> 里的 NDK 路径</td><td>两边 C 库和编译器版本不同，可能出现难查的链接或运行问题</td></tr>
+      <tr><td><code>abiFilters += listOf("arm64-v8a", "armeabi-v7a")</code></td><td>实际编了 FFmpeg 的 ABI</td><td>多写一个 ABI，CMake 找不到对应的 <code>.so</code>，构建失败</td></tr>
+      <tr><td><code>-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON</code></td><td>FFmpeg 的 <code>max-page-size=16384</code></td><td>桥接库仍是 4 KB 对齐，16 KB 设备上加载失败</td></tr>
+    </tbody>
+  </table></div>
+  <h3>运行时加载</h3>
+  <p>Kotlin 里只写一句 <code>System.loadLibrary("ffmpeg_bridge")</code>。系统的动态链接器读到它的 <code>NEEDED</code> 列表，会先把 6 个 FFmpeg 库和系统库依次加载好，不需要手动按顺序逐个加载。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">09</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>configure 报 <code>C compiler test failed</code></td><td><code>--cc</code> 路径不对，或 NDK 版本目录不存在</td><td>看构建目录下 <code>ffbuild/config.log</code> 末尾；确认 <code>ANDROID_NDK_HOME</code> 或脚本里的默认路径</td></tr>
+      <tr><td>编出来的 <code>.so</code> 是 <code>Mach-O</code></td><td>没传 <code>--cc</code>，用了 Mac 的编译器</td><td>用 <code>file</code> 检查；<code>build_android.sh</code> 第 ④ 步会拦住</td></tr>
+      <tr><td>配置改了但产物没变</td><td>源码目录里残留旧的 <code>config.h</code></td><td><code>make -C ffmpeg/src distclean</code></td></tr>
+      <tr><td>运行时 <code>dlopen failed: library "libxxx.so" not found</code></td><td><code>NEEDED</code> 里有既不是系统库、也没打进 APK 的库</td><td><code>llvm-readelf -d</code> 逐个查；解压 APK 看 <code>lib/&lt;abi&gt;/</code></td></tr>
+      <tr><td>运行时 <code>cannot locate symbol "…"</code></td><td>编译用的 API 级别高于手机系统版本</td><td>API 级别设成 minSdk</td></tr>
+      <tr><td>某些手机上 <code>UnsatisfiedLinkError</code>，别的正常</td><td>APK 里没有那台手机的 ABI</td><td>补编该 ABI，或确认 <code>abiFilters</code></td></tr>
+      <tr><td>Android 15+ 设备提示 16 KB 不兼容或加载失败</td><td>某个 <code>.so</code> 仍按 4 KB 对齐</td><td><code>llvm-readelf -l</code> 查每个 <code>.so</code>，FFmpeg 和桥接库两边都要开</td></tr>
+      <tr><td>Gradle 报 <code>2 files found with path 'lib/arm64-v8a/libavcodec.so'</code></td><td>同一个 <code>.so</code> 既被 CMake 导入、又放在 <code>jniLibs</code></td><td>只保留一种方式；这个工程用 CMake 导入</td></tr>
+      <tr><td>文件能打开但 <code>Decoder not found</code></td><td>裁剪时漏了这个格式的 decoder 或 parser</td><td>在 <code>configure_android.sh</code> 第 ⑦ 组补上后重编</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="extend">
+  <h2><span class="n">10</span>升级与扩展</h2>
+  <h3>升级 FFmpeg</h3>
+  <p>改 <code>build_android.sh</code> 里的 <code>FFMPEG_TAG</code>，删掉 <code>ffmpeg/src</code> 后重跑。脚本发现源码版本与 tag 不一致时会停下来提示，不会自动删除。大版本升级后头文件和接口可能变化，桥接库的 C 代码要跟着核对。</p>
+  <h3>增加格式</h3>
+  <p>在 <code>configure_android.sh</code> 第 ⑦ 组对应类别里加名字。可用的名字用源码自带的命令列出：</p>
+<pre><code>ffmpeg/src/configure --list-decoders
+ffmpeg/src/configure --list-demuxers
+ffmpeg/src/configure --list-filters</code></pre>
+  <p>加一个格式通常要同时加 demuxer、parser、decoder 三处。</p>
+  <h3>增加 ABI</h3>
+  <p>比如要在 x86_64 模拟器上跑，需要改四处，这也正好是交叉编译涉及的全部环节：</p>
+  <ol class="plain">
+    <li><code>configure_android.sh</code> 的 <code>case</code> 加一行：<code>ARCH</code>、<code>CPU</code>、<code>TRIPLE</code>（x86_64 的三元组是 <code>x86_64-linux-android</code>）。</li>
+    <li><code>build_android.sh</code> 的 <code>ALL_ABIS</code>、参数检查和第 ④ 步的架构校验各加一项。</li>
+    <li><code>app/build.gradle.kts</code> 的 <code>abiFilters</code> 加上它。</li>
+    <li>重跑 <code>build_android.sh</code>，把新的 <code>app/libs/x86_64/</code> 入库。</li>
+  </ol>
+  <p>x86 的汇编优化需要额外安装汇编器 nasm，没有的话可以加 <code>--disable-x86asm</code> 先跑通，代价是解码变慢。这一条没有在本工程里实际验证过。</p>
+  <p class="foot">文中的命令输出、文件大小和 <code>config.h</code> 内容取自 music_demo 工程当前的构建结果（FFmpeg n8.1.3、NDK 27.2.12479018、macOS arm64）。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

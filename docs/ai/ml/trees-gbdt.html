@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>决策树和 GBDT：另一类常用算法</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：图里的等宽文字 */
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw{white-space:nowrap}
+.caption+p,.caption+ul{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#tree">一串是非题</a></li>
+    <li><a href="#split">切在哪：不纯度</a></li>
+    <li><a href="#interaction">组合条件不用手写</a></li>
+    <li><a href="#overfit">深树会背答案</a></li>
+    <li><a href="#forest">Bagging 和随机森林</a></li>
+    <li><a href="#boosting">梯度提升：下一棵修前面的错</a></li>
+    <li><a href="#rounds">学习率和棵数</a></li>
+    <li><a href="#score">样本 2462 的分数是加出来的</a></li>
+    <li><a href="#importance">哪些特征用得最多</a></li>
+    <li><a href="#compare">和逻辑回归、神经网络比</a></li>
+    <li><a href="#libs">XGBoost、LightGBM、CatBoost</a></li>
+    <li><a href="#choose">什么时候用树</a></li>
+    <li><a href="#cost">预测一次的代价</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>决策树和 GBDT：另一类常用算法</h1>
+  <p class="lede">逻辑回归和神经网络做预测，底子都是加权求和：特征乘上权重，再加起来。决策树换了一种做法：问一串是非题，走到哪个叶子，就报那个叶子里训练样本的正样本比例。把很多棵小树一棵接一棵地加起来，就是 GBDT，表格数据上最常用的模型之一。这一页用同一份音乐推荐数据，从一棵树讲到 103 棵树，再看一条样本的分数是怎么一棵一棵加出来的。</p>
+  <div class="journey" aria-label="GBDT 预测一次：103 棵树，每棵问 2 个问题，一共 206 次比较，测试集 AUC 0.7499">
+    <div class="step"><span class="k">GBDT 里的树</span><span class="v">103 棵</span></div>
+    <span class="arrow" aria-hidden="true">×</span>
+    <div class="step"><span class="k">每棵问</span><span class="v">2 个问题</span></div>
+    <span class="arrow" aria-hidden="true">=</span>
+    <div class="step"><span class="k">预测一次</span><span class="v">206 次比较</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">测试集 AUC</span><span class="v hex">0.7499</span></div>
+  </div>
+  <p class="caption">数据是脚本按固定随机种子生成的示意数据：音乐 App 首页推荐的 3000 次曝光，一次曝光是给一位用户展示一首歌，点开并播放超过 30 秒算正样本。第 1–20 天训练（2000 条），21–24 天验证（400 条），25–30 天测试（600 条）。GBDT 的配方、曲线、前三棵树、重要度和各模型的指标来自这几页共用的参考脚本；单棵树、森林、学习率对比和样本 2462 的逐棵累加是另外算的，配方见各节和页尾。它是<a href="prediction.html#s3">加权求和</a>之外的另一条路。</p>
+</header>
+
+<section id="tree">
+  <h2><span class="n">01</span>一串是非题</h2>
+  <p>逻辑回归预测时，把每个特征乘上一个权重，加起来，再用 sigmoid 压成 0 到 1 之间的概率（<a href="gradient-descent.html">梯度下降</a>）。决策树（decision tree）不做乘法，它问问题："这位用户最近 7 天听这个曲风超过 3 次了吗？"答"是"往左走，答"否"往右走，下一个问题取决于上一个的答案。问到头，就报那里存着的一个数。</p>
+  <p>每个问题叫一个节点（node），只看一列，形式都是"这一列 ≤ 某个数吗"，那个数叫切点（threshold）。问题把样本分成两份，叫切分（split）。不再往下问的地方叫叶子（leaf），分类树的叶子存的是：训练时落到这里的样本里，正样本占多少。从最上面的根节点到叶子最多问几次，叫深度（depth），深度 3 最多 8 个叶子。预测就是从根往下走到叶子，只有比较，没有乘法。</p>
+  <h3>用真实数据建一棵</h3>
+  <p>用第 1–20 天的 2000 条训练样本，和其他几页一样的 15 个特征（<a href="features-samples.html#types">特征和样本</a>），只是保留原始单位，不做缩放。图里出现的是四列：<code>affinity</code> 是偏好，这位用户最近 7 天听这个曲风的次数，这份数据里是 0 到 17 的整数；<code>heat</code> 是歌曲热度，0 到 1；<code>follow</code> 是有没有关注这首歌的歌手，0 或 1；<code>song_min</code> 是歌曲时长，2 到 6 分钟。另外还有曝光的钟点 <code>hour</code>、是否晚上 <code>night</code>（18 点到次日 2 点前）、是否新用户，以及网络和曲风拆成的 0/1 列。</p>
+  <p>建树的规则是 CART 的做法，下一节细讲：每个节点把 15 列的所有切点都试一遍，挑让 Gini 不纯度降得最多的那个；最多 3 层；每个叶子至少留 50 个样本。结果是这样：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 318" role="img" aria-label="深度 3 的决策树。根节点问 affinity 是否不超过 3.5；是的一边再问热度和关注，否的一边问是否关注、歌曲时长和 affinity。8 个叶子的正样本比例从 14.0% 到 60.8%。测试样本 2462 走右、左、右，落在 193 个样本、21.8% 的叶子">
+      <g class="lead" fill="none"><path d="M300 52L150 88"/><path d="M150 132L75 168"/><path d="M150 132L225 168"/><path d="M450 132L525 168"/><path d="M75 212L37.5 248"/><path d="M75 212L112.5 248"/><path d="M225 212L187.5 248"/><path d="M225 212L262.5 248"/><path d="M375 212L337.5 248"/><path d="M525 212L487.5 248"/><path d="M525 212L562.5 248"/></g>
+      <g class="out"><path d="M300 52L450 88"/><path d="M450 132L375 168"/><path d="M375 212L412.5 248"/></g>
+      <rect class="hot" x="225" y="8" width="150" height="44" rx="6"/><rect class="ghost" x="75" y="88" width="150" height="44" rx="6"/><rect class="hot" x="375" y="88" width="150" height="44" rx="6"/><rect class="ghost" x="7" y="168" width="136" height="44" rx="6"/><rect class="ghost" x="157" y="168" width="136" height="44" rx="6"/><rect class="hot" x="307" y="168" width="136" height="44" rx="6"/><rect class="ghost" x="457" y="168" width="136" height="44" rx="6"/><rect class="band" x="4.5" y="248" width="66" height="44" rx="6"/><rect class="band" x="79.5" y="248" width="66" height="44" rx="6"/><rect class="band" x="154.5" y="248" width="66" height="44" rx="6"/><rect class="band" x="229.5" y="248" width="66" height="44" rx="6"/><rect class="band" x="304.5" y="248" width="66" height="44" rx="6"/><rect class="hot" x="379.5" y="248" width="66" height="44" rx="6"/><rect class="band" x="454.5" y="248" width="66" height="44" rx="6"/><rect class="band" x="529.5" y="248" width="66" height="44" rx="6"/>
+      <g text-anchor="middle"><text x="300" y="27" class="mn">affinity ≤ 3.5</text><text x="300" y="44" class="m">2000 · 22.7%</text><text x="150" y="107" class="mn">heat ≤ 0.738</text><text x="150" y="124" class="m">1400 · 18.2%</text><text x="450" y="107" class="mn">follow = 0</text><text x="450" y="124" class="m">600 · 33.2%</text><text x="75" y="187" class="mn">follow = 0</text><text x="75" y="204" class="m">1149 · 15.2%</text><text x="225" y="187" class="mn">affinity ≤ 1.5</text><text x="225" y="204" class="m">251 · 31.9%</text><text x="375" y="187" class="mn">song_min ≤ 4.35</text><text x="375" y="204" class="m">492 · 29.5%</text><text x="525" y="187" class="mn">affinity ≤ 7.5</text><text x="525" y="204" class="m">108 · 50.0%</text><text x="37.5" y="267">14.0%</text><text x="37.5" y="284" class="m">1049</text><text x="112.5" y="267">28.0%</text><text x="112.5" y="284" class="m">100</text><text x="187.5" y="267">26.5%</text><text x="187.5" y="284" class="m">181</text><text x="262.5" y="267">45.7%</text><text x="262.5" y="284" class="m">70</text><text x="337.5" y="267">34.4%</text><text x="337.5" y="284" class="m">299</text><text x="412.5" y="267">21.8%</text><text x="412.5" y="284" class="m">193</text><text x="487.5" y="267">40.4%</text><text x="487.5" y="284" class="m">57</text><text x="562.5" y="267">60.8%</text><text x="562.5" y="284" class="m">51</text></g>
+      <text x="218" y="68" class="m" text-anchor="end">是</text><text x="382" y="68" class="m" text-anchor="start">否</text><text x="105.5" y="148" class="m" text-anchor="end">是</text><text x="194.5" y="148" class="m" text-anchor="start">否</text><text x="405.5" y="148" class="m" text-anchor="end">是</text><text x="494.5" y="148" class="m" text-anchor="start">否</text>
+      <text x="412.5" y="310" class="a" text-anchor="middle">样本 2462</text>
+    </svg>
+    </div>
+    <figcaption>每个框里，上面是问题，下面是落到这里的训练样本数和正样本比例；叶子上面是比例，下面是样本数。答"是"走左边。高亮的是测试样本 2462 走的路。</figcaption>
+  </figure>
+  <p>图上能直接读出几条规律：</p>
+  <ul>
+    <li><strong>第一个问题问的是 affinity。</strong>最近听过 4 次以上的一边，正样本比例是 33.2%，另一边是 18.2%。</li>
+    <li><strong>两边接下来问的不一样。</strong>听得少的一边问热度，听得多的一边问是否关注歌手。后面的问题只在前面的答案成立时才问，所以一条路径就是几个条件的"并且"。</li>
+    <li><strong>8 个叶子相差很大。</strong>最好的是"听过 8 次以上、关注了歌手"：51 个样本里 31 个正样本，60.8%。最差的是"听过不到 4 次、热度 ≤ 0.738、没关注"：1049 个里 147 个，14.0%。</li>
+  </ul>
+  <p>这棵树在验证集上的 AUC 是 0.6294，测试集 0.6748。AUC 的意思是：随便抽一个正样本和一个负样本，模型给正样本的分数更高的概率；0.5 等于瞎猜，1 是全对（<a href="evaluation.html">评估</a>）。同样的数据，逻辑回归是 0.6438 和 0.7175。一棵 3 层的树比不过它，但它只有 7 个问题和 8 个叶子。</p>
+  <h3>样本 2462 走一遍</h3>
+  <p>2462 是测试集里的一条：第 25 天晚上 8 点，给一位老用户推了一首 5.4 分钟的民谣，热度 0.32；他最近 7 天听过 6 次民谣，没关注这位歌手，用的是 wifi。他点开听了超过 30 秒，标签是 1。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>问题</th><th class="num">2462 的值</th><th>回答</th><th>往哪走</th></tr></thead>
+    <tbody>
+      <tr><td class="nw"><code>affinity ≤ 3.5</code></td><td class="num">6</td><td>否</td><td>右</td></tr>
+      <tr><td class="nw"><code>follow = 0</code></td><td class="num">0</td><td>是</td><td>左</td></tr>
+      <tr><td class="nw"><code>song_min ≤ 4.35</code></td><td class="num">5.4</td><td>否</td><td>右</td></tr>
+      <tr><td>叶子</td><td></td><td colspan="2">193 个训练样本，42 个正样本：21.8%</td></tr>
+    </tbody>
+  </table></div>
+  <p>三次比较，预测是 21.8%。数据是脚本生成的，所以知道这条曝光真实的点击概率是 52.3%，模型看不到这个数。</p>
+  <p>差在哪，把这个叶子里的 193 个训练样本按白天、晚上拆开就看到了：白天 114 个，11 个正样本，9.6%；晚上 79 个，31 个正样本，39.2%。2462 是晚上 8 点的曝光。这份数据里，长歌在白天很少被听完，到了晚上反而更受欢迎（第 03 节）。树的第三个问题用在了时长上，没有第四个问题去问是不是晚上。</p>
+</section>
+
+<section id="split">
+  <h2><span class="n">02</span>切在哪：不纯度</h2>
+  <p>上一节那棵树用的是 CART（Classification and Regression Trees，Breiman 等人 1984 年的书）的做法。规则只有一条，从根开始反复做：在当前节点上，把每一列的每一个可能的切点都试一遍，挑分得最"干净"的那个；切出来的两份各自再来一遍，直到该停为止。每一步只挑眼前最好的、不管后面，这种做法叫贪心（greedy）。</p>
+  <p>"干净"用不纯度（impurity）来量，这里用的是 Gini 不纯度。节点里正样本的比例是 p：</p>
+<pre><code>Gini = 1 − p² − (1 − p)² = 2p(1 − p)</code></pre>
+  <p>它的意思是：从这个节点里随手抽两个样本，两个标签不一样的概率。全是正样本或全是负样本时是 0，一半一半时最大，是 0.5。一次切分好不好，看切完以后两边的 Gini 按样本数加权，比切之前降了多少。</p>
+  <h3>根节点上的一次切分</h3>
+<pre><code>切之前  n = 2000  正样本 454  p = 0.2270  Gini = 2 × 0.2270 × 0.7730 = 0.35094
+左边　  n = 1400  正样本 255  p = 0.1821  Gini = 0.29793     affinity ≤ 3.5
+右边　  n =  600  正样本 199  p = 0.3317  Gini = 0.44333     affinity > 3.5
+切之后  0.7 × 0.29793 + 0.3 × 0.44333 = 0.20855 + 0.13300 = 0.34155
+下降　  0.35094 − 0.34155 = 0.00939</code></pre>
+  <p>右边的 Gini 比切之前还大，因为它的比例离 50% 更近了。但右边只占 30%，占 70% 的左边变干净了，加权之后整体是降的。</p>
+  <p>切点取相邻两个取值的中点。affinity 是整数，3 和 4 之间取 3.5，"≤ 3.5"就是"听过 0 到 3 次"。根节点上 15 列一共有 398 个候选切点，去掉会让某一边不到 50 个样本的，还剩 378 个，每个都要像上面这样算一遍。affinity 的每个切点算出来是这样：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 262" role="img" aria-label="根节点上按 affinity 的每个切点切一刀，Gini 不纯度下降多少。切在 3.5 时下降最多，是 0.00939，比 follow 和 heat 最好的切法都大。11.5 以后的切点会让右边不到 50 个样本，不允许">
+      <path class="grid" d="M52 214H588"/><text x="44" y="218" class="t" text-anchor="end">0</text><path class="grid" d="M52 176H588"/><text x="44" y="180" class="t" text-anchor="end">2</text><path class="grid" d="M52 138H588"/><text x="44" y="142" class="t" text-anchor="end">4</text><path class="grid" d="M52 100H588"/><text x="44" y="104" class="t" text-anchor="end">6</text><path class="grid" d="M52 62H588"/><text x="44" y="66" class="t" text-anchor="end">8</text><path class="grid" d="M52 24H588"/><text x="44" y="28" class="t" text-anchor="end">10</text>
+      <path class="axis" d="M52 214H588"/>
+      <rect class="band" x="57.8" y="123.6" width="20" height="90.4"/><rect class="band" x="89.3" y="60.5" width="20" height="153.5"/><rect class="band" x="120.8" y="39.8" width="20" height="174.2"/><rect class="dot" x="152.4" y="35.6" width="20" height="178.4"/><rect class="band" x="183.9" y="78" width="20" height="136"/><rect class="band" x="215.4" y="79.5" width="20" height="134.5"/><rect class="band" x="246.9" y="92.8" width="20" height="121.2"/><rect class="band" x="278.5" y="136.7" width="20" height="77.3"/><rect class="band" x="310" y="150.4" width="20" height="63.7"/><rect class="band" x="341.5" y="148.8" width="20" height="65.2"/><rect class="band" x="373.1" y="169.7" width="20" height="44.3"/><rect class="ghost" x="404.6" y="193.7" width="20" height="20.3"/><rect class="ghost" x="436.1" y="185.3" width="20" height="28.7"/><rect class="ghost" x="467.6" y="197.5" width="20" height="16.5"/><rect class="ghost" x="499.2" y="212.1" width="20" height="1.9"/><rect class="ghost" x="530.7" y="211.2" width="20" height="2.9"/><rect class="ghost" x="562.2" y="213.4" width="20" height="0.8"/>
+      <path class="ghostline" d="M52 67H588"/><path class="ghostline" d="M52 107.9H588"/>
+      <text x="586" y="82" class="m" text-anchor="end">follow 最好的切法 7.74</text>
+      <text x="586" y="122.9" class="m" text-anchor="end">heat 最好的切法 5.58</text>
+      <text x="176.4" y="41" class="a">9.39</text>
+      <text x="493" y="172" class="m" text-anchor="middle">右边不到 50 个样本，不许切</text>
+      <g text-anchor="middle"><text x="99.3" y="230" class="t">1.5</text><text x="162.4" y="230" class="t">3.5</text><text x="225.4" y="230" class="t">5.5</text><text x="288.5" y="230" class="t">7.5</text><text x="351.5" y="230" class="t">9.5</text><text x="414.6" y="230" class="t">11.5</text><text x="477.6" y="230" class="t">13.5</text><text x="540.7" y="230" class="t">15.5</text></g>
+      <text x="52" y="14" class="m">Gini 下降（×0.001）</text>
+      <text x="320" y="252" class="m" text-anchor="middle">affinity 的切点</text>
+    </svg>
+    </div>
+    <figcaption>每根柱子是按 affinity 的一个切点切一刀后 Gini 的下降。切在 3.5 最好；切在 1.5 到 3.5 的三刀，都比 follow、heat 两列各自最好的切法强。</figcaption>
+  </figure>
+  <p>每一列各自最好的那一刀：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>列</th><th>最好的切点</th><th>左边</th><th>右边</th><th class="num">Gini 下降</th></tr></thead>
+    <tbody>
+      <tr><td><code>affinity</code></td><td>≤ 3.5</td><td>1400 个，18.2%</td><td>600 个，33.2%</td><td class="num">0.00939</td></tr>
+      <tr><td><code>follow</code></td><td>= 0</td><td>1763 个，20.4%</td><td>237 个，39.7%</td><td class="num">0.00774</td></tr>
+      <tr><td><code>heat</code></td><td>≤ 0.5845</td><td>1458 个，19.5%</td><td>542 个，31.4%</td><td class="num">0.00558</td></tr>
+      <tr><td><code>song_min</code></td><td>≤ 5.75</td><td>1846 个，23.4%</td><td>154 个，14.3%</td><td class="num">0.00118</td></tr>
+      <tr><td><code>night</code></td><td>= 0</td><td>1078 个，24.1%</td><td>922 个，21.0%</td><td class="num">0.00047</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">只列了 15 列里的 5 列。0/1 列的切点是 0.5，"= 0"的在左边。</p>
+  <ul>
+    <li><strong>树不需要缩放特征。</strong>切分只看大小顺序。把 affinity 除以 30，切点从 3.5 变成 0.1167，分出来的还是同一批样本。参考脚本的 GBDT 用的就是除过的特征，后面会换算回原始单位。</li>
+    <li><strong>换一种不纯度，结论差不多。</strong>另一种常用的是信息熵 −p·ln p − (1 − p)·ln(1 − p)，它正好是"整个节点都报 p"时的平均对数损失（每条样本取 −ln（模型给真实标签的概率），再平均，见<a href="gradient-descent.html">梯度下降</a>），而 Gini 正好是这时平方误差的 2 倍。用熵建同样的树，根切在 affinity ≤ 2.5，前两层用的列不变。Gini 不用算对数，CART 默认用它。</li>
+    <li><strong>什么时候停：</strong>到了最大深度；节点里只剩一类；或者每一种切法都会让某一边少于规定的样本数。</li>
+  </ul>
+</section>
+
+<section id="interaction">
+  <h2><span class="n">03</span>组合条件不用手写</h2>
+  <p>生成这份数据时埋了一条规律：晚上（18 点到次日 2 点前）长歌（4 分钟及以上）更容易被听完，白天正好反过来。全部 3000 条按这两个条件分成四格，正样本比例是：白天短歌 34.7%（784 条），白天长歌 12.0%（825 条），晚上短歌 12.0%（675 条），晚上长歌 31.6%（716 条）。</p>
+  <p>两个条件一致的两格高，不一致的两格低，这种形状叫异或（XOR）。只看一个条件几乎看不出差别：训练集里白天 24.1%，晚上 21.0%。</p>
+  <p>加权求和排不出这四格：两条对角线上的分数加起来永远相等，证明见<a href="neural-network.html#why">神经网络</a>。只给逻辑回归 night 和 long（是否 4 分钟及以上）两列 0/1，和只用这两列的深度 2 的树比一比：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>格</th><th class="num">训练集实际</th><th>逻辑回归，只用这两列</th><th>深度 2 的树，只用这两列</th></tr></thead>
+    <tbody>
+      <tr><td>白天、短歌</td><td class="num">36.2%</td><td class="num">26.4%</td><td class="num">36.2%</td></tr>
+      <tr><td>白天、长歌</td><td class="num">11.9%</td><td class="num">21.8%</td><td class="num">11.9%</td></tr>
+      <tr><td>晚上、短歌</td><td class="num">11.9%</td><td class="num">23.1%</td><td class="num">11.9%</td></tr>
+      <tr><td>晚上、长歌</td><td class="num">30.6%</td><td class="num">18.9%</td><td class="num">30.6%</td></tr>
+    </tbody>
+  </table></div>
+  <p>逻辑回归只学到"晚上低一点、长歌低一点"，四格的高低整个错了。深度 2 的树先问是不是长歌，再在两边各问一次是不是晚上，四个叶子正好是四格，叶子值就是每格的比例。一条路径本身就是"并且"：长歌并且晚上。不用事先告诉树哪两列要组合。</p>
+  <p>逻辑回归要做到同样的事，得人工加一列交叉特征：night 和 long 相同时为 1。参考脚本里"逻辑回归 + 1 个交叉特征"那一组就是这样，测试 AUC 从 0.7175 升到 0.7715（<a href="features-samples.html#cross">交叉特征</a>）。</p>
+  <h3>能表示，不等于能找到</h3>
+  <p>上面那棵树喂的是现成的 night 和 long。只给原始的 hour 和 song_min 两列、深度还是 2，贪心的结果是：根切 song_min ≤ 5.75（特别长的歌比例低一些，14.3%），第二层切 hour ≤ 1.5。18 点和 4 分钟这两条线一条也没找到，训练集 AUC 只有 0.53。</p>
+  <p>原因在第 02 节的表里：单独按 night 切，Gini 只降 0.00047，是 affinity 那一刀的二十分之一。异或要连切两刀才见效，第一刀几乎没有好处，而贪心一次只看一刀。第 06 节的 GBDT 直到第 41 棵树才把它找出来。</p>
+</section>
+
+<section id="overfit">
+  <h2><span class="n">04</span>深树会背答案</h2>
+  <p>叶子的值是数出来的：落进叶子的训练样本里有几个正样本。样本越少，这个比例越靠运气。第 01 节那棵树的叶子拿到测试集上再数一遍：1049 个样本的叶子，训练集 14.0%，测试集 13.3%；100 个样本的叶子，训练集 28.0%，测试集 42.9%（只有 28 条测试样本落进去）。</p>
+  <p>不限深度、不限叶子大小，一直切到每个叶子只剩一类，会怎样？下面是同一份训练集、只改最大深度的结果：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">最大深度</th><th class="num">叶子数</th><th class="num">训练 AUC</th><th class="num">验证 AUC</th><th class="num">验证对数损失</th><th>报 0% 或 100% 却错了</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td class="num">2</td><td class="num">0.5895</td><td class="num">0.6132</td><td class="num">0.4914</td><td class="num">0</td></tr>
+      <tr><td class="num">3</td><td class="num">8</td><td class="num">0.6641</td><td class="num">0.6202</td><td class="num">0.4960</td><td class="num">0</td></tr>
+      <tr><td class="num">4</td><td class="num">16</td><td class="num">0.7094</td><td class="num">0.6312</td><td class="num">0.4989</td><td class="num">0</td></tr>
+      <tr><td class="num">5</td><td class="num">31</td><td class="num">0.7773</td><td class="num">0.6376</td><td class="num">0.7638</td><td class="num">4</td></tr>
+      <tr><td class="num">6</td><td class="num">55</td><td class="num">0.8180</td><td class="num">0.6392</td><td class="num">1.0291</td><td class="num">8</td></tr>
+      <tr><td class="num">8</td><td class="num">139</td><td class="num">0.8960</td><td class="num">0.6062</td><td class="num">2.5984</td><td class="num">32</td></tr>
+      <tr><td class="num">12</td><td class="num">360</td><td class="num">0.9890</td><td class="num">0.5886</td><td class="num">6.8770</td><td class="num">98</td></tr>
+      <tr><td class="num">不限，长到 24 层</td><td class="num">481</td><td class="num">1.0000</td><td class="num">0.5729</td><td class="num">8.4275</td><td class="num">122</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">Gini，叶子不限样本数。最后一列是 400 条验证样本里，树报了 0% 或 100%、实际正好相反的条数。</p>
+  <ul>
+    <li><strong>训练 AUC 一路涨到 1。</strong>长满的树有 481 个叶子，平均一个叶子 4 个样本，几乎每条训练样本都有自己的一条路。它记住的是每条样本的答案，不是规律。这叫过拟合（overfitting）。</li>
+    <li><strong>验证 AUC 在 4 到 6 层到顶，之后往下掉。</strong>再往下切，切的是噪声。</li>
+    <li><strong>验证对数损失从第 5 层开始暴涨。</strong>对数损失（第 02 节）越小越好。只有一两个样本的叶子常常全是负样本，就报 0%；验证集里一个正样本落进去，损失是 −ln 0，无穷大。脚本把概率截在 10⁻¹²，每条这样的样本记 27.6。长满时 400 条里有 122 条是这种"十足把握地错了"。</li>
+  </ul>
+  <h3>刹车</h3>
+  <p>办法都是不让叶子太小：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>做法</th><th>这里的设置</th><th class="num">叶子数</th><th class="num">验证 AUC</th><th class="num">测试 AUC</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">不限制</td><td>长满</td><td class="num">481</td><td class="num">0.5729</td><td class="num">0.5448</td></tr>
+      <tr><td class="nw">限深度</td><td>最多 3 层，叶子至少 50 个样本，就是第 01 节那棵</td><td class="num">8</td><td class="num">0.6294</td><td class="num">0.6748</td></tr>
+      <tr><td class="nw">限叶子大小</td><td>叶子至少 100 个样本，不限深度</td><td class="num">15</td><td class="num">0.6761</td><td class="num">0.7010</td></tr>
+      <tr><td class="nw">剪枝</td><td>先长满再往回剪，取验证 AUC 最高的那一步</td><td class="num">45</td><td class="num">0.6664</td><td class="num">0.6734</td></tr>
+    </tbody>
+  </table></div>
+  <p>剪枝（pruning）用的是 CART 的代价复杂度剪枝：每个叶子记一笔罚分 α，α 从 0 慢慢加大，每次剪掉"少一个叶子、不纯度涨得最少"的子树，得到一串越来越小的树（从 481 个叶子到只剩根，共 149 棵），再用验证集挑。设成多少都用验证集比，测试集只在最后看一次。</p>
+  <div class="key">单棵树还有一个毛病：不稳。训练数据稍有变化，根上的切点就可能换掉，下面整棵树跟着变。第 02 节换一种不纯度，根就从 3.5 换成了 2.5。限制治不了不稳，下一节的办法是种很多棵。</div>
+</section>
+
+<section id="forest">
+  <h2><span class="n">05</span>Bagging 和随机森林</h2>
+  <p>长满的树每一棵都背了一份噪声。训练数据不同，背下的噪声也不同，规律却是同一份。把很多棵这样的树平均起来，噪声互相抵消，规律留下。这是 Breiman 在 1996 年提出的 Bagging（bootstrap aggregating）：</p>
+  <ol class="plain">
+    <li>从 2000 条训练样本里有放回地抽 2000 次，得到一份新的训练集。有的样本被抽到好几次，有的一次也没有，平均只有 63.2% 的样本会出现。这叫自助采样（bootstrap）。</li>
+    <li>用这份数据训一棵长满的树。</li>
+    <li>重复 100 次，得到 100 棵树。预测时每棵树各报一个叶子比例，取平均。</li>
+  </ol>
+  <p>Breiman 在 2001 年又加了一条，就是随机森林（random forest）：每次切分不看全部 15 列，只从随机挑出的几列里选，分类问题常取特征数的平方根，这里是 4 列。如果每棵树都在根上切 affinity，100 棵树会犯差不多的错，平均也抵消不掉；随机挑列让树和树更不一样，平均的效果更好。</p>
+  <p>在这份数据上实际跑了一遍，随机种子固定：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>每棵树</th><th class="num">验证 AUC</th><th class="num">测试 AUC</th><th class="num">测试对数损失</th></tr></thead>
+    <tbody>
+      <tr><td>一棵长满的树</td><td>481 个叶子</td><td class="num">0.5729</td><td class="num">0.5448</td><td class="num">9.4452</td></tr>
+      <tr><td>Bagging，100 棵</td><td>长满，平均 317 个叶子</td><td class="num">0.6519</td><td class="num">0.6796</td><td class="num">0.5424</td></tr>
+      <tr><td>随机森林，100 棵</td><td>长满，每次切分看 4 列，平均 371 个叶子</td><td class="num">0.6774</td><td class="num">0.6888</td><td class="num">0.5142</td></tr>
+      <tr><td>随机森林，100 棵</td><td>同上，但叶子至少 5 个样本，平均 193 个叶子</td><td class="num">0.6893</td><td class="num">0.7208</td><td class="num">0.4956</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">最后一行的叶子最少样本数，是在 1、5、20 三个里按验证集挑的。</p>
+  <ul>
+    <li><strong>平均很管用。</strong>同样是长满的树，100 棵平均以后测试 AUC 从 0.5448 到 0.6888，对数损失从 9.4 回到 0.51：单棵树报 0% 的地方，100 棵里总有几棵报的不是 0。棵数从 1、10、50 加到 100，随机森林的测试 AUC 是 0.6037、0.6258、0.6828、0.6888。</li>
+    <li><strong>多加树不会让森林过拟合。</strong>Breiman 2001 年的论文证明了误差随棵数增加会收敛，多出来的树只是让平均更稳，代价是慢。</li>
+    <li><strong>每棵树都有约 36.8% 的样本没见过</strong>，可以拿它们给这棵树当验证集，叫袋外（out-of-bag）估计，不用另外留数据。</li>
+    <li><strong>在这份数据上，森林最好也就和逻辑回归（0.7175）打平。</strong>它的长处是不怎么挑参数，各棵树可以并行训练。下一节换了一个思路。</li>
+  </ul>
+</section>
+
+<section id="boosting">
+  <h2><span class="n">06</span>梯度提升：下一棵修前面的错</h2>
+  <p>森林里的树各训各的，最后取平均。提升（boosting）反过来：树一棵接一棵地训，每一棵都去修前面所有树加起来还没做对的部分。最后的分数是所有树的输出加起来：</p>
+<pre><code>F = F0 + η × f1 + η × f2 + … + η × f103
+p = sigmoid(F) = 1 / (1 + e^(−F))</code></pre>
+  <p>F 是分数，和逻辑回归加权求和得到的那个数是同一种东西，叫对数几率（logit），等于 ln(p / (1 − p))。F0 是起点；fk 是样本在第 k 棵树落进的叶子的值，不是概率，是往分数上加的量，可以是负数；η 是学习率，每棵树的输出先乘上它再加。这套做法叫梯度提升（gradient boosting），Friedman 2001 年的论文系统地写了出来；每个 fk 都是决策树时，叫 GBDT（Gradient Boosting Decision Tree）。</p>
+  <h3>起点</h3>
+  <p>一棵树都还没有的时候，每个样本都报训练集的正样本比例 22.7%，对应的分数是 F0 = ln(454 / 1546) = −1.2253。</p>
+  <h3>每棵树拟合梯度</h3>
+  <p>对数损失对一个样本的分数 F 求导，结果很简单，和逻辑回归训练时用的是同一个式子（<a href="gradient-descent.html">梯度下降</a>，<a href="prediction.html#s4">总览第 4 站</a>）：</p>
+<pre><code>g = p − y          一阶导数，就是梯度：预测减答案
+h = p · (1 − p)    二阶导数：损失曲线在这里有多弯</code></pre>
+  <p>第一棵树之前，所有样本的 p 都是 0.227：正样本的 g 是 −0.773，负样本是 +0.227，h 都是 0.1755。g 为负，说明分数该往上推。新的一棵树要做的，是把 g 相近的样本分进同一个叶子，再给每个叶子定一个值，把里面样本的分数一起往 g 的反方向推。</p>
+  <h3>叶子值：牛顿步</h3>
+  <p>一个叶子里，G 是所有样本的 g 之和，H 是 h 之和。叶子值取</p>
+<pre><code>w = −G / (H + λ)</code></pre>
+  <p>只有梯度，知道往哪走，不知道走多远。除以曲率 H，就是牛顿法的一步：如果损失是一条抛物线，这一步正好落在最低点。λ 是正则项，这里是 1，样本少、H 很小的时候不让步子太大。第 1 棵树的第 4 个叶子：</p>
+<pre><code>叶子：affinity > 3.5 并且 follow = 1，108 个样本，54 个正样本
+G = 108 × 0.227 − 54      = −29.48
+H = 108 × 0.1755          =  18.95
+w = 29.48 / (18.95 + 1)   =   1.478
+这一棵给这 108 个样本的分数加 0.05 × 1.478 = 0.074，概率从 22.7% 变成 24.0%</code></pre>
+  <p>这个叶子的实际比例是 50%。从 22.7% 一步走到 50%，分数要加 1.225；牛顿步算出 1.478，乘上学习率 0.05，只走了 0.074。剩下的留给后面的树。</p>
+  <h3>切分：同样是贪心，换一个量法</h3>
+  <p>挑切分的办法和第 02 节一样，试遍候选切点，只是"切完好多少"换成了增益：</p>
+<pre><code>增益 = ½ × [ G_L² / (H_L + λ) + G_R² / (H_R + λ) − G² / (H + λ) ]</code></pre>
+  <p>第 1 棵树的根切在 affinity ≤ 3.5：左边 G = 62.8、H = 245.66，右边 G = −62.8、H = 105.28，切之前 G = 0（起点就是平均值，梯度正负正好抵消）。增益 = ½ × (62.8² / 246.66 + 62.8² / 106.28) = 26.55，所有候选里最大。</p>
+  <p>参考脚本的配方：每棵树深度 2，学习率 0.05，最多 300 棵，λ = 1，每个叶子至少 20 个样本，连续的列只在 32 个分位点上找切点。它的特征是除过的（affinity / 30、hour / 23、(song_min − 2) / 4），下面的切点都已换算回原始单位，比如 0.1167 × 30 = 3.5。</p>
+  <h3>前三棵树</h3>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">树</th><th>根</th><th>左边再问</th><th>右边再问</th><th>四个叶子的值（样本数）</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td class="nw">affinity ≤ 3.5</td><td class="nw">heat ≤ 0.722</td><td class="nw">follow = 0</td><td>−0.422（1140）、+0.471（260）、+0.381（492）、+1.478（108）</td></tr>
+      <tr><td class="num">2</td><td class="nw">affinity ≤ 2.5</td><td class="nw">heat ≤ 0.722</td><td class="nw">follow = 0</td><td>−0.433（1002）、+0.296（235）、+0.303（629）、+1.156（134）</td></tr>
+      <tr><td class="num">3</td><td class="nw">affinity ≤ 3.5</td><td class="nw">heat ≤ 0.722</td><td class="nw">follow = 0</td><td>−0.393（1140）、+0.423（260）、+0.341（492）、+1.263（108）</td></tr>
+    </tbody>
+  </table></div>
+  <p>三棵几乎一样。每棵只修了 5%，下一棵看到的梯度和上一棵差不多，同一条规律要学很多遍、每遍学一点。第 2 棵的根从 3.5 换成了 2.5：第 1 棵之后梯度变了一点点，贪心就换了切点。</p>
+  <h3>第 41 棵：组合被找到了</h3>
+  <p>前 40 棵的切分大多落在 affinity、heat、follow 上，也有民谣、时长和网络。第 41 棵是这样：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">白天</th><th class="num">晚上</th></tr></thead>
+    <tbody>
+      <tr><td>song_min ≤ 3.8</td><td class="num">+0.739（507）</td><td class="num">−0.604（444）</td></tr>
+      <tr><td>song_min &gt; 3.8</td><td class="num">−0.557（571）</td><td class="num">+0.425（478）</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">叶子值（样本数）。正数把分数往上推，负数往下拉。</p>
+  <p>正是第 03 节四格的形状。根上那一刀自己的增益只有 2.39，下面按是不是晚上切的两刀是 37.0 和 21.3。到第 41 棵，单独就有用的列已经学得差不多，剩下的梯度里最大的结构就是这个组合；根上的增益虽小，这时已经没有比它更大的了。后面第 50、62、71、79、90 棵是同样的结构。</p>
+  <p>到早停的第 103 棵，它也只学到了一部分：训练集四格的平均预测是 27.5%、20.4%、19.6%、23.0%（顺序同第 03 节的表），实际是 36.2%、11.9%、11.9%、30.6%。</p>
+</section>
+
+<section id="rounds">
+  <h2><span class="n">07</span>学习率和棵数</h2>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 286" role="img" aria-label="GBDT 的对数损失随树的棵数变化。训练集一直下降；验证集在第 103 棵最低，0.4694，之后慢慢回升；测试集在 103 棵时是 0.4847">
+      <path class="grid" d="M56 230H584"/><text x="48" y="234" class="t" text-anchor="end">0.44</text><path class="grid" d="M56 195H584"/><text x="48" y="199" class="t" text-anchor="end">0.46</text><path class="grid" d="M56 160H584"/><text x="48" y="164" class="t" text-anchor="end">0.48</text><path class="grid" d="M56 125H584"/><text x="48" y="129" class="t" text-anchor="end">0.50</text><path class="grid" d="M56 90H584"/><text x="48" y="94" class="t" text-anchor="end">0.52</text><path class="grid" d="M56 55H584"/><text x="48" y="59" class="t" text-anchor="end">0.54</text><path class="grid" d="M56 20H584"/><text x="48" y="24" class="t" text-anchor="end">0.56</text>
+      <path class="axis" d="M56 230H584"/>
+      <path class="lim" d="M237.3 20V230"/>
+      <path class="truth" d="M56 63L58 67L60 70L61 74L65 80L74 92L91 108L109 118L126 125L144 139L162 145L179 153L197 164L214 170L232 173L237 173L250 176L258 177L267 178L285 180L302 183L320 185L338 187L355 189L373 191L390 192L408 194L426 196L443 198L461 200L478 201L496 203L514 204L531 208L549 210L566 211L584 215"/>
+      <path class="ghostline" d="M56 42L58 47L60 51L61 55L65 61L74 76L91 95L109 107L126 115L144 129L162 133L179 138L197 146L214 150L232 151L237 152L250 152L258 153L267 154L285 155L302 156L320 157L338 158L355 158L373 159L390 159L408 160L426 160L443 160L461 161L478 160L496 161L514 160L531 162L549 162L566 162L584 164"/>
+      <path class="out" d="M56 110L58 113L60 117L61 120L65 125L74 133L91 145L109 152L126 156L144 166L162 167L179 171L197 176L214 178L232 178L237 179L250 178L258 177L267 176L285 175L302 175L320 175L338 175L355 174L373 173L390 172L408 173L426 171L443 171L461 171L478 170L496 169L514 168L531 170L549 170L566 169L584 170"/>
+      <circle class="dot" cx="237.3" cy="178.6" r="4"/>
+      <text x="245.3" y="36" class="a">第 103 棵：验证集最低 0.4694</text>
+      <path class="truth" d="M56 270H82"/><text x="88" y="274" class="m">训练集</text>
+      <path class="out" d="M150 270H176"/><text x="182" y="274" class="m">验证集</text>
+      <path class="ghostline" d="M244 270H270"/><text x="276" y="274" class="m">测试集</text>
+      <text x="56" y="248" class="t" text-anchor="middle">0</text><text x="144" y="248" class="t" text-anchor="middle">50</text><text x="232" y="248" class="t" text-anchor="middle">100</text><text x="320" y="248" class="t" text-anchor="middle">150</text><text x="408" y="248" class="t" text-anchor="middle">200</text><text x="496" y="248" class="t" text-anchor="middle">250</text><text x="584" y="248" class="t" text-anchor="middle">300</text>
+      <text x="584" y="274" class="m" text-anchor="end">树的棵数</text>
+      <text x="56" y="12" class="m">对数损失</text>
+    </svg>
+    </div>
+    <figcaption>参考 GBDT 每多一棵树，三段数据上的对数损失。三条线起点不同，是因为三段数据的正样本比例不同：训练 22.7%，验证 20.5%，测试 23.7%。</figcaption>
+  </figure>
+  <p>每多一棵树，训练集损失都会再降一点，它永远在降。验证集前面跟着降，到第 103 棵最低（0.4694），之后慢慢回升：后面的树开始拟合训练集里的噪声。按验证集损失挑棵数，叫早停（early stopping），参考模型就停在 103 棵。</p>
+  <p>测试集是挑完以后才看的。103 棵时它是 0.4847，训到 300 棵还在慢慢降，到 0.4779。验证集 400 条、测试集 600 条，在一份上挑出的最好点，换一份不一定还是最好。</p>
+  <p>学习率决定每棵树走多大一步。配方不变、只换学习率，另跑了两组：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">学习率 η</th><th>最低点在第几棵</th><th>最低验证损失</th><th>那时测试 AUC</th><th>300 棵时验证损失</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0.05（参考）</td><td class="num">103</td><td class="num">0.4694</td><td class="num">0.7499</td><td class="num">0.4741</td></tr>
+      <tr><td class="num">0.3</td><td class="num">22</td><td class="num">0.4766</td><td class="num">0.7566</td><td class="num">0.5214</td></tr>
+      <tr><td class="num">1.0</td><td class="num">4</td><td class="num">0.4531</td><td class="num">0.7458</td><td class="num">0.6030</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>学习率越大，最低点来得越早，过了以后涨得越快。</strong>η = 0.05 从最低点训到 300 棵只涨了 0.005，η = 1 涨了 0.15。小学习率换来一条平缓的曲线，棵数多一些少一些都不要紧。</li>
+    <li><strong>η = 1 的最低点比 η = 0.05 还低，测试 AUC 却更低。</strong>它是在第 4 棵这个尖上取到的。400 条验证数据挑出来的尖，本身就带着运气。</li>
+    <li><strong>常见做法：</strong>学习率取小一些，棵数上限给足，让早停决定停在哪，代价是树更多。</li>
+  </ul>
+</section>
+
+<section id="score">
+  <h2><span class="n">08</span>样本 2462 的分数是加出来的</h2>
+  <p>回到样本 2462，用参考 GBDT 的 103 棵树预测它：每棵树问两次，落进一个叶子，把叶子值乘 0.05 加到分数上。下表只列了几棵，完整的 103 步见后面的图。</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">树</th><th>2462 走的路</th><th class="num">叶子值</th><th class="num">× 0.05</th><th class="num">累计 F</th><th class="num">概率</th></tr></thead>
+    <tbody>
+      <tr><td class="num">起点</td><td></td><td></td><td></td><td class="num">−1.2253</td><td class="num">22.7%</td></tr>
+      <tr><td class="num">1</td><td>affinity &gt; 3.5，follow = 0</td><td class="num">+0.3815</td><td class="num">+0.0191</td><td class="num">−1.2063</td><td class="num">23.0%</td></tr>
+      <tr><td class="num">2</td><td>affinity &gt; 2.5，follow = 0</td><td class="num">+0.3028</td><td class="num">+0.0151</td><td class="num">−1.1911</td><td class="num">23.3%</td></tr>
+      <tr><td class="num">3</td><td>affinity &gt; 3.5，follow = 0</td><td class="num">+0.3411</td><td class="num">+0.0171</td><td class="num">−1.1741</td><td class="num">23.6%</td></tr>
+      <tr><td class="num">36</td><td>民谣，affinity &gt; 5.5</td><td class="num">+0.7548</td><td class="num">+0.0377</td><td class="num">−1.0444</td><td class="num">26.0%</td></tr>
+      <tr><td class="num">41</td><td>song_min &gt; 3.8，晚上</td><td class="num">+0.4251</td><td class="num">+0.0213</td><td class="num">−1.0170</td><td class="num">26.6%</td></tr>
+      <tr><td class="num">103</td><td>不是新用户，hour ≤ 22.5</td><td class="num">+0.0053</td><td class="num">+0.0003</td><td class="num">−0.6280</td><td class="num">34.8%</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 288" role="img" aria-label="样本 2462 的分数从起点 -1.2253（22.7%）开始，每棵树加或减一小步，103 棵后到 -0.628（34.8%）。晚上长歌的 6 棵树和民谣的 16 棵树都出现在第 30 棵之后">
+      <path class="grid" d="M60 207.2H540"/><text x="52" y="211.2" class="t" text-anchor="end">-1.2</text><text x="548" y="211.2" class="t">23.1%</text><path class="grid" d="M60 149.6H540"/><text x="52" y="153.6" class="t" text-anchor="end">-1.0</text><text x="548" y="153.6" class="t">26.9%</text><path class="grid" d="M60 92H540"/><text x="52" y="96" class="t" text-anchor="end">-0.8</text><text x="548" y="96" class="t">31.0%</text><path class="grid" d="M60 34.4H540"/><text x="52" y="38.4" class="t" text-anchor="end">-0.6</text><text x="548" y="38.4" class="t">35.4%</text>
+      <path class="axis" d="M60 236H540"/>
+      <path class="out" fill="none" d="M60 214H65V209H69V205H74V200H79V193H83V188H88V182H93V186H97V180H102V179H107V183H111V176H116V174H121V177H125V176H130V174H135V175H139V178H144V173H149V171H153V174H158V175H163V171H167V174H172V174H177V173H181V175H186V171H190V170H195V170H200V172H204V171H209V174H214V172H218V171H223V173H228V162H232V165H237V164H242V161H246V161H251V154H256V145H260V147H265V144H270V140H274V130H279V128H284V128H288V124H293V118H298V118H302V117H307V118H312V115H316V117H321V112H326V112H330V110H335V107H340V104H344V100H349V94H354V95H358V92H363V92H368V92H372V89H377V89H382V90H386V86H391V81H396V80H400V78H405V74H410V72H414V72H419V72H423V73H428V67H433V64H437V63H442V63H447V62H451V59H456V59H461V56H465V56H470V55H475V56H479V50H484V47H489V48H493V48H498V48H503V49H507V49H512V50H517V47H521V45H526V45H531V43H535V43H540V42H542"/>
+      <circle class="ghost" cx="204" cy="171" r="3.4"/><circle class="ghost" cx="214" cy="172" r="3.4"/><circle class="ghost" cx="228" cy="162" r="3.4"/><circle class="ghost" cx="237" cy="164" r="3.4"/><circle class="ghost" cx="256" cy="145" r="3.4"/><circle class="ghost" cx="274" cy="130" r="3.4"/><circle class="ghost" cx="302" cy="117" r="3.4"/><circle class="ghost" cx="321" cy="112" r="3.4"/><circle class="ghost" cx="335" cy="107" r="3.4"/><circle class="ghost" cx="358" cy="92" r="3.4"/><circle class="ghost" cx="405" cy="74" r="3.4"/><circle class="ghost" cx="437" cy="63" r="3.4"/><circle class="ghost" cx="461" cy="56" r="3.4"/><circle class="ghost" cx="484" cy="47" r="3.4"/><circle class="ghost" cx="521" cy="45" r="3.4"/><circle class="ghost" cx="531" cy="43" r="3.4"/><circle class="dot" cx="251" cy="154" r="3.6"/><circle class="dot" cx="293" cy="118" r="3.6"/><circle class="dot" cx="349" cy="94" r="3.6"/><circle class="dot" cx="391" cy="81" r="3.6"/><circle class="dot" cx="428" cy="67" r="3.6"/><circle class="dot" cx="479" cy="50" r="3.6"/>
+      <circle class="dot" cx="66" cy="272" r="3.6"/><text x="76" y="276" class="m">晚上 × 长歌的 6 棵树</text>
+      <circle class="ghost" cx="250" cy="272" r="3.4"/><text x="260" y="276" class="m">路径上问了民谣的 16 棵树</text>
+      <text x="66" y="230" class="m">起点 −1.2253（22.7%）</text>
+      <text x="532" y="30.5" class="a" text-anchor="end">103 棵后 −0.628（34.8%）</text>
+      <text x="60" y="254" class="t" text-anchor="middle">0</text><text x="153.2" y="254" class="t" text-anchor="middle">20</text><text x="246.4" y="254" class="t" text-anchor="middle">40</text><text x="339.6" y="254" class="t" text-anchor="middle">60</text><text x="432.8" y="254" class="t" text-anchor="middle">80</text><text x="526" y="254" class="t" text-anchor="middle">100</text>
+      <text x="540" y="276" class="m" text-anchor="end">第几棵树</text>
+      <text x="60" y="12" class="m">分数 F（对数几率）</text>
+      <text x="586" y="12" class="m" text-anchor="end">概率</text>
+    </svg>
+    </div>
+    <figcaption>每一级台阶是一棵树的贡献。左边的刻度是分数，右边是同一高度对应的概率。实心点是第 06 节说的晚上 × 长歌那 6 棵，空心点是路径上问了民谣的 16 棵，都出现在第 30 棵以后。</figcaption>
+  </figure>
+  <p>按树的路径上问了什么分组，103 棵对 2462 的贡献是：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>路径上问了</th><th class="num">棵数</th><th class="num">一共加了</th></tr></thead>
+    <tbody>
+      <tr><td>night（晚上 × 长歌那几棵）</td><td class="num">6</td><td class="num">+0.122</td></tr>
+      <tr><td>民谣（<code>g_民谣</code>）</td><td class="num">16</td><td class="num">+0.216</td></tr>
+      <tr><td>只问了 affinity、heat、follow</td><td class="num">28</td><td class="num">+0.016</td></tr>
+      <tr><td>其他组合</td><td class="num">53</td><td class="num">+0.243</td></tr>
+      <tr><td>合计</td><td class="num">103</td><td class="num">+0.597</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>每一步都很小。</strong>最大的一步是第 36 棵，+0.0377，这就是学习率 0.05 的效果。</li>
+    <li><strong>只问 affinity、heat、follow 的 28 棵几乎互相抵消。</strong>听过 6 次民谣是加分，热度只有 0.32、没关注歌手是减分。</li>
+    <li><strong>按每棵算，晚上和民谣两组加得最多</strong>，平均每棵 0.020 和 0.014，其他组合不到 0.005。生成数据时民谣只在晚上加分，但民谣那 16 棵的路径上都没问时间，学到的是"民谣整体好一点"：同样一条曝光挪到白天，它们照样加 0.216。</li>
+    <li><strong>结果是 34.8%。</strong>比深度 3 的树（21.8%）和逻辑回归（28.8%）都更靠近真实概率 52.3%，但还差不少。加了交叉特征的逻辑回归给它 46.5%。</li>
+  </ul>
+</section>
+
+<section id="importance">
+  <h2><span class="n">09</span>哪些特征用得最多</h2>
+  <p>每次切分都有一个增益。把 103 棵树里用到某一列的所有切分的增益加起来，就是这一列的增益重要度（gain importance）。数据是生成的，可以拿生成时的规律对照，右边一列是这一项在对数几率上加减多少：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>列</th><th class="num">增益</th><th class="num">占比</th><th>生成数据时它起什么作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>affinity</code></td><td class="num">308.7</td><td class="num">23.8%</td><td>1.7 × (1 − e^(−affinity / 6))：越听越高，慢慢饱和</td></tr>
+      <tr><td><code>night</code></td><td class="num">275.2</td><td class="num">21.2%</td><td>和长歌组合：一致 +0.8，不一致 −0.6；晚上的民谣再 +0.4</td></tr>
+      <tr><td><code>heat</code></td><td class="num">271.9</td><td class="num">21.0%</td><td>1.3 × heat</td></tr>
+      <tr><td><code>follow</code></td><td class="num">158.2</td><td class="num">12.2%</td><td>+0.9</td></tr>
+      <tr><td><code>hour</code></td><td class="num">90.1</td><td class="num">6.9%</td><td>只通过 night 起作用</td></tr>
+      <tr><td><code>song_min</code></td><td class="num">87.9</td><td class="num">6.8%</td><td>和 night 组合；用 4g 时 4.5 分钟以上 −0.5</td></tr>
+      <tr><td><code>g_民谣</code></td><td class="num">38.2</td><td class="num">2.9%</td><td>晚上 +0.4</td></tr>
+      <tr><td><code>new_user</code></td><td class="num">18.9</td><td class="num">1.5%</td><td>−0.5</td></tr>
+      <tr><td><code>net_4g</code></td><td class="num">18.4</td><td class="num">1.4%</td><td>和时长组合，见上</td></tr>
+      <tr><td><code>g_古典</code>、<code>net_wifi</code>、<code>g_电子</code></td><td class="num">30.1</td><td class="num">2.3%</td><td>没有直接作用</td></tr>
+      <tr><td>其余 3 列</td><td class="num">0</td><td class="num">0</td><td>没有</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>前四名正好是规律里分量最大的。</strong></li>
+    <li><strong>night 的 275.2 全部来自那 6 棵组合树。</strong>它一共被切了 12 次，都在那 6 棵里；单独按 night 切几乎没用（第 02 节）。重要度只说明这一列被拿来切了、切完损失降了多少，不说明它单独起什么作用，也不说明方向。</li>
+    <li><strong>规律里没有的列也分到了一点。</strong><code>g_古典</code> 是 16.9：比如第 13 棵在关注了歌手的 237 个样本里，又按是不是古典切了一刀，切出一个 30 个样本的叶子。2000 条数据里，排在后面的重要度多半是噪声。</li>
+    <li><strong>相关的列会分走重要度，取值多的列占便宜。</strong>hour 和 night 说的是同一件事，增益被两列分了；连续的列候选切点多，更容易碰巧切出增益。另一种量法是置换重要度：在验证集上把一列的值打乱，看指标掉多少。</li>
+  </ul>
+</section>
+
+<section id="compare">
+  <h2><span class="n">10</span>和逻辑回归、神经网络比</h2>
+  <p>同一份数据、同样的切分，这几页训过的模型放在一起（<a href="prediction.html#s9">总览第 9 站</a>）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>大小</th><th class="num">验证 AUC</th><th class="num">测试 AUC</th><th class="num">测试对数损失</th></tr></thead>
+    <tbody>
+      <tr><td>都报 22.7%</td><td>1 个数</td><td class="num">0.5</td><td class="num">0.5</td><td class="num">0.5475</td></tr>
+      <tr><td>深度 3 的树</td><td>7 个问题、8 个叶子</td><td class="num">0.6294</td><td class="num">0.6748</td><td class="num">0.5091</td></tr>
+      <tr><td>逻辑回归</td><td>16 个参数</td><td class="num">0.6438</td><td class="num">0.7175</td><td class="num">0.4985</td></tr>
+      <tr><td>随机森林，100 棵</td><td>平均每棵 193 个叶子</td><td class="num">0.6893</td><td class="num">0.7208</td><td class="num">0.4956</td></tr>
+      <tr><td>神经网络 15 → 16 → 8 → 1</td><td>401 个参数</td><td class="num">0.6810</td><td class="num">0.7310</td><td class="num">0.4851</td></tr>
+      <tr><td>GBDT，103 棵</td><td>309 个问题、412 个叶子</td><td class="num">0.7081</td><td class="num">0.7499</td><td class="num">0.4847</td></tr>
+      <tr><td>逻辑回归 + 1 个交叉特征</td><td>17 个参数</td><td class="num">0.6961</td><td class="num">0.7715</td><td class="num">0.4592</td></tr>
+      <tr><td>GBDT + 同一个交叉特征（另跑）</td><td>91 棵</td><td class="num">0.7238</td><td class="num">0.7817</td><td class="num">0.4587</td></tr>
+      <tr><td>真实概率</td><td>—</td><td class="num">0.7230</td><td class="num">0.7834</td><td class="num">0.4492</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">最后一行把生成数据时的真实概率当成预测，是这份数据的上限（<a href="evaluation.html#baseline">基线和上限</a>）。</p>
+  <ul>
+    <li><strong>GBDT 比逻辑回归和神经网络都高，但测试集只有 600 条。</strong>评估那一页用自助采样估过误差（<a href="evaluation.html#noise">600 条样本能分出多少高低</a>）：GBDT 的 0.7499 前后大约各有 0.045 的余地；它比逻辑回归高，这个差的区间不跨过 0；比神经网络高的那一点，区间跨过了 0。</li>
+    <li><strong>一列人写的交叉特征，在这份测试集上胜过 103 棵树。</strong>逻辑回归加上"night 和 long 是否相同"这一列就到 0.7715。GBDT 能自己找到这个组合（第 41 棵），但在 2000 条数据、早停在 103 棵的条件下只学到一部分。不过这两者的差同样跨过了 0，不能说谁一定更好。</li>
+    <li><strong>把同一列交叉特征也交给 GBDT</strong>（另跑，配方不变，早停在 91 棵），测试 AUC 到 0.7817，离上限 0.7834 只差 0.002。</li>
+  </ul>
+  <div class="key">树能省掉一部分手工组合，但省不掉全部。已经知道的规律直接做成特征，对哪种模型都有用。</div>
+</section>
+
+<section id="libs">
+  <h2><span class="n">11</span>XGBoost、LightGBM、CatBoost</h2>
+  <p>本页的 GBDT 是参考脚本里三十来行 JS。实际工作中用的是三个开源库，核心都是第 06 节的算法，各自加了不同的东西：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>库</th><th>出处</th><th>加了什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">XGBoost</td><td>陈天奇、Carlos Guestrin，2016 年 KDD 论文</td><td>把正则直接写进目标函数：叶子值的 L2（本页的 λ），每多一个叶子再罚 γ；用一阶、二阶导数算叶子值和增益，就是第 06 节那两个式子；每个节点给缺失值学一个默认方向；按分位数近似找切点，多线程并行，数据放不下内存时分块读</td></tr>
+      <tr><td class="nw">LightGBM</td><td>微软，2017 年 NIPS 论文</td><td>先把每列分进最多 255 个桶（直方图），只在桶的边界上找切点；按叶子生长：每次挑全树增益最大的那个叶子切，用叶子数（默认 31）控制大小，不再一层一层切满；GOSS：梯度小的样本只抽一部分来算；EFB：把从不同时非零的稀疏列捆成一列</td></tr>
+      <tr><td class="nw">CatBoost</td><td>Yandex，2018 年 NeurIPS 论文</td><td>类别特征换成"有序目标统计"：把样本随机排个序，每个样本只用排在它前面的样本算这个类别的平均标签，避免把自己的标签漏进特征；有序提升；对称树：同一层的节点问同一个问题，深度 d 的树就是一张 2<sup>d</sup> 格的表，预测时把 d 个比较结果拼成下标直接查</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>参考脚本的几个选择就来自它们。</strong>λ = 1 是 XGBoost 的默认值；叶子至少 20 个样本是 LightGBM 的默认值；只在 32 个分位点上找切点，是直方图做法的简化版。</li>
+    <li><strong>默认参数差别不小。</strong>XGBoost 默认深度 6、学习率 0.3；LightGBM 默认最多 31 个叶子、学习率 0.1；CatBoost 默认深度 6。本页的数据只有 2000 条，用的是更小的树和学习率。</li>
+  </ul>
+</section>
+
+<section id="choose">
+  <h2><span class="n">12</span>什么时候用树</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>数据</th><th>常用</th><th>原因</th></tr></thead>
+    <tbody>
+      <tr><td>表格：每一列有自己的含义（次数、比例、时长、类别），几千到几千万行</td><td class="nw">GBDT</td><td>不用标准化，不怕各列单位、分布不一样；组合自己找；要调的参数少，训练快</td></tr>
+      <tr><td>图像、音频</td><td class="nw">神经网络</td><td>单个像素、单个采样点没有意义，有用的是一片相邻的值组成的形状。树一次只比较一列，拼不出形状</td></tr>
+      <tr><td>文本</td><td class="nw">神经网络</td><td>意思在词的顺序和上下文里，见<a href="llm.html">大模型</a></td></tr>
+      <tr><td>海量 ID：几百万用户、几千万首歌</td><td class="nw">神经网络</td><td>ID 的大小没有意义。拆成 0/1 列就是几百万列，每列只有很少的样本是 1，切一刀分不出多少样本。神经网络给每个 ID 学一个向量（embedding），见<a href="ctr-recommendation.html">点击率预估</a></td></tr>
+    </tbody>
+  </table></div>
+  <p>表格数据上，GBDT 长期是最强的一类模型。2022 年 NeurIPS 上 Grinsztajn 等人的基准论文《Why do tree-based models still outperform deep learning on tabular data?》专门比过：在中等规模的表格数据上，树模型整体领先。近几年也有专为表格设计的神经网络在一些基准上追平甚至超过它，但 GBDT 仍是最常用的起点。本页的结果也一样：GBDT 0.7499，神经网络 0.731。</p>
+  <h3>GBDT + 逻辑回归</h3>
+  <p>推荐和广告里有一种经典组合：先训一个 GBDT，不用它的分数，而是记下每个样本在每棵树落进了哪个叶子，把"第几棵树的第几个叶子"做成 0/1 特征，再交给逻辑回归。Facebook 2014 年的论文《Practical Lessons from Predicting Clicks on Ads at Facebook》描述了这种做法，来龙去脉见<a href="ctr-recommendation.html#lineage">模型的演进</a>。</p>
+  <p>拿本页的模型说：103 棵树、每棵 4 个叶子，一共 412 列。样本 2462 在第 1 棵落进第 3 个叶子，在第 41 棵落进第 4 个，412 列里正好 103 列是 1。每个叶子是两个条件的"并且"，所以这 412 列是树替你做好的组合特征。GBDT 自己的预测其实就是这 412 列的加权和，权重是 0.05 × 叶子值；换成逻辑回归，是把这些权重拿去重新学，还能和别的特征放在一起训。</p>
+</section>
+
+<section id="cost">
+  <h2><span class="n">13</span>预测一次的代价</h2>
+  <p>学完的模型就是一堆数（<a href="prediction.html#s8">总览第 8 站</a>）。树模型的数是：每个问题比哪一列、切点是多少，每个叶子的值。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>预测一次要做的</th><th>模型里的数</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归</td><td>15 次乘加，1 次 sigmoid</td><td>16 个</td></tr>
+      <tr><td>神经网络 15 → 16 → 8 → 1</td><td>15×16 + 16×8 + 8 = 376 次乘加，24 次 ReLU，1 次 sigmoid</td><td>401 个</td></tr>
+      <tr><td>深度 3 的树</td><td>3 次比较</td><td>7 个问题，8 个叶子值</td></tr>
+      <tr><td>GBDT，103 棵深度 2</td><td>103 × 2 = 206 次比较，103 次加法，1 次 sigmoid</td><td>309 个问题（各一个列号、一个切点），412 个叶子值，加上起点，一共 1031 个数，按 4 字节存约 4 KB</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>比较次数 = 棵数 × 深度</strong>，和有多少列无关。1000 棵深度 6 的树，预测一次 6000 次比较；每棵 63 个问题、64 个叶子，一共 19 万个数，按 4 字节约 760 KB。</li>
+    <li><strong>比较意味着跳转。</strong>下一步读哪个节点取决于这一步的结果，不像矩阵乘法那样整齐，CPU 的向量指令帮不上多少忙。</li>
+    <li><strong>真正花时间的常常是算特征。</strong>affinity 要去数这位用户最近 7 天的播放记录，而且必须和训练时同一个算法（<a href="prediction.html#s10">总览第 10 站</a>）。</li>
+  </ul>
+  <p>本页的 103 棵树都是满的深度 2，可以直接按数组存，在 Android 上用几行 Kotlin 预测：</p>
+<pre><code>import kotlin.math.exp
+
+// 每棵树 3 个问题（根、左、右）、4 个叶子，一棵接一棵连续存
+class Gbdt(
+    private val feature: IntArray,      // 103 × 3：这个问题看第几列
+    private val threshold: FloatArray,  // 103 × 3：切点，原始单位
+    private val leaf: FloatArray,       // 103 × 4：叶子值，已经乘过 0.05
+    private val base: Float = -1.2253f, // 起点 F0
+) {
+    fun predict(x: FloatArray): Float {
+        var f = base
+        for (t in 0 until leaf.size / 4) {
+            val q = t * 3
+            val right = x[feature[q]] &gt; threshold[q]    // 第一问，答"否"往右
+            val q2 = q + if (right) 2 else 1            // 第二问是哪个节点
+            val right2 = x[feature[q2]] &gt; threshold[q2]
+            f += leaf[t * 4 + (if (right) 2 else 0) + (if (right2) 1 else 0)]
+        }
+        return 1f / (1f + exp(-f))
+    }
+}</code></pre>
+  <p>没有任何依赖。切点要和喂进去的特征同一个单位：参考脚本里的切点是除过的（0.1167），这里换算成原始单位存（3.5），就要喂原始的 affinity。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>训练 AUC 接近 1，验证集只有 0.57</td><td>树长满了，平均 4 个样本一个叶子，背下的是噪声</td><td>限深度、限叶子样本数或剪枝，用验证集挑；或者换成森林、GBDT</td></tr>
+      <tr><td>验证集对数损失突然变成好几</td><td>只有几个样本的叶子报 0% 或 100%，错一条就记 27.6</td><td>叶子至少留几十个样本；要输出概率时用森林的平均或 GBDT</td></tr>
+      <tr><td>GBDT 训练损失一直降，验证集和线上变差</td><td>树太多，后面的树在拟合噪声</td><td>按验证集早停；学习率小一些，曲线更平，停早停晚影响都小</td></tr>
+      <tr><td>把增益重要度读成"这个特征作用有多大"</td><td>组合带来的增益记在单列头上；相关的列互相分；连续的列候选切点多，更容易被选中</td><td>在验证集上用置换重要度复核；想知道因果要做实验</td></tr>
+      <tr><td>取值超出训练范围以后，预测不再变化</td><td>树是分段常数，最右边的叶子一直管到无穷大。这份数据里 affinity 最大是 17，听 30 次和听 17 次得分一样</td><td>训练数据要覆盖线上的取值范围；需要外推的部分交给线性模型</td></tr>
+      <tr><td>线上的分数和离线对不上</td><td>特征算法不一致：hour 用了 UTC，训练时是本地时间；时长单位成了秒；参考 GBDT 的切点是除过的，线上喂了原始值</td><td>线上线下共用一份特征代码；上线前拿同一批样本逐条对分数</td></tr>
+      <tr><td>自己写的预测代码，分数整体偏了</td><td>漏了起点 F0；叶子值没乘学习率，或者导出时已经乘过又乘了一遍；忘了过 sigmoid</td><td>拿几条样本和训练库的输出逐棵对</td></tr>
+      <tr><td>缺失值走错了分支</td><td>NaN 和任何数比较都是 false，<code>x &gt; t</code> 不成立就进了左边。XGBoost、LightGBM 训练时给每个节点定了缺失值走哪边</td><td>按模型文件里记的方向走；或者线上线下用同一个填充值</td></tr>
+      <tr><td>用户 ID、歌曲 ID 直接当数值列</td><td>ID 的大小没有远近，<code>id ≤ 123.5</code> 是在记名单，换一批用户就失效</td><td>换成统计特征，比如这首歌过去的完播率；或者交给神经网络学 embedding</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">所有数字来自同一份示意数据（3000 行，脚本按固定随机种子生成；第 1–20 天训练，21–24 天验证，25–30 天测试）。GBDT 的配方、损失曲线、前三棵树、增益重要度，以及逻辑回归、神经网络、交叉特征各组的指标，取自这几页共用的参考脚本。样本 2462 的逐棵累加、第 41 棵树、按路径分组的贡献、四格的平均预测、学习率 0.3 和 1.0 两组、GBDT 加交叉特征一组，是把参考脚本的 GBDT 代码原样复制后重跑的，重跑的 300 棵曲线和测试 AUC 与参考输出完全一致。单棵树按 CART 的做法另写：15 列原始单位，候选切点取相邻取值的中点，Gini 不纯度；第 01 节那棵最多 3 层、叶子至少 50 个样本，深度表不限叶子大小，剪枝用代价复杂度、按验证集 AUC 挑。Bagging 和随机森林各 100 棵，自助采样，种子固定，长满（森林另有一组叶子至少 5 个样本），森林每次切分随机看 4 列。只用 night、long 两列的逻辑回归用全量梯度下降训到收敛；逻辑回归对样本 2462 的概率按参考配方重训得到。AUC 和对数损失的算法与参考脚本相同，对数损失把概率截在 10⁻¹² 到 1 − 10⁻¹²。误差区间引自评估那一页。三个库和 GBDT + 逻辑回归的描述来自各自的论文和文档，没有在这份数据上跑这几个库。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 4 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="neural-network.html"><span class="t">← 上一篇：神经网络</span><span class="d">神经网络：一层一层算出来</span></a>
+    <a class="demo" href="evaluation.html"><span class="t">下一篇：评估 →</span><span class="d">几个模型都有了，各给一个概率。拿没见过的数据考一考：谁准，准多少，差别是不是真的。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

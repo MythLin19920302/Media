@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>推荐和点击率预估：工业界怎么预测</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：图里的等宽数字 */
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+.fig text.sm{font-family:var(--font-mono);font-size:11px}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#scale">规模变了，问题没变</a></li>
+    <li><a href="#funnel">为什么分成几段</a></li>
+    <li><a href="#samples">样本：曝光拼上播放</a></li>
+    <li><a href="#sampling">负样本太多：降采样再校正</a></li>
+    <li><a href="#embedding">ID 特征：查表得到向量</a></li>
+    <li><a href="#id-lab">在示例数据上学 ID</a></li>
+    <li><a href="#cross">交叉：0.7175 到 0.7715</a></li>
+    <li><a href="#lineage">模型的演进</a></li>
+    <li><a href="#two-tower">双塔召回和向量检索</a></li>
+    <li><a href="#score">从概率到排序</a></li>
+    <li><a href="#serving">线上：特征、延迟和更新</a></li>
+    <li><a href="#loop">闭环：模型在给自己造样本</a></li>
+    <li><a href="#device">手机上的重排</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>推荐和点击率预估：工业界怎么预测</h1>
+  <p class="lede">前几篇在 3000 次曝光上训练模型，算出"这位用户会不会点开这首歌"的概率。线上的首页推荐算的也是这个概率，只是用户上亿、歌上千万，一次刷新只有一百来毫秒。这一篇讲同样的想法放大之后多出来的部分：分几段挑歌，样本从哪来，ID 怎么变成向量，概率怎么变成排序，模型怎么上线和更新，手机上还能做什么。</p>
+  <div class="journey" aria-label="一次首页请求里，候选歌经过各段之后还剩多少（示意）">
+    <div class="step"><span class="k">曲库</span><span class="v">1000 万首</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">召回后</span><span class="v">2000 首</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">精排后</span><span class="v hex">50 首</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">首屏展示</span><span class="v">10 首</span></div>
+  </div>
+  <p class="caption">漏斗上的数是为了讲量级编的示意值，不是哪一家的实际配置；页里线上的耗时、表的大小、广告出价也都是示意。正样本率和各模型的 AUC 来自前几篇共用的示例数据：一个音乐 App 首页的 3000 次曝光，300 位用户、400 首歌、30 天，由脚本按固定随机种子生成，全是合成的。本页新做的几个小实验，配方写在各自那一节。这一页从<a href="prediction.html#s10">总览图</a>的"上线"那一站接着往下讲。</p>
+</header>
+
+<section id="scale">
+  <h2><span class="n">01</span>规模变了，问题没变</h2>
+  <p>点击率（CTR，click-through rate）是点击次数除以曝光次数。点击率预估是在每次曝光之前，先算出"这次会被点"的概率，记作 pCTR（predicted CTR）。在音乐首页的例子里，"点"指点开并播放超过 30 秒。它和<a href="prediction.html#s1">地图第一站</a>说的是同一件事：输入一位用户、一首歌和当时的环境，输出一个 0 到 1 之间的数。</p>
+  <p>前几篇已经把这件事完整做过一遍。放到线上，公式不变，变的是规模：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>前几篇的例子</th><th>线上（示意量级）</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">用户、歌</td><td>300 位、400 首</td><td>上亿、上千万</td></tr>
+      <tr><td class="nw">训练样本</td><td>2000 次曝光</td><td>每天几亿到几十亿次</td></tr>
+      <tr><td class="nw">输入</td><td>15 个数</td><td>几百个特征，外加用户、歌、歌手的 ID</td></tr>
+      <tr><td class="nw">模型</td><td>16 到 401 个数（逻辑回归到 DNN）</td><td>几十 GB，大头是 ID 对应的向量</td></tr>
+      <tr><td class="nw">一次预测</td><td>给 1 次曝光打分</td><td>一次请求给几百首歌打分，几十毫秒内完成</td></tr>
+      <tr><td class="nw">更新</td><td>训练一次几秒</td><td>每天重训，或者边收数据边更新</td></tr>
+    </tbody>
+  </table></div>
+  <p>规模带来三个新问题，后面各节分别回答：</p>
+  <ul>
+    <li><strong>算不过来。</strong>不能拿最好的模型给曲库里每首歌打分，于是分成几段（第 02 节）。</li>
+    <li><strong>样本是日志拼出来的。</strong>正负样本极不平衡，标签会迟到，还带着位置和推荐系统自己造成的偏差（第 03、04、12 节）。</li>
+    <li><strong>最有用的特征是 ID。</strong>"这首歌是哪一首"比任何描述都具体，但它有上千万种取值，要变成向量才能用（第 05 到 09 节）。</li>
+  </ul>
+</section>
+
+<section id="funnel">
+  <h2><span class="n">02</span>为什么分成几段</h2>
+  <p>先算一笔账。假设精排模型给一首歌打一次分要 20 微秒（一个 CPU 核，示意）：</p>
+<pre><code>给整个曲库打分    10,000,000 首 × 20 µs = 200 秒
+只给 300 首打分          300 首 × 20 µs = 6 毫秒</code></pre>
+  <p>一次刷新等不了 200 秒。办法是先用便宜的方法从全曲库捞出几千首可能相关的，再用越来越贵的模型处理越来越少的歌。这个结构叫漏斗。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 262" role="img" aria-label="漏斗：曲库 1000 万首，召回后剩 2000 首，粗排后 300 首，精排后 50 首，重排后首屏展示 10 首。越往下歌越少，用的模型越贵">
+      <g class="lead" fill="none">
+        <path d="M160 50L210 64"/><path d="M580 50L530 64"/>
+        <path d="M210 100L255 114"/><path d="M530 100L485 114"/>
+        <path d="M255 150L295 164"/><path d="M485 150L445 164"/>
+        <path d="M295 200L328 214"/><path d="M445 200L412 214"/>
+      </g>
+      <rect class="band" x="160" y="14" width="420" height="36" rx="6"/>
+      <rect class="band" x="210" y="64" width="320" height="36" rx="6"/>
+      <rect class="band" x="255" y="114" width="230" height="36" rx="6"/>
+      <rect class="hot" x="295" y="164" width="150" height="36" rx="6"/>
+      <rect class="band" x="328" y="214" width="84" height="36" rx="6"/>
+      <g text-anchor="middle">
+        <text x="370" y="37">1000 万首</text>
+        <text x="370" y="87">2000 首</text>
+        <text x="370" y="137">300 首</text>
+        <text x="370" y="187">50 首</text>
+        <text x="370" y="237">10 首</text>
+      </g>
+      <text x="8" y="29">曲库</text><text x="8" y="45" class="m">全部的歌</text>
+      <text x="8" y="79">召回</text><text x="8" y="95" class="m">多路，查索引</text>
+      <text x="8" y="129">粗排</text><text x="8" y="145" class="m">小模型</text>
+      <text x="8" y="179" class="a">精排</text><text x="8" y="195" class="m">点击率模型</text>
+      <text x="8" y="229">重排</text><text x="8" y="245" class="m">整页、规则</text>
+    </svg>
+    </div>
+    <figcaption>越往下候选越少，每首歌能花的计算越多。数量是示意值，条的宽度不按比例。精排就是前几篇训练的那种模型。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>阶段</th><th>歌的数量（示意）</th><th>用什么</th><th>每首代价（示意）</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">召回</td><td class="num">1000 万 → 2000</td><td>几路并行再合并：向量检索（第 09 节）、"听过 A 的人也常听 B"、热门榜、关注歌手的新歌</td><td class="nw">不逐首算，查索引</td></tr>
+      <tr><td class="nw">粗排</td><td class="num">2000 → 300</td><td>小模型，常见的是双塔点积或很浅的网络，特征少</td><td class="nw">约 1 µs，共 2 ms</td></tr>
+      <tr><td class="nw">精排</td><td class="num">300 → 50</td><td>点击率模型，用上全部特征和交叉</td><td class="nw">约 20 µs，共 6 ms</td></tr>
+      <tr><td class="nw">重排</td><td class="num">50 → 10</td><td>看整页：同一歌手别连着出，去掉刚听过的，插入新歌和探索位</td><td class="nw">按整页算</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>召回（retrieval）要的是别漏。</strong>宁可多捞。各路的分数不是一个尺度，热门榜的热度和向量的点积没法比，所以合并之后由后面的模型统一重新打分。</li>
+    <li><strong>粗排（pre-ranking）和精排（ranking）的目标相同。</strong>粗排模型小，只为减负；精排特征最全，决定顺序的主体。</li>
+    <li><strong>重排（re-ranking）看一整页。</strong>不再一首一首地看，而是看放在一起好不好：多样性、业务规则、探索。</li>
+  </ul>
+  <p>公开论文里能看到同样的结构。YouTube 2016 年的论文先把几百万个视频缩到几百个候选，排序阶段只给这几百个打分。Google Play 的 Wide &amp; Deep 论文写道，一百多万个应用不可能在通常 10 毫秒量级的延迟要求里逐个打分，所以先检索、再排序。</p>
+  <div class="key">分段的代价是：前一段没捞上来的歌，后面的模型再好也看不到。所以每一段有自己的指标。召回看该推的歌有没有捞进来，排序看顺序（AUC），见<a href="evaluation.html">评估</a>。</div>
+</section>
+
+<section id="samples">
+  <h2><span class="n">03</span>样本：曝光拼上播放</h2>
+  <p>线上的训练样本不是人标的，是两份日志拼出来的（<a href="features-samples.html#logs">特征和样本</a>那一篇讲过一行样本怎么拼成）。到了线上规模，拼接变成一条不停的流水线。请求号是每次刷新的唯一编号，用它把两边对上：</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">① 曝光日志</div><ol><li>每展示一首歌记一行</li><li>请求号、用户、歌、位置、时间，以及打分时用的特征值</li></ol></div>
+    <div class="lane"><div class="who">② 行为日志</div><ol><li>点开、播了多久、跳过、收藏</li><li>带着同一个请求号</li></ol></div>
+    <div class="lane"><div class="who">③ 拼接</div><ol><li>按请求号和歌对上</li><li>等一个时间窗口再定标签</li></ol></div>
+    <div class="lane"><div class="who">④ 样本</div><ol><li>播放超过 30 秒记 1</li><li>没点、不到 30 秒记 0</li></ol></div>
+  </div>
+  <p>示例数据就是按这个规则生成的：3000 次曝光里 678 次是正样本，正样本率 22.6%。广告的点击率通常低得多，常常不到 1%，一百万条样本里正样本不到一万条。</p>
+  <ul>
+    <li><strong>没曝光的歌不是负样本，根本不是样本。</strong>用户没见过它，不知道喜不喜欢。模型只能从展示过的歌里学，第 12 节的几个问题都从这里来。</li>
+    <li><strong>特征要用曝光那一刻的值。</strong>到训练时再去查，查到的是几天之后的值，模型就偷看了未来。线上的做法是在曝光日志里直接记下打分时用的特征（第 11 节）。</li>
+  </ul>
+  <h3>标签会迟到</h3>
+  <p>曝光那一刻还不知道标签。"播放超过 30 秒"至少要等用户点开再过 30 秒；如果目标是收藏、开会员，可能几天后才发生。展示广告里的转化可以晚到一个月（Chapelle，KDD 2014）。拼接时只能等一个固定的窗口：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>窗口</th><th>好处</th><th>代价</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">短</td><td>样本新鲜，要暂存的曝光少</td><td>窗口之后才来的正样本被记成 0，模型整体预测偏低</td></tr>
+      <tr><td class="nw">长</td><td>标签完整</td><td>训练数据晚到，等待期间的曝光都要存着</td></tr>
+    </tbody>
+  </table></div>
+  <p>Facebook 2014 年的论文描述过一个实时拼接曝光和点击的组件（online joiner）。他们发现，窗口取到内存能接受的长度时，偏低的幅度就能压到零点几个百分点以内，而且这点偏差可以测出来再修正。转化这种晚几天的标签，就要专门给延迟建模。</p>
+</section>
+
+<section id="sampling">
+  <h2><span class="n">04</span>负样本太多：降采样再校正</h2>
+  <p>正样本很少时，训练时间大部分花在负样本上，而一条负样本带来的信息不多。常见做法是正样本全留，负样本随机只留一部分，留下的比例记作 r。代价是训练集里正样本的占比变高，模型给的概率跟着偏高，要换算回来。<a href="features-samples.html#downsample">特征和样本</a>那一篇推导过这个换算，r = 0.3 时模型说 0.5，真实是 0.231：</p>
+<pre><code>p' = p / (p + (1 − p) / r)
+等价于：logit(p') = logit(p) + ln r</code></pre>
+  <p>Google 2013 年和 Facebook 2014 年的两篇广告点击率论文都降采样，校正的位置不同：Google 那篇训练时给留下的负样本乘上权重 1/r，模型直接学到真实的概率；Facebook 那篇照常训练，打分之后再用上面的公式换算。</p>
+  <p>在示例数据上把 r 换几档看看。训练集 2000 条里的负样本按比例 r 随机保留（种子 5），正样本全留；模型用参考配方（15 个特征标准化，权重从 0 开始，全量梯度下降，学习率 0.5，600 轮）；在第 25–30 天的 600 条测试样本上评估，测试集实际的正样本率是 23.7%。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>r</th><th>训练样本（其中正样本）</th><th>平均预测，校正前 → 后</th><th>测试 AUC</th><th>对数损失，校正前 → 后</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1，不采样</td><td class="num">2000（22.7%）</td><td class="num">0.226</td><td class="num">0.7175</td><td class="num">0.499</td></tr>
+      <tr><td class="num">0.5</td><td class="num">1244（36.5%）</td><td class="num">0.356 → 0.225</td><td class="num">0.7167</td><td class="num">0.534 → 0.499</td></tr>
+      <tr><td class="num">0.25</td><td class="num">838（54.2%）</td><td class="num">0.516 → 0.232</td><td class="num">0.7093</td><td class="num">0.681 → 0.501</td></tr>
+      <tr><td class="num">0.1</td><td class="num">609（74.6%）</td><td class="num">0.715 → 0.235</td><td class="num">0.6849</td><td class="num">1.047 → 0.511</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>校正前，平均预测跟着训练集的正样本率走。</strong>r = 0.1 时模型平均给出 0.715，实际是 0.237；校正之后三档都回到 0.23 左右，对数损失也回到 0.50 上下。</li>
+    <li><strong>同一行里，AUC 在校正前后完全一样。</strong>换算是单调的，不改变先后。只用来排序可以不校正；要拿概率去乘别的东西（第 10 节），就必须校正。</li>
+    <li><strong>AUC 随 r 变小而下降</strong>，因为这份数据只有 2000 条，扔掉的负样本也是信息。线上数据多到训练不完时情况不同：Facebook 那篇在自己的数据上试了几档比例，效果最好的一档只留 2.5% 的负样本。</li>
+  </ul>
+</section>
+
+<section id="embedding">
+  <h2><span class="n">05</span>ID 特征：查表得到向量</h2>
+  <p>前几篇的 15 个特征都是有意义的数：偏好次数、热度、时长。ID 不一样，user_id、song_id 只是编号，253 号歌和 254 号歌之间没有任何关系。逻辑回归处理它的办法是 one-hot：1000 万首歌就是 1000 万列，只有第 253 列是 1。这样一行数乘上权重，结果只是把第 253 个权重取出来，等于查表。</p>
+  <p>embedding 把"每个 ID 一个权重"扩成"每个 ID 一行 k 个数"。这张表叫 embedding 表，查出来的那一行叫这个 ID 的向量（embedding）：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 230" role="img" aria-label="song_id 等于 253 被当作行号，到 embedding 表里取出第 253 行的 5 个数 0.12、负 0.40、0.31、0.08、负 0.22，这一行就是这首歌的向量，交给模型">
+      <defs><marker id="ctr-arrow-e" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="ghost" x="12" y="112" width="126" height="40" rx="6"/>
+      <text x="75" y="137" text-anchor="middle" class="mn">song_id = 253</text>
+      <text x="75" y="174" text-anchor="middle" class="m">ID 本身只是编号</text>
+      <path class="lead" d="M138 132H198" marker-end="url(#ctr-arrow-e)"/>
+      <text x="168" y="120" text-anchor="middle" class="m">当行号</text>
+      <text x="344" y="20" text-anchor="middle" class="m">每行 k 个数（这里画 5 个）</text>
+      <rect class="ghost" x="236" y="30" width="216" height="72" rx="3"/>
+      <rect class="hot" x="236" y="122" width="216" height="20" rx="3"/>
+      <rect class="ghost" x="236" y="170" width="216" height="20" rx="3"/>
+      <path class="lead" fill="none" d="M236 54H452M236 78H452M279.2 30V102M322.4 30V102M365.6 30V102M408.8 30V102M279.2 122V142M322.4 122V142M365.6 122V142M408.8 122V142M279.2 170V190M322.4 170V190M365.6 170V190M408.8 170V190"/>
+      <g text-anchor="middle"><text x="344" y="114" class="t">⋮</text><text x="344" y="164" class="t">⋮</text></g>
+      <g text-anchor="end">
+        <text x="228" y="46" class="t">0</text><text x="228" y="70" class="t">1</text><text x="228" y="94" class="t">2</text>
+        <text x="228" y="137" class="mn">253</text><text x="228" y="185" class="t">N − 1</text>
+      </g>
+      <g text-anchor="middle">
+        <text x="257.6" y="136" class="sm">0.12</text><text x="300.8" y="136" class="sm">−0.40</text><text x="344" y="136" class="sm">0.31</text><text x="387.2" y="136" class="sm">0.08</text><text x="430.4" y="136" class="sm">−0.22</text>
+      </g>
+      <path class="lead" d="M456 132H490" marker-end="url(#ctr-arrow-e)"/>
+      <rect class="band" x="494" y="112" width="96" height="40" rx="6"/>
+      <text x="542" y="137" text-anchor="middle">交给模型</text>
+      <text x="344" y="216" text-anchor="middle" class="m">N 行，一首歌一行；整张表都是训练出来的参数</text>
+    </svg>
+    </div>
+    <figcaption>查表就是取一行。它和"one-hot 向量乘这张表"算出的结果相同，只是不用真的去乘 1000 万个 0。表里的数是示意。</figcaption>
+  </figure>
+  <p>表里的数和网络的权重一样，是用<a href="gradient-descent.html">梯度下降</a>学出来的。一批样本里出现了哪些 ID，就只更新那几行。逻辑回归里每个 ID 的那个权重，就是 k = 1 的 embedding。</p>
+  <h3>表有多大</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>表</th><th class="num">行数（示意）</th><th class="num">每行</th><th>大小（每个数 4 字节）</th></tr></thead>
+    <tbody>
+      <tr><td>用户</td><td class="num">1 亿</td><td class="num">64 个数</td><td>1 亿 × 64 × 4 = 25.6 GB</td></tr>
+      <tr><td>歌</td><td class="num">1000 万</td><td class="num">64 个数</td><td>2.56 GB</td></tr>
+      <tr><td>歌手</td><td class="num">100 万</td><td class="num">32 个数</td><td>128 MB</td></tr>
+      <tr><td>对比：1000 → 512 → 256 → 1 的网络</td><td class="num">—</td><td class="num">—</td><td>约 64 万个数，2.6 MB</td></tr>
+    </tbody>
+  </table></div>
+  <p><a href="prediction.html#s8">模型就是一堆数</a>，而推荐模型的这堆数绝大部分在 embedding 表里，网络本身小得多。训练时优化器还要给每个数再存一到两份状态（Adagrad 一份，Adam 两份），表要大两到三倍，一台机器放不下，就按 ID 分到多台机器上。</p>
+  <p>ID 和 ID 的组合更是存不下。把"用户 × 歌"当成一个特征，取值有 1 亿 × 1000 万 = 10<sup>15</sup> 种，绝大多数组合也从没出现过。向量的办法是不存组合：用户一个向量，歌一个向量，组合的分数用两个向量的点积现算（第 07、09 节）。</p>
+  <h3>哈希：不建词表，直接取模</h3>
+  <p>给每个 ID 分配行号要先建一张词表，新 ID 还得补进去。哈希技巧（Weinberger 等，2009）省掉这一步：行号 = hash(ID) mod M，表固定为 M 行。代价是不同的 ID 会落到同一行，共用一个向量。按 <span class="nw">1 − (1 − 1/M)<sup>N−1</sup></span> 算：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">ID 个数 N</th><th class="num">表的行数 M</th><th class="num">和别的 ID 共用一行的比例</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1 亿</td><td class="num">5000 万</td><td class="num">86.5%</td></tr>
+      <tr><td class="num">1 亿</td><td class="num">1 亿</td><td class="num">63.2%</td></tr>
+      <tr><td class="num">1 亿</td><td class="num">10 亿</td><td class="num">9.5%</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>行数和 ID 一样多时，六成多的 ID 要和别人共用一行。</strong>撞上的大多是只出现过几次的 ID，它们本来也学不准；两个活跃的 ID 撞在一起才会互相拖累。</li>
+    <li><strong>另一种做法是只给常见的 ID 单独一行。</strong>Wide &amp; Deep 论文只给出现次数超过阈值的取值建表；YouTube 2016 年那篇让每类 ID 的向量维度大致随取值个数的对数增长。</li>
+    <li><strong>哈希不是免费的。</strong>Google 2013 年那篇试过激进的哈希来省内存，把它列在"没成功的尝试"里。</li>
+  </ul>
+</section>
+
+<section id="id-lab">
+  <h2><span class="n">06</span>在示例数据上学 ID</h2>
+  <p>示例数据的训练集里有 300 位用户、398 首歌。最简单的 embedding 是 1 维的：每位用户一个数，每首歌一个数，相当于把 user_id、song_id 做成 one-hot 列交给逻辑回归。配方和参考结果完全一样（标准化，权重从 0 开始，全量梯度下降，学习率 0.5，600 轮），只是多了这 698 列：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">可学的数</th><th class="num">训练集 AUC</th><th class="num">测试集 AUC</th><th class="num">测试集对数损失</th></tr></thead>
+    <tbody>
+      <tr><td>特征 + 1 个交叉（参考结果）</td><td class="num">17</td><td class="num">0.748</td><td class="num">0.7715</td><td class="num">0.459</td></tr>
+      <tr><td>只用 ID</td><td class="num">699</td><td class="num">0.935</td><td class="num">0.520</td><td class="num">1.402</td></tr>
+      <tr><td>特征 + 交叉 + ID</td><td class="num">715</td><td class="num">0.958</td><td class="num">0.606</td><td class="num">1.313</td></tr>
+    </tbody>
+  </table></div>
+  <p>加了 ID，训练集上几乎全对，换到第 25–30 天就不灵了。训练集里每位用户平均只出现 6.7 次，每首歌 5 次，这几条记录足够让模型背下"谁点了什么"，却不够看出这首歌本身好不好。这就是<a href="evaluation.html#fit">过拟合</a>：只用 ID 的模型在测试集上和抛硬币差不多，对数损失 1.40 比什么都不学、只猜平均值还差。</p>
+  <p>加上刹车能止损，但不会变好。换成逐条的随机梯度下降，给 ID 的数加 L2 正则（损失里加上这些数的平方乘一个系数，不让它们长得太大），按验证集挑轮数（学习率 0.02，L2 系数 0.01，第 9 轮最好），测试 AUC 是 0.7434；同样的训练方式不加 ID 是 0.7501。ID 也学到了一点东西：只用 ID 的模型照这个办法训（学习率 0.1，L2 系数 0.003，第 2 轮最好），每首歌学到的数和它的热度（模型看不到）相关系数是 0.26，方向对，噪声太大。</p>
+  <h3>新歌：ID 一无所知，特征照样能用</h3>
+  <p>再做一次：按固定种子挑出 71 首歌（每首 20% 的概率），把它们在训练集里的曝光全部拿掉，假装是还没上线的新歌。剩下 1646 条样本用来训练。到第 21–30 天，这 71 首歌有 193 次曝光，其余的歌有 807 次：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">新歌上的 AUC</th><th class="num">老歌上的 AUC</th><th>新歌的那一项</th></tr></thead>
+    <tbody>
+      <tr><td>只用 ID（L2，按验证集挑轮数）</td><td class="num">0.55</td><td class="num">0.54</td><td>是 0，只剩用户那一个数在起作用</td></tr>
+      <tr><td>特征 + 交叉（参考配方）</td><td class="num">0.77</td><td class="num">0.73</td><td>看热度、曲风、时长，不看"哪一首"</td></tr>
+    </tbody>
+  </table></div>
+  <p>两组样本都少，0.77 和 0.73 的差别说明不了什么（<a href="evaluation.html#noise">600 条样本能分出多少高低</a>）。要紧的是，特征模型对从没见过的歌照样能打分。</p>
+  <div class="key">ID 向量好不好，取决于这个 ID 背后有多少样本。线上一首热门歌每天有几百万次曝光（示意），它的向量很准；新歌和冷门歌的处境就是这份数据。所以工业模型把 ID 和内容特征一起用，冷门的 ID 合并成一行，或者加更强的正则。</div>
+</section>
+
+<section id="cross">
+  <h2><span class="n">07</span>交叉：0.7175 到 0.7715</h2>
+  <p>示例数据里藏着一个交叉：晚上（18 点到次日 2 点）配长歌（4 分钟以上）、白天配短歌，用户更愿意听下去。3000 次曝光按这两项分成四格，白天短歌的正样本率是 34.7%，白天长歌只有 12.0%，晚上正好反过来（<a href="features-samples.html#cross">特征和样本</a>那一篇画过这四格）。</p>
+  <p>逻辑回归是<a href="prediction.html#s3">加权求和</a>，"晚上"和"时长"各有各的权重，表达不了"两者一致才加分"，测试 AUC 0.7175。人加一列 night_long_match（两者一致记 1），这一列的权重学成 0.72，AUC 升到 0.7715。0.054 的提升全部来自这一个手工交叉。</p>
+  <p>线上的特征有几百个。300 个特征两两交叉是 44,850 对，人挑不过来；ID 和 ID 交叉又存不下（第 05 节）。所以模型演进的一条主线，是让机器自己找交叉：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>交叉从哪来</th><th class="num">测试 AUC</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归</td><td>没有</td><td class="num">0.7175</td></tr>
+      <tr><td>DNN，15 → 16 → 8 → 1</td><td>隐藏层把特征混在一起</td><td class="num">0.731</td></tr>
+      <tr><td>GBDT，103 棵深度 2 的树</td><td>一条"先看 A 再看 B"的分叉路径就是交叉</td><td class="num">0.7499</td></tr>
+      <tr><td>FM，每个特征一个 2 维向量</td><td>两个特征的交叉权重 = 两个向量的点积</td><td class="num">0.7575</td></tr>
+      <tr><td>逻辑回归 + 1 个手工交叉</td><td>人写的</td><td class="num">0.7715</td></tr>
+      <tr><td>上限：按真实概率排序</td><td>—</td><td class="num">0.7834</td></tr>
+    </tbody>
+  </table></div>
+  <p>FM（factorization machine，因子分解机）这一行是本页新跑的。同样 15 个标准化特征，每个特征再配一个 2 维向量 v，一共 46 个数；任意两个特征 i、j 的交叉项是 (v<sub>i</sub> · v<sub>j</sub>) × x<sub>i</sub> × x<sub>j</sub>。全量梯度下降，向量从固定种子的小随机数起步；k、学习率、L2 在验证集上挑，轮数按验证集损失挑，最好的是 k = 2、学习率 0.1、不加 L2、第 240 轮。</p>
+  <p>学完看向量："晚上"是 (0.50, −0.43)，"时长"是 (0.41, −0.37)，点积 0.36，在 105 对里最大。没人告诉它这一对，它自己找到了。排第三的"时长 × 4G"是 −0.12，也对得上生成规则里"4G 下听 4.5 分钟以上的歌扣分"那一项；排第二、第四的"晚上 × 4G""晚上 × Wi-Fi"规则里没有，是 2000 条样本里难免的噪声。</p>
+  <p>在同一批重抽的测试样本上成对比较（自助法，2000 次）：FM 比逻辑回归高 0.040，95% 区间 +0.009 到 +0.070，可以认定学到了东西；比手工交叉低 0.014，区间 −0.011 到 +0.039 跨过 0，600 条样本分不出高低。FM 偏低的一个原因是它只能拿"晚上"去乘连续的时长，而生成规则是 4 分钟处的一个台阶，手工那一列直接把台阶写进去了。</p>
+  <p>DNN 和 GBDT 也学到了一部分，见<a href="neural-network.html#compare">神经网络</a>和<a href="trees-gbdt.html#interaction">决策树和 GBDT</a>。神经网络那一篇用同一个脚本把训练数据加到 20000 条，网络的测试 AUC 就从 0.731 升到 0.7671。工业界押注深度模型，是因为样本多到几亿条以后，它能学到人想不到的交叉。</p>
+</section>
+
+<section id="lineage">
+  <h2><span class="n">08</span>模型的演进</h2>
+  <p>下面这些模型都在回答前几节的问题：海量稀疏特征怎么用，交叉怎么自动学，召回怎么做，用户的历史怎么读。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 356" role="img" aria-label="推荐模型时间线：2009 哈希技巧，2010 FM，2013 FTRL 和 DSSM，2014 GBDT 加 LR，2016 Wide and Deep、YouTube DNN 和 FFM，2017 DeepFM，2018 DIN 和 SASRec，2019 BERT4Rec 和双塔采样纠偏，2024 HSTU">
+      <path class="lead" fill="none" d="M64 16V348"/>
+      <g class="dot">
+        <circle cx="64" cy="26" r="4"/><circle cx="64" cy="50" r="4"/><circle cx="64" cy="74" r="4"/><circle cx="64" cy="98" r="4"/><circle cx="64" cy="122" r="4"/><circle cx="64" cy="146" r="4"/><circle cx="64" cy="170" r="4"/>
+        <circle cx="64" cy="194" r="4"/><circle cx="64" cy="218" r="4"/><circle cx="64" cy="242" r="4"/><circle cx="64" cy="266" r="4"/><circle cx="64" cy="290" r="4"/><circle cx="64" cy="314" r="4"/><circle cx="64" cy="338" r="4"/>
+      </g>
+      <g text-anchor="end">
+        <text x="52" y="30" class="t">2009</text><text x="52" y="54" class="t">2010</text><text x="52" y="78" class="t">2013</text><text x="52" y="102" class="t">2013</text><text x="52" y="126" class="t">2014</text><text x="52" y="150" class="t">2016</text><text x="52" y="174" class="t">2016</text>
+        <text x="52" y="198" class="t">2016</text><text x="52" y="222" class="t">2017</text><text x="52" y="246" class="t">2018</text><text x="52" y="270" class="t">2018</text><text x="52" y="294" class="t">2019</text><text x="52" y="318" class="t">2019</text><text x="52" y="342" class="t">2024</text>
+      </g>
+      <g>
+        <text x="78" y="30">哈希技巧</text><text x="78" y="54">FM</text><text x="78" y="78">FTRL</text><text x="78" y="102">DSSM</text><text x="78" y="126">GBDT + LR</text><text x="78" y="150">Wide &amp; Deep</text><text x="78" y="174">YouTube DNN</text>
+        <text x="78" y="198">FFM</text><text x="78" y="222">DeepFM</text><text x="78" y="246">DIN</text><text x="78" y="270">SASRec</text><text x="78" y="294">BERT4Rec</text><text x="78" y="318">采样纠偏</text><text x="78" y="342">HSTU</text>
+      </g>
+      <g>
+        <text x="196" y="30" class="m">任意多的 ID 映射进固定大小的表</text>
+        <text x="196" y="54" class="m">每个特征一个向量，点积当交叉权重</text>
+        <text x="196" y="78" class="m">逻辑回归逐条在线更新，权重稀疏</text>
+        <text x="196" y="102" class="m">两边各算一个向量，再比相似度</text>
+        <text x="196" y="126" class="m">树的叶子编号当特征给逻辑回归</text>
+        <text x="196" y="150" class="m">手工交叉和深度网络一起训练</text>
+        <text x="196" y="174" class="m">召回和排序都换成深度网络</text>
+        <text x="196" y="198" class="m">每个特征对每个域各有一个向量</text>
+        <text x="196" y="222" class="m">FM 换掉手工交叉，共用 embedding</text>
+        <text x="196" y="246" class="m">按候选给历史里的每一条加权</text>
+        <text x="196" y="270" class="m">自注意力读行为序列，猜下一个</text>
+        <text x="196" y="294" class="m">双向读序列，遮住一个让模型填</text>
+        <text x="196" y="318" class="m">批内负样本按热度纠偏</text>
+        <text x="196" y="342" class="m">生成式推荐，参数到万亿级</text>
+      </g>
+      <g text-anchor="end">
+        <text x="592" y="30" class="a">线性模型</text><text x="592" y="54" class="a">自动交叉</text><text x="592" y="78" class="a">线性模型</text><text x="592" y="102" class="a">双塔召回</text><text x="592" y="126" class="a">线性模型</text><text x="592" y="150" class="a">自动交叉</text><text x="592" y="174" class="a">双塔召回</text>
+        <text x="592" y="198" class="a">自动交叉</text><text x="592" y="222" class="a">自动交叉</text><text x="592" y="246" class="a">用户历史</text><text x="592" y="270" class="a">用户历史</text><text x="592" y="294" class="a">用户历史</text><text x="592" y="318" class="a">双塔召回</text><text x="592" y="342" class="a">用户历史</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>年份按论文发表的年份。右列是它主要回答哪个问题：线性模型怎么吃下海量稀疏特征，交叉怎么自动学，召回怎么用双塔，用户的历史怎么读。四条线是交错前进的。</figcaption>
+  </figure>
+  <p><strong>逻辑回归 + 哈希 + 在线学习。</strong>早期的工业点击率模型就是逻辑回归，输入是维度极高的稀疏 one-hot：各种 ID，以及人手写的 ID 交叉。Google 2013 年的广告点击率论文用 FTRL-Proximal 训练：样本来一条更新一次；每个特征有自己的学习率，累计的梯度越大，步子越小；L1 正则让大部分权重恰好是 0，模型因此很小。那篇论文还讲了负样本降采样后加权、预测值的校准，以及几样没带来收益的尝试。</p>
+  <p><strong>GBDT + LR。</strong>Facebook 2014 年的论文先训练一组梯度提升树，再把"样本落在每棵树的哪个叶子"当成类别特征，one-hot 之后交给逻辑回归。树负责找组合和切分点，线性模型负责在大量样本上细调，合起来比单用任何一个好 3% 以上（按他们用的归一化熵）。同一篇还报告：最重要的是描述用户和广告历史表现的特征；每天重训比每周重训好。</p>
+  <p><strong>FM 和 FFM。</strong>FM（Rendle，2010）给每个特征一个向量，两两交叉的权重用点积表示，计算量可以化简到和特征个数成正比。向量是共享的，所以它能估计从没一起出现过的特征对：只要两个特征各自和别的特征一起出现过，向量就学得出来。FFM（Juan 等，2016）让每个特征对每个域（用户域、歌曲域、上下文域……）各有一个向量，参数是 FM 的"域数"倍，作者用它赢了 Criteo 和 Avazu 办的两场点击率预估比赛。</p>
+  <p><strong>Wide &amp; Deep。</strong>Google 2016 年用在 Google Play 的应用推荐上。Wide 部分是带手工交叉的逻辑回归，负责记住见过的组合；Deep 部分把稀疏特征变成 embedding 再过几层网络，负责推广到没见过的组合。两部分的输出加在一起，一起训练。</p>
+  <p><strong>DeepFM。</strong>华为诺亚方舟实验室等在 2017 年提出（IJCAI 2017）：把 Wide 部分换成 FM，FM 和深度部分共用同一套 embedding。Wide 部分的手工交叉也省了，输入只要原始特征。</p>
+  <p><strong>DIN。</strong>阿里巴巴 2018 年的论文（KDD 2018），处理用户的行为历史。之前的做法把历史里的物品向量汇总成一个固定的向量，不管候选是什么都一样。DIN 给历史里的每一条按"和当前候选有多相关"算一个权重，再加权求和，这是注意力（attention）的思路。换到音乐：给一首民谣打分时，用户过去听的民谣权重大，听的摇滚权重小。</p>
+  <p><strong>双塔。</strong>用户一边、物品一边各自算出一个向量，用相似度打分。这个结构常被追溯到微软 2013 年做网页搜索的 DSSM；YouTube 2016 年用类似的结构做召回，Google 2019 年又讲了怎么纠正批内负样本带来的热度偏差。第 09 节专门讲。</p>
+  <p><strong>序列模型。</strong>把用户的行为历史当成一句话，用 Transformer 读，预测下一个会听什么：SASRec（2018）、BERT4Rec（2019），到 2024 年 Meta 的生成式推荐（HSTU，ICML 2024）把参数做到了万亿级，思路和<a href="llm.html">大模型</a>预测下一个词很像。</p>
+</section>
+
+<section id="two-tower">
+  <h2><span class="n">09</span>双塔召回和向量检索</h2>
+  <p>召回要从整个曲库里挑，不能逐首跑精排模型。双塔的办法是把"用户"和"歌"拆开算：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 300" role="img" aria-label="双塔模型：左塔把用户侧特征经过几层网络变成用户向量 u，右塔把歌曲侧特征变成歌曲向量 v，两塔只在最上面做一次点积得到分数。歌曲向量离线算好存进向量索引，用户向量每次请求算一次">
+      <defs><marker id="ctr-arrow-t" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="hot" x="230" y="12" width="140" height="36" rx="8"/>
+      <text x="300" y="35" text-anchor="middle">u · v = 分数</text>
+      <g class="lead" fill="none" marker-end="url(#ctr-arrow-t)">
+        <path d="M140 72V30H228"/><path d="M460 72V30H372"/>
+        <path d="M140 218V198"/><path d="M140 168V158"/><path d="M140 128V108"/>
+        <path d="M460 218V198"/><path d="M460 168V158"/><path d="M460 128V108"/>
+      </g>
+      <rect class="band" x="40" y="72" width="200" height="34" rx="6"/>
+      <rect class="band" x="360" y="72" width="200" height="34" rx="6"/>
+      <rect class="ghost" x="70" y="128" width="140" height="28" rx="6"/><rect class="ghost" x="70" y="168" width="140" height="28" rx="6"/>
+      <rect class="ghost" x="390" y="128" width="140" height="28" rx="6"/><rect class="ghost" x="390" y="168" width="140" height="28" rx="6"/>
+      <rect class="ghost" x="40" y="218" width="200" height="50" rx="6"/>
+      <rect class="ghost" x="360" y="218" width="200" height="50" rx="6"/>
+      <g text-anchor="middle">
+        <text x="140" y="94">用户向量 u</text><text x="460" y="94">歌曲向量 v</text>
+        <text x="140" y="147" class="m">网络层</text><text x="140" y="187" class="m">网络层</text>
+        <text x="460" y="147" class="m">网络层</text><text x="460" y="187" class="m">网络层</text>
+        <text x="140" y="238">用户侧特征</text><text x="140" y="258" class="m">最近听的歌、常听曲风、时段</text>
+        <text x="460" y="238">歌曲侧特征</text><text x="460" y="258" class="m">song_id、曲风、歌手、时长</text>
+        <text x="300" y="160" class="m">两边</text><text x="300" y="178" class="m">互不相见</text>
+        <text x="140" y="290" class="a">每次请求现算一次</text><text x="460" y="290" class="a">离线算好，存进向量索引</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>两座塔各是一个小网络，输入互不相见，只在最上面做一次点积。所以歌曲那一侧可以提前把整个曲库算完。</figcaption>
+  </figure>
+  <p>歌的向量不依赖用户，可以离线把整个曲库算好；请求来了，只算一次用户向量，再找点积最大的那些歌。一个三维的小例子，数是编的；真实的向量有几十到几百维，每一维也没有名字：</p>
+<pre><code>用户向量 u = (0.9, 0.2, −0.4)
+
+歌    向量 v                u · v
+A    ( 0.8, 0.1, −0.2)     0.72 + 0.02 + 0.08 =  0.82
+D    ( 0.6, 0.4,  0.1)     0.54 + 0.08 − 0.04 =  0.58
+B    ( 0.1, 0.9,  0.3)     0.09 + 0.18 − 0.12 =  0.15
+C    (−0.3, 0.2,  0.9)    −0.27 + 0.04 − 0.36 = −0.59</code></pre>
+  <p>取前两名，A 和 D 进入候选。</p>
+  <h3>怎么训练</h3>
+  <p>正样本是日志里"用户，和他听完的歌"这样的对。负样本不能只用曝光未点的歌，因为召回面对的是整个曲库，绝大多数歌从没曝光过。常见做法是随机抽歌当负样本，或者拿同一批训练数据里别人的正样本当自己的负样本，叫批内负样本。后者有偏差：热门歌在每一批里出现得多，被当成负样本的次数也多，分数被压低。Google 2019 年那篇的修正是估计每首歌在数据流里出现的频率，训练时从它的分数里减掉这个频率的对数。YouTube 2016 年那篇用的是抽样负类，再按重要性加权修正。</p>
+  <h3>向量检索</h3>
+  <p>暴力算一遍：1000 万首 × 64 维 = 6.4 亿次乘加，每个请求都要来一遍（示意）。近似最近邻检索（ANN，approximate nearest neighbor）先给全部歌曲向量建好索引，比如把相近的向量分进同一个簇，或者连成一张近邻图（HNSW），查询时只算其中一小部分，代价是偶尔漏掉真正的前几名。常用的库有 Faiss、ScaNN。YouTube 2016 年那篇提到，A/B 结果对选哪种近邻算法并不敏感。</p>
+  <p>双塔的代价也在这里：用户侧和歌曲侧的特征直到点积才见面，"这位用户晚上爱听长歌"和"这首歌很长"这样的细交叉，只能靠两个向量的点积勉强表达。所以召回之后，精排还要用完整的特征重新打分。</p>
+</section>
+
+<section id="score">
+  <h2><span class="n">10</span>从概率到排序</h2>
+  <p>精排输出的是概率，首页要的是顺序。最直接的做法是按 pCTR 从高到低排，但点开只是用户行为的一部分。一首歌点开率很高、大家只听 40 秒，另一首点开率低一些、点开的人都听完了，按 pCTR 排会偏向前者。所以排序分一般写成"概率 × 价值"：</p>
+<pre><code>音乐首页（示意）
+  分数 = p(播放超过 30 秒) × 预期收听分钟数
+几个目标（示意）
+  分数 = p(播放) × 时长
+       + a × p(收藏) + b × p(关注歌手)
+广告，按点击计费
+  eCPM = pCTR × 出价 × 1000</code></pre>
+  <p>每一个 p 都由一个模型预测，或者是一个多输出模型的一个输出；a、b 这些权重由产品目标决定，靠 A/B 测试调。YouTube 2016 年的排序模型换了一种写法：训练时把正样本按观看时长加权，让模型的输出直接近似预期观看时长。</p>
+  <h3>广告：eCPM</h3>
+  <p>eCPM（effective cost per mille）是每千次展示的预期收入。广告按点击收费时，一次展示的预期收入是"点击概率 × 每次点击的出价"，乘 1000 换算成千次。平台按 eCPM 排序，预期收入高的排前面：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>广告</th><th class="num">出价（每次点击）</th><th class="num">pCTR</th><th class="num">eCPM</th></tr></thead>
+    <tbody>
+      <tr><td>甲</td><td class="num">0.50 元</td><td class="num">2.0%</td><td class="num">10 元</td></tr>
+      <tr><td>乙</td><td class="num">2.00 元</td><td class="num">0.4%</td><td class="num">8 元</td></tr>
+      <tr><td>乙，pCTR 被高估一倍</td><td class="num">2.00 元</td><td class="num">0.8%</td><td class="num">16 元</td></tr>
+    </tbody>
+  </table></div>
+  <p>出价是示意。模型把乙的点击率高估一倍，乙就排到甲前面：平台以为这次展示值 16 元，实际只值 8 元，真正值 10 元的甲被挤掉。Facebook 2014 年的论文开头就说，广告拍卖的效率取决于点击预估准不准、校准好不好。</p>
+  <h3>为什么要校准</h3>
+  <p>AUC 只看顺序：所有预测一起高估一倍，AUC 一点都不变。一旦概率要去乘时长、乘出价，或者和别的来源比大小，它的绝对值就得对，这就是<a href="evaluation.html#calibration">校准</a>。示例数据里有现成的例子：只用 3 个特征的那个小网络，测试 AUC 0.7191，和 15 个特征的逻辑回归（0.7175）差不多，平均预测却是 0.291，实际 0.237，高估了 23%；训满 30 轮的 DNN 高估 10%。只拿它们排歌问题不大；拿概率去乘时长、和广告比 eCPM，就会系统性地偏向被高估的那些。</p>
+  <p>修正分两步：降采样造成的偏差按第 04 节换算；剩下的系统偏差用一个只升不降的映射拉回来，Google 2013 年那篇用的是分段的保序回归（isotonic regression），排序基本不变。线上要按广告类型、位置分组看校准，整体对得上不代表每一组都对。</p>
+</section>
+
+<section id="serving">
+  <h2><span class="n">11</span>线上：特征、延迟和更新</h2>
+  <p>训练好的模型只是一个文件。<a href="prediction.html#s10">上线</a>以后，每个请求都要在几十毫秒里凑齐特征、算完分数，模型自己还要跟着数据不停更新。</p>
+  <h3>一次请求的时间预算</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>步骤</th><th>做什么</th><th class="num">示意耗时</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">取用户特征</td><td>从特征库读画像、最近播放</td><td class="num">5 ms</td></tr>
+      <tr><td class="nw">召回</td><td>几路并行查索引，合并去重</td><td class="num">15 ms</td></tr>
+      <tr><td class="nw">粗排、精排</td><td>取歌曲特征，模型服务批量打分</td><td class="num">30 ms</td></tr>
+      <tr><td class="nw">重排</td><td>打散、规则、探索位</td><td class="num">5 ms</td></tr>
+      <tr><td class="nw">合计</td><td>服务端，不含手机到服务器的网络</td><td class="num">约 55 ms</td></tr>
+    </tbody>
+  </table></div>
+  <p>Wide &amp; Deep 论文给每个请求的排序留的是 10 毫秒量级，做法是把候选拆成几小批，多线程并行打分。</p>
+  <h3>特征库</h3>
+  <p>特征库（feature store）把每个特征只定义一次，同时提供两种读法：在线读最新值，要毫秒级返回；离线读历史上任意时刻的值，用来拼训练样本。"任意时刻"是关键，训练样本要用曝光那一刻的值（第 03 节）。</p>
+  <h3>训练和线上不一致</h3>
+  <p>同一个特征，离线用 SQL 算、线上用 Java 算，时区、缺失值、取整稍有不同，模型线上看到的就和训练时不一样。这叫训练–服务偏差（training-serving skew），症状是离线指标很好，上线没效果。Google 的《Rules of Machine Learning》里有三条对付它：线上打分时把用到的特征原样记进日志，训练直接用这份日志（第 29 条）；训练时去关联的表，内容可能早就变了（第 31 条）；两边尽量共用一份特征代码（第 32 条）。</p>
+  <h3>多久更新一次</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>方式</th><th>怎么做</th><th>适合</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">每天批量重训</td><td>用最近一段日志重训，从昨天的模型接着训。Wide &amp; Deep 论文管这叫 warm-starting，新模型用旧模型的 embedding 和线性权重起步</td><td>大部分排序模型</td></tr>
+      <tr><td class="nw">流式更新</td><td>样本一拼好就喂给模型，几分钟一更，FTRL 这类在线学习</td><td>热点变得快的场景；新歌的 ID 向量</td></tr>
+    </tbody>
+  </table></div>
+  <p>Facebook 那篇测过模型放旧了会怎样：从每周训练改成每天训练，归一化熵降了约 1%。归一化熵是对数损失除以"永远猜平均点击率"时的对数损失，越小越好。新歌每天都在上，它的 ID 向量要等下一次更新才有。</p>
+  <h3>A/B 测试</h3>
+  <p>上线前的最后一关，怎么分组、看哪些指标见<a href="evaluation.html#online">评估</a>那一篇。工程上常见的分法是对用户 ID 取哈希再分桶，同一个人始终落在同一组，看到同一套推荐。离线指标和线上结果不一定同向，Wide &amp; Deep 论文在 Google Play 上做了 3 周实验：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">离线 AUC</th><th class="num">线上应用安装量</th></tr></thead>
+    <tbody>
+      <tr><td>只有 Wide（对照组）</td><td class="num">0.726</td><td class="num">基准</td></tr>
+      <tr><td>只有 Deep</td><td class="num">0.722</td><td class="num">+2.9%</td></tr>
+      <tr><td>Wide &amp; Deep</td><td class="num">0.728</td><td class="num">+3.9%</td></tr>
+    </tbody>
+  </table></div>
+  <p>只有 Deep 的离线 AUC 比对照组还低，线上安装量却多了 2.9%。YouTube 2016 年那篇也写道，线上 A/B 的结果并不总是和离线实验一致。</p>
+</section>
+
+<section id="loop">
+  <h2><span class="n">12</span>闭环：模型在给自己造样本</h2>
+  <p>样本只来自曝光，曝光又是模型决定的。今天的模型推了什么，明天就只有这些歌的样本。这个闭环带来几个推荐系统特有的问题。</p>
+  <h3>位置偏差</h3>
+  <p>同一首歌放在第 1 位和第 10 位，点开率会差很多，一部分点击是位置带来的。如果训练时不告诉模型位置，它会把"被旧模型排在前面"误学成"用户喜欢"，再把这些歌排得更靠前。</p>
+  <p>常见做法是训练时把位置作为一个特征，让位置的影响由这一项解释掉。YouTube 2019 年的多目标排序论文用一个浅层的分支专门吸收这类选择偏差，它的输出加到主模型的预测上。线上打分时还不知道每首歌会排在哪，就把所有候选的位置设成同一个值，比较的是"放在同一个位置，谁更可能被点"。</p>
+  <h3>热门越来越热</h3>
+  <p>热门歌曝光多，正样本多，ID 向量学得准、分数高，于是曝光更多。冷门歌曝光少，模型对它一直不了解，分数自然上不去。这叫流行度偏差（popularity bias）。</p>
+  <h3>冷启动</h3>
+  <p>新歌没有曝光，ID 向量没学过；新用户没有历史，用户向量是空的。示例数据里新用户的正样本率是 17.9%，老用户 23.4%，这个差别是生成规则里写进去的；而且新用户能用的特征最少。办法是靠不依赖历史的特征：歌的曲风、歌手、时长，用户的设备、地区、时段。新用户可以先选几个喜欢的曲风；新歌给一份固定的曝光量，先攒出第一批样本。第 06 节的新歌实验说明了内容特征为什么能顶上。</p>
+  <h3>探索</h3>
+  <p>要打破闭环，就得故意推一些模型没把握的歌，花一点眼前的点击换样本。最简单的是 ε-贪心：比如 5% 的位置（示意）从候选里随机挑。更细的做法是多臂老虎机一类的方法（UCB、汤普森采样），给看得少、不确定的歌额外加分，看得越多加得越少。探索位的样本不是模型挑的，也是评估新模型时偏差最小的数据。</p>
+</section>
+
+<section id="device">
+  <h2><span class="n">13</span>手机上的重排</h2>
+  <p>服务端在请求那一刻排好一整页。之后用户连着跳过三首民谣，下一首如果还是民谣就显得很笨，而这个信号要等下次刷新才到服务端。端上重排补的就是这一步：服务端多发一些候选，手机根据刚刚发生的事，重排还没展示的部分。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>服务端精排</th><th>端上重排</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">什么时候算</td><td>每次请求</td><td>用户每有一个动作：跳过、听完、滑动</td></tr>
+      <tr><td class="nw">看得到的信号</td><td>全部历史、全部特征</td><td>这次打开以后刚发生的事，加上服务端给的分</td></tr>
+      <tr><td class="nw">模型</td><td>大，embedding 表几十 GB</td><td>小，几十到几千个数</td></tr>
+      <tr><td class="nw">延迟</td><td>一次网络来回</td><td>不走网络，微秒到毫秒</td></tr>
+    </tbody>
+  </table></div>
+  <p>前几篇那个 15 → 16 → 8 → 1 的网络一共 401 个数，按 4 字节存是 1.6 KB，用远程配置下发都行；50 个候选、每个三四百次乘加，在手机上是微秒级。这么小的模型不需要框架，几行 Kotlin 就够。下面是一个只有两项特征的逻辑回归，权重由服务端用日志训练好再下发：</p>
+<pre><code>import kotlin.math.exp
+import kotlin.math.ln
+
+// 服务端下发的候选：歌、曲风、服务端算的点击率
+data class Candidate(
+    val songId: Long,
+    val genre: String,
+    val serverP: Float,
+)
+
+// w0 乘服务端分数的 logit；w1 乘"这次已跳过几首
+// 同曲风"，训练出来是负数
+class SessionReRanker(
+    private val w0: Float,
+    private val w1: Float,
+    private val b: Float,
+) {
+    private val skips = HashMap&lt;String, Int&gt;()
+
+    fun onSkip(c: Candidate) {
+        skips[c.genre] = (skips[c.genre] ?: 0) + 1
+    }
+
+    // 只重排还没展示的部分
+    fun rerank(rest: List&lt;Candidate&gt;) =
+        rest.sortedByDescending { score(it) }
+
+    private fun score(c: Candidate): Float {
+        val p = c.serverP.coerceIn(1e-4f, 1 - 1e-4f)
+        val skipped = skips[c.genre] ?: 0
+        val z = w0 * logit(p) + w1 * skipped + b
+        // sigmoid 不改变顺序，只按 z 排也一样
+        return 1 / (1 + exp(-z))
+    }
+
+    private fun logit(p: Float) = ln(p / (1 - p))
+}</code></pre>
+  <ul>
+    <li><strong>端上用到的东西也要回传。</strong>曝光日志里记下最终展示的顺序、端上用到的特征和端上模型的版本号，否则训练数据和用户真正看到的对不上。这是第 11 节的训练–服务偏差，换到了手机上。</li>
+    <li><strong>模型再大就用推理框架。</strong>LiteRT（原来的 TensorFlow Lite，模型文件还是 .tflite）和 ONNX Runtime 怎么加载模型，见<a href="neural-network.html#android">神经网络</a>那一篇的"在 Android 上运行"。系统自带的 NNAPI 从 Android 15 起已经弃用，官方的迁移指南建议改用 Google Play 服务里的 TensorFlow Lite。</li>
+    <li><strong>别在主线程上算。</strong>几十个数的模型无所谓；模型有几 MB 时，加载和推理放到后台线程，算完再回主线程更新列表。</li>
+  </ul>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>离线 AUC 涨了，上线后点击率没涨</td><td>线上线下特征不一致；离线评估集是旧模型推出来的曝光，评不了新模型会推的歌</td><td>用线上打分时记下的特征训练；以 A/B 测试为准</td></tr>
+      <tr><td>新模型上线后，预测的点击率整体偏高</td><td>负样本降采样后没有校正，或者训练窗口里的正样本率和现在不同</td><td>按第 04 节换算；上线前比较平均预测和实际点击率</td></tr>
+      <tr><td>广告收入波动，点击率低的广告排到了前面</td><td>pCTR 对某一类广告系统性偏高，eCPM 跟着被放大</td><td>按广告类型、位置分组看校准；加一层保序回归修正</td></tr>
+      <tr><td>最近几分钟的样本点击率偏低</td><td>拼接窗口太短，迟到的播放被记成 0</td><td>拉长窗口，或者只用等够时间的样本</td></tr>
+      <tr><td>排在第 1 位的歌，预估分高得离谱</td><td>位置带来的点击被当成了"喜欢"</td><td>训练时把位置作为特征，打分时统一设成同一个值</td></tr>
+      <tr><td>推荐越来越窄，总是那几种歌</td><td>反馈闭环：模型只从自己推过的歌里学</td><td>留探索位；重排时加多样性约束</td></tr>
+      <tr><td>新歌、冷门歌几乎拿不到曝光</td><td>没有样本，ID 向量是空的；流行度偏差</td><td>用内容特征打分；给新歌固定的曝光量</td></tr>
+      <tr><td>新用户首页推荐质量差</td><td>没有历史，用户向量没学过</td><td>先用设备、地区、时段和热门；让用户选几个曲风</td></tr>
+      <tr><td>模型上线几天后效果慢慢变差</td><td>新歌、新热点在变，模型没跟上</td><td>每天重训或流式更新</td></tr>
+      <tr><td>加了用户 ID、歌曲 ID，测试集反而变差</td><td>每个 ID 的样本太少，模型在背训练集（第 06 节）</td><td>加正则、按验证集早停；低频 ID 合并成一行</td></tr>
+      <tr><td>端上重排之后，训练数据和用户看到的对不上</td><td>曝光日志记的是服务端排的顺序</td><td>记录最终展示的顺序和端上模型的版本号</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">本页算过的数：第 04 节的降采样和校正、第 06 节的 ID 对比和新歌实验、第 07 节的 FM 和成对自助法，都是在示例数据上用 Node 20 重新跑的，特征、标准化、AUC 和对数损失的算法与生成示例数据的脚本一致，配方写在各节；四格的正样本率、参考模型的 AUC 和平均预测取自那个脚本的参考结果，20000 条训练数据的网络结果取自神经网络那一篇；第 05 节的哈希冲突比例按 1 − (1 − 1/M)<sup>N−1</sup> 算。示意的数：漏斗各段的数量和每首的耗时、embedding 表的行数和维度、双塔例子里的向量、广告出价、请求的时间预算和探索位比例，都是为讲量级编的，不代表任何一家的配置。命名模型和做法的描述只写到原论文写明的程度：McMahan 等，Ad Click Prediction: a View from the Trenches（KDD 2013）；He 等，Practical Lessons from Predicting Clicks on Ads at Facebook（ADKDD 2014）；Weinberger 等，Feature Hashing for Large Scale Multitask Learning（ICML 2009）；Rendle，Factorization Machines（ICDM 2010）；Juan 等，FFM（RecSys 2016）；Cheng 等，Wide &amp; Deep Learning for Recommender Systems（DLRS 2016）；Covington 等，Deep Neural Networks for YouTube Recommendations（RecSys 2016）；Guo 等，DeepFM（IJCAI 2017）；Zhou 等，DIN（KDD 2018）；Huang 等，DSSM（CIKM 2013）；Yi 等，Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations（RecSys 2019）；Zhao 等，Recommending What Video to Watch Next: A Multitask Ranking System（RecSys 2019）；Kang 和 McAuley，SASRec（ICDM 2018）；Sun 等，BERT4Rec（CIKM 2019）；Zhai 等，HSTU（ICML 2024）；Chapelle，Modeling Delayed Feedback in Display Advertising（KDD 2014）；Zinkevich，Rules of Machine Learning；Android 开发者文档的 NNAPI 迁移指南和 LiteRT 文档。漏斗各段的分工、特征库、A/B 分组、ε-贪心和多臂老虎机、HNSW、Faiss 和 ScaNN 的描述是通用知识。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 6 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="evaluation.html"><span class="t">← 上一篇：评估</span><span class="d">评估：模型准不准</span></a>
+    <a class="demo" href="llm.html"><span class="t">下一篇：大语言模型 →</span><span class="d">最后换一个问题：不问这首歌会不会被听完，而是问下一个字是什么。大模型用的还是同一套办法，只是规模大得多。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

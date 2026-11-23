@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>音频编码：PCM 之前的那一步</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../../assets/kb.css?v=6">
+<style>
+/* 本页独有：包大小的条形图 */
+.bars{display:grid;gap:6px;margin:0 0 8px;font-family:var(--font-mono);font-size:12.5px}
+.bars div{display:grid;grid-template-columns:96px minmax(0,1fr) 64px;gap:10px;align-items:center}
+.bars i{display:block;height:14px;background:var(--accent);border-radius:2px}
+.bars .x i{background:var(--warn)}
+.bars span:last-child{text-align:right;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 音频解码</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#why">为什么要压缩</a></li>
+    <li><a href="#words">编码、容器、码率</a></li>
+    <li><a href="#kinds">有损与无损</a></li>
+    <li><a href="#lossy">有损编码扔掉了什么</a></li>
+    <li><a href="#frames">一帧一帧地压</a></li>
+    <li><a href="#decode">解码：从包到 PCM</a></li>
+    <li><a href="#priming">开头多出来的一个包</a></li>
+    <li><a href="#params">参数存在哪里</a></li>
+    <li><a href="#project">落到 music_demo</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">音视频 · 音频解码</div>
+  <h1>音频编码：PCM 之前的那一步</h1>
+  <p class="lede">文件里存的几乎从来不是 PCM，而是压缩过的数据。播放时先解码成 PCM，才轮到 AudioTrack。这份笔记讲压缩是怎么回事：为什么能压到二十分之一还听不出来，压缩后的数据长什么样，以及解码器怎么把它还原成 PCM。</p>
+  <div class="journey" aria-label="同一段声音的两种大小">
+    <div class="step"><span class="k">文件里的 AAC</span><span class="v hex">64 KB</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">346 个包，每个约</span><span class="v">186 字节</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">解码器</span><span class="v">每包 → 1024 个采样</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">内存里的 PCM</span><span class="v">1.41 MB</span></div>
+  </div>
+  <p class="caption">示例数据来自工程里 <code>landscape_720p.mp4</code> 的音轨（AAC-LC、44100 Hz、单声道、64 kbps、8 秒），数值用 ffprobe 读出。PCM 本身见 <a href="../pcm/pcm-to-speaker.html">从 PCM 到喇叭</a>。</p>
+</header>
+
+<section id="why">
+  <h2><span class="n">01</span>为什么要压缩</h2>
+  <p>PCM 把每一瞬间的振膜位置都老老实实记下来，所以很大。示例音轨只有 8 秒、单声道：</p>
+<pre><code>PCM   44100 帧/秒 × 4 字节（float）× 8 秒 ≈ 1,411,200 字节 ≈ 1.41 MB
+AAC   346 个包合计                          =    64,492 字节 ≈ 64 KB
+                                              约 22 : 1</code></pre>
+  <p>一首 4 分钟的立体声歌，16 位 PCM 约 42 MB，压成 AAC 约 4 MB。存储、下载和流量都按这个比例省下来，所以音乐文件、视频里的音轨、通话，用的都是压缩格式。</p>
+  <p>压缩后的数据不能直接送给喇叭。喇叭这一侧只认 PCM，所以播放链路上一定有一步解码。</p>
+</section>
+
+<section id="words">
+  <h2><span class="n">02</span>编码、容器、码率</h2>
+  <p>三个最容易混的词：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>词</th><th>是什么</th><th>示例文件里</th></tr></thead>
+    <tbody>
+      <tr><td>编码格式（codec）</td><td>压缩声音的算法和数据格式</td><td>AAC</td></tr>
+      <tr><td>容器（container）</td><td>把音轨、视频轨、时间戳、参数装在一起的文件格式</td><td>MP4</td></tr>
+      <tr><td>码率（bitrate）</td><td>每秒声音占多少比特</td><td>约 64 kbps</td></tr>
+    </tbody>
+  </table></div>
+  <p>扩展名说的是容器，不是编码。<code>.mp4</code> 里的音轨可能是 AAC，也可能是 MP3 或 Opus；<code>.m4a</code> 其实就是只有音轨的 MP4。只有少数格式两者同名，比如 <code>.mp3</code>、<code>.flac</code>。</p>
+<pre><code>码率     = 压缩数据的字节数 × 8 ÷ 时长
+         = 64,492 × 8 ÷ 8.01 秒 ≈ 64 kbps
+文件大小 ≈ 码率 × 时长 ÷ 8          例：128 kbps × 240 秒 ÷ 8 = 3.84 MB</code></pre>
+  <p>码率是压缩时人为选定的预算。同一种编码，码率越高，丢掉的越少，音质越好，文件越大。它和采样率是两回事：采样率描述 PCM 有多密，码率描述压缩后有多大。</p>
+</section>
+
+<section id="kinds">
+  <h2><span class="n">03</span>有损与无损</h2>
+  <p>压缩分两类。无损压缩解码后和原来的 PCM 逐位相同，像 zip；有损压缩解码后的 PCM 和原来不同，但设计目标是听不出来。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>编码</th><th>类型</th><th>每帧采样数</th><th>常见容器</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>AAC</td><td>有损</td><td class="num">1024</td><td>MP4、M4A、ADTS</td><td>视频和流媒体里最常见</td></tr>
+      <tr><td>MP3</td><td>有损</td><td class="num">1152</td><td>MP3</td><td>最老、兼容最广，同码率下音质不如 AAC</td></tr>
+      <tr><td>Opus</td><td>有损</td><td class="num">通常 960</td><td>OGG、WebM</td><td>低延迟，低码率下表现好；内部固定按 48000 Hz 工作</td></tr>
+      <tr><td>Vorbis</td><td>有损</td><td class="num">不固定</td><td>OGG</td><td>Opus 的前辈，游戏和老资源里常见</td></tr>
+      <tr><td>FLAC</td><td>无损</td><td class="num">通常 4096</td><td>FLAC</td><td>大约压到原来的一半到七成</td></tr>
+      <tr><td>PCM（WAV）</td><td>不压缩</td><td class="num">—</td><td>WAV</td><td>没有编码这一步，文件里直接就是 PCM</td></tr>
+    </tbody>
+  </table></div>
+  <p>有损压缩能到十分之一以下，无损只能到一半左右，这个差距就是"扔掉听不见的东西"换来的。</p>
+</section>
+
+<section id="lossy">
+  <h2><span class="n">04</span>有损编码扔掉了什么</h2>
+  <p>有损编码依赖一个事实：耳朵不是测量仪器，PCM 里有很多信息人根本听不到。</p>
+  <ul>
+    <li><strong>太轻的声音听不到。</strong>每个频率都有一个最低可听音量，低于它的成分可以直接不存。耳朵对 2–5 kHz 最敏感，对很低和很高的频率迟钝得多。</li>
+    <li><strong>响的声音会盖住旁边轻的。</strong>一个很响的 1000 Hz 存在时，旁边 1100 Hz 的轻微声音就听不到了，这叫频域掩蔽。</li>
+    <li><strong>响的声音前后一小段时间里，轻的也听不到。</strong>一记鼓声之后几十毫秒内，耳朵还没恢复，这叫时域掩蔽。</li>
+  </ul>
+  <p>要利用这些规律，得先知道每个频率上有多少能量，所以编码器不直接处理 PCM 波形，而是分四步：</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">① 切帧</div><ol><li>取一段 PCM</li><li>AAC 是 1024 个采样</li></ol></div>
+    <div class="lane"><div class="who">② 变到频域</div><ol><li>算出这一段里各个频率的强度</li><li>用的变换叫 MDCT</li></ol></div>
+    <div class="lane"><div class="who">③ 按听感量化</div><ol><li>听得清的频率记得细</li><li>被掩蔽的记得粗，或者不记</li></ol></div>
+    <div class="lane"><div class="who">④ 无损打包</div><ol><li>把量化后的数再压一遍</li><li>写成一个包</li></ol></div>
+  </div>
+  <p>真正丢信息的只有第 ③ 步。码率就是这一步的预算：预算少，只好把更多频率记得更粗，于是高频发闷，或者出现"水声"一样的杂音。</p>
+  <div class="key">解码出来的 PCM 和原始 PCM 逐个数对比是不一样的，波形图上也看得出差别。有损编码保证的是听起来一样，不是数值一样。所以不要用"比较 PCM 数值"来判断解码是否正确。</div>
+</section>
+
+<section id="frames">
+  <h2><span class="n">05</span>一帧一帧地压</h2>
+  <p>编码器不是把整首歌一次压完，而是每 1024 个采样压成一个包。播放器因此可以边读边解，也可以跳到中间某个包开始播。</p>
+<pre><code>一帧的时长 = 每帧采样数 ÷ 采样率 = 1024 ÷ 44100 ≈ 23.2 ms
+包的个数   ≈ 时长 ÷ 一帧的时长  = 8 秒 ÷ 23.2 ms ≈ 345</code></pre>
+  <p>每个包解出来都是 1024 个采样，但压缩后的大小并不相同。示例音轨开头几个包：</p>
+  <div class="bars" role="img" aria-label="开头 8 个包的字节数：271、243、139、163、197、212、179、195">
+    <div class="x"><span>pts −1024</span><i style="width:100%"></i><span>271 B</span></div>
+    <div><span>pts 0</span><i style="width:89.7%"></i><span>243 B</span></div>
+    <div><span>pts 1024</span><i style="width:51.3%"></i><span>139 B</span></div>
+    <div><span>pts 2048</span><i style="width:60.1%"></i><span>163 B</span></div>
+    <div><span>pts 3072</span><i style="width:72.7%"></i><span>197 B</span></div>
+    <div><span>pts 4096</span><i style="width:78.2%"></i><span>212 B</span></div>
+    <div><span>pts 5120</span><i style="width:66.1%"></i><span>179 B</span></div>
+    <div><span>pts 6144</span><i style="width:72.0%"></i><span>195 B</span></div>
+  </div>
+  <p class="caption">全部 346 个包最小 139 字节、最大 271 字节、平均 186 字节。每个包对应的 PCM 都是 1024 × 4 = 4096 字节。第一个包的时间戳是负的，见第 07 节。</p>
+  <p>时间戳 <code>pts</code> 以采样数为单位，每个包加 1024，和 PCM 里"下标就是时间"是同一把尺子：<code>秒 = pts ÷ 采样率</code>。</p>
+  <h3>包和帧，两个词</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>FFmpeg 的类型</th><th>装的是</th><th>示例里的大小</th></tr></thead>
+    <tbody>
+      <tr><td><code>AVPacket</code></td><td>压缩数据，解封装器给出</td><td class="num">约 186 字节</td></tr>
+      <tr><td><code>AVFrame</code></td><td>解码后的 PCM，解码器给出</td><td class="num">4096 字节（1024 个 float）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="decode">
+  <h2><span class="n">06</span>解码：从包到 PCM</h2>
+  <p>解码是编码反过来：解开无损打包，把量化后的数还原成各频率的强度，再做一次反变换回到波形。数据在 FFmpeg 里经过四个组件：</p>
+<pre><code>文件 ──▶ demuxer ──▶ AVPacket ──▶ decoder ──▶ AVFrame ──▶ swresample ──▶ AudioTrack
+         拆容器       压缩数据      解码        平面 float     转成交错排列      write()
+         mov                        aac         fltp, 1024 帧  flt 或 s16</code></pre>
+  <p>解码器用"送一个包、收若干帧"的方式工作：</p>
+<pre><code>while (av_read_frame(fmt, pkt) &gt;= 0) {            // 解封装：读出一个包
+    if (pkt-&gt;stream_index == audio_index) {
+        avcodec_send_packet(dec, pkt);              // 送进解码器
+        while (avcodec_receive_frame(dec, frame) == 0) {
+            // frame-&gt;nb_samples   这一帧有多少个采样（AAC 是 1024）
+            // frame-&gt;format       采样格式（AAC 是 AV_SAMPLE_FMT_FLTP）
+            // frame-&gt;data[ch]     每个声道一个数组
+            use_pcm(frame);
+        }
+    }
+    av_packet_unref(pkt);
+}
+avcodec_send_packet(dec, NULL);                     // 读完后送空包，把解码器里剩下的帧取干净</code></pre>
+  <p>"送"和"收"不是一一对应的：解码器内部可能攒着数据，送进一个包不一定马上出一帧，所以收的那一层是循环，结束时还要冲刷一次。</p>
+  <p>解码器内部每一步具体怎么算，拿一个包按位拆开看，见 <a href="aac-decoding.html">AAC 解码</a>。</p>
+  <h3>解出来的 PCM 是什么格式</h3>
+  <p>解码器输出什么格式由解码器自己决定，不由你决定。FFmpeg 自带的几个解码器：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>解码器</th><th>输出采样格式</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>aac</code></td><td><code>fltp</code></td><td>平面 float</td></tr>
+      <tr><td><code>mp3</code></td><td><code>s16p</code></td><td>平面 16 位整数。另有一个 <code>mp3float</code> 解码器输出 <code>fltp</code></td></tr>
+      <tr><td><code>vorbis</code></td><td><code>fltp</code></td><td></td></tr>
+      <tr><td><code>opus</code></td><td><code>fltp</code></td><td>采样率固定输出 48000 Hz，不管原始素材是多少</td></tr>
+      <tr><td><code>flac</code></td><td><code>s16</code> 或 <code>s32</code></td><td>取决于文件的位深</td></tr>
+    </tbody>
+  </table></div>
+  <p>末尾带 <code>p</code> 的是平面排列，每个声道一个数组；AudioTrack 只收交错排列。所以解码之后通常要过一次 <code>libswresample</code>（<code>swr_convert</code>），把格式、排列方式和采样率统一成播放端要的那一种。三要素的含义见 <a href="../pcm/pcm-to-speaker.html#three">PCM 的三要素</a>。</p>
+</section>
+
+<section id="priming">
+  <h2><span class="n">07</span>开头多出来的一个包</h2>
+  <p>示例音轨有 346 个包，解码后只得到 345 帧。第一个包的时间戳是 <code>−1024</code>，并且带着"丢弃"标记：</p>
+<pre><code>pts     时长   字节  标记
+-1024   1024   271   K D     ← D = 解码后丢弃
+    0   1024   243   K
+ 1024   1024   139   K</code></pre>
+  <p>原因在第 04 节的变换上。MDCT 的相邻两帧是互相重叠一半的，一帧的波形要和前一帧的后半段叠加才完整。文件里的第一帧没有"前一帧"，单独解出来是残缺的。所以编码器在最前面多放一帧垫底，它本身的输出不要，只为让后面那帧能解对。这段多出来的采样叫 priming，也叫编码器延迟。</p>
+  <p>这件事由解码器和解封装器配合处理，平时不用管。会碰到它的场合：</p>
+  <ul>
+    <li><strong>无缝循环和拼接：</strong>如果没有丢掉 priming，每段开头会多出二十几毫秒，循环播放时听得到停顿。</li>
+    <li><strong>自己数采样算时长：</strong>包数 × 1024 会比真实时长多一帧。应该以时间戳为准。</li>
+    <li><strong>裸 ADTS 的 <code>.aac</code> 文件：</strong>没有容器来记录要丢多少，开头的 priming 通常会被原样播出来。</li>
+  </ul>
+</section>
+
+<section id="params">
+  <h2><span class="n">08</span>参数存在哪里</h2>
+  <p>解码器开工前要知道采样率、声道数、编码档次（profile）。这些参数不在每个包里重复，存放位置取决于容器：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>形式</th><th>参数在哪</th><th>FFmpeg 里</th></tr></thead>
+    <tbody>
+      <tr><td>MP4 / M4A 里的 AAC</td><td>文件头里一小段全局配置（AudioSpecificConfig）。示例文件里只有 5 个字节</td><td><code>AVCodecParameters.extradata</code></td></tr>
+      <tr><td>裸 <code>.aac</code>（ADTS）</td><td>每个包前面都有一个 7 字节的 ADTS 头，重复写着采样率和声道数</td><td>由 <code>aac</code> 解析器读出</td></tr>
+    </tbody>
+  </table></div>
+  <p>那 5 个字节和 ADTS 头的每一位是什么，见 <a href="aac-decoding.html#asc">AAC 解码</a>。</p>
+  <p>这是同一种编码的两种包装。把 ADTS 的 AAC 写进 MP4 时，要去掉每个包的头、改成一份全局配置，做这件事的就是码流过滤器 <code>aac_adtstoasc</code>。</p>
+  <p>打开解码器时要把容器里读到的参数交给它，否则它不知道怎么解：</p>
+<pre><code>avcodec_parameters_to_context(dec, stream-&gt;codecpar);   // 包括 extradata
+avcodec_open2(dec, codec, NULL);</code></pre>
+</section>
+
+<section id="project">
+  <h2><span class="n">09</span>落到 music_demo</h2>
+  <p>App 里的 FFmpeg 是裁剪过的，只包含 <code>ffmpeg/configure_android.sh</code> 点名的组件。音频相关的是这些：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>环节</th><th>已启用</th><th>能处理的文件</th></tr></thead>
+    <tbody>
+      <tr><td>解封装</td><td><code>mov</code>、<code>mp3</code>、<code>flac</code>、<code>wav</code>、<code>ogg</code>、<code>aac</code>、<code>matroska</code></td><td>MP4/M4A、MP3、FLAC、WAV、OGG/OPUS、裸 AAC、MKV/WebM</td></tr>
+      <tr><td>解析</td><td><code>aac</code>、<code>mpegaudio</code>、<code>flac</code>、<code>vorbis</code>、<code>opus</code></td><td></td></tr>
+      <tr><td>解码</td><td><code>aac</code>、<code>mp3</code>、<code>flac</code>、<code>vorbis</code>、<code>opus</code></td><td>全部是软件解码</td></tr>
+      <tr><td>编码</td><td><code>aac</code></td><td>导出视频时压音轨</td></tr>
+      <tr><td>格式转换</td><td><code>libswresample</code>，滤镜 <code>aresample</code>、<code>aformat</code></td><td>解码后统一采样格式和采样率</td></tr>
+    </tbody>
+  </table></div>
+  <p>WAV 没有对应的解码器条目：这个构建没有点名 <code>pcm_s16le</code> 这类 PCM 解码器，所以 WAV 目前能拆开容器但解不出数据，要播放 WAV 需要在裁剪列表里补上。每个参数的含义和怎么补，见 <a href="../../build/configure-options.html#g7">configure_android.sh 参数详解</a>。</p>
+  <p>目前工程里的 JNI 代码只接了视频解码，音频解码还没有接进 App。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">10</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>播出来全是噪音</td><td>把平面格式（<code>fltp</code>）的数据当交错格式写给了 AudioTrack，或者 float 当成了 16 位</td><td>先过 <code>swr_convert</code> 转成播放端声明的格式</td></tr>
+      <tr><td>声音变快或变慢、变调</td><td>播放端声明的采样率和解码输出的不一致，常见于 Opus 固定输出 48000 Hz</td><td>以 <code>frame-&gt;sample_rate</code> 为准，不要用文件名或经验值</td></tr>
+      <tr><td>结尾少了一小段</td><td>读完文件后没有送空包冲刷解码器</td><td><code>avcodec_send_packet(dec, NULL)</code> 后继续收帧</td></tr>
+      <tr><td>循环播放有缝</td><td>开头的 priming 没丢掉</td><td>用容器给的时间戳和丢弃标记；裸 AAC 换成 M4A</td></tr>
+      <tr><td>跳转后开头一声爆音</td><td>跳到的那一帧缺少前一帧的重叠数据</td><td>往前多解一两帧，丢掉它们的输出</td></tr>
+      <tr><td>转码一次比一次差</td><td>有损编码每压一次都再丢一遍信息，提高码率也补不回来</td><td>保留一份无损或原始素材，只从它导出</td></tr>
+      <tr><td>打开文件成功但没有声音轨可解</td><td>裁剪时漏了这个格式的解码器或解析器</td><td>查 <code>config_components.h</code>，在 configure 脚本里补上</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">包数、包大小、时间戳、码率和 extradata 长度是用 ffprobe 从 music_demo 工程的 <code>landscape_720p.mp4</code> 读出的；各解码器的输出格式取自 <code>ffmpeg -h decoder=…</code>。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

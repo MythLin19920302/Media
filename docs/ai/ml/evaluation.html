@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>评估：模型准不准</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：混淆矩阵的格子、几条曲线的线型、图例里的点 */
+.fig .mn{font-family:var(--font-mono);font-size:12px}
+.fig text.big{font-family:var(--font-mono);font-size:22px;font-weight:500}
+.fig .ok{fill:var(--accent-soft)}
+.fig .err{fill:var(--warn-soft)}
+.fig .diag{fill:none;stroke:currentColor;stroke-opacity:.4;stroke-width:1}
+.fig .c-acc{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.fig .c-warn{fill:none;stroke:var(--warn);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.fig .c-fg{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.fig .c-dash{fill:none;stroke:currentColor;stroke-width:1.6;stroke-dasharray:6 3;stroke-linejoin:round}
+.fig .c-dot{fill:none;stroke:currentColor;stroke-opacity:.8;stroke-width:1.8;stroke-dasharray:.1 3.6;stroke-linecap:round;stroke-linejoin:round}
+.fig .dotw{fill:var(--warn)}
+.fig .ring{stroke:var(--surface);stroke-width:2}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#accuracy">准确率为什么会骗人</a></li>
+    <li><a href="#confusion">混淆矩阵：四个格子</a></li>
+    <li><a href="#threshold">阈值一动，两个数反着走</a></li>
+    <li><a href="#use">阈值由用途定</a></li>
+    <li><a href="#roc">ROC 曲线：所有阈值连成线</a></li>
+    <li><a href="#auc">AUC：随便挑一对，谁排在前面</a></li>
+    <li><a href="#logloss">对数损失：给概率本身打分</a></li>
+    <li><a href="#calibration">校准：说 30% 时真有 30% 吗</a></li>
+    <li><a href="#split">训练、验证、测试按时间切</a></li>
+    <li><a href="#fit">过拟合和欠拟合</a></li>
+    <li><a href="#baseline">基线和上限</a></li>
+    <li><a href="#noise">600 条样本能分出多少高低</a></li>
+    <li><a href="#online">离线评估和线上实验</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>评估：模型准不准</h1>
+  <p class="lede">前几篇训练的模型，对每一次曝光给出一个 0 到 1 之间的数：这首歌被点开并且听满 30 秒的概率。这一页回答这个数靠不靠谱：拿什么量，在哪份数据上量，和谁比，差多少才算真有差别。例子是同一份数据上的四个模型，外加一个知道答案的上限。</p>
+  <div class="journey" aria-label="测试集上的四个数">
+    <div class="step"><span class="k">测试集里听满 30 秒的</span><span class="v">142 / 600</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">一律说"不会听"的准确率</span><span class="v hex">76.3%</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">最好的模型 AUC</span><span class="v">0.7715</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">按真实概率排的 AUC</span><span class="v">0.7834</span></div>
+  </div>
+  <p class="caption">数据是脚本按固定随机种子生成的示意数据，不是真实用户的行为：一个音乐 App 首页推荐 30 天里的 3000 次曝光，一次曝光就是给一位用户展示一首歌。模型的配方和训练过程见前几篇；这一页的数，是让同一个脚本导出每条样本的预测值之后算的，算法写在页尾。这一页是 <a href="prediction.html#s9">AI 是怎么预测的</a> 里"评估"那一步的展开。</p>
+</header>
+
+<section id="accuracy">
+  <h2><span class="n">01</span>准确率为什么会骗人</h2>
+  <p>先说清楚手里有什么。模型对每一次曝光给出一个概率 p。点开并且播放超过 30 秒的曝光是正样本（标签 1），没点、划走或者不到 30 秒的是负样本（标签 0），见 <a href="features-samples.html#label">特征和样本</a>。</p>
+  <p>全部 3000 次曝光里，正样本 678 次，占 22.6%。评估用的是测试集：第 25 到 30 天的 600 次曝光，训练时模型没有见过。其中正样本 142 次、负样本 458 次，正样本占 23.7%。</p>
+  <p>最直接的评法是定一条线：p 不小于 0.5，算模型说"会听"，否则算"不会听"，再数说对了几次。说对的比例叫准确率（accuracy）。参加比较的是前几篇训好的四个模型：逻辑回归（15 个特征加权求和，见 <a href="gradient-descent.html">梯度下降</a>），逻辑回归 + 交叉特征（多一个特征："晚上"即 18 点到凌晨 2 点，"长歌"即 4 分钟及以上，两者同时成立或同时不成立时为 1），GBDT（103 棵小决策树相加，见 <a href="trees-gbdt.html">决策树和 GBDT</a>），DNN（15→16→8→1 的小神经网络，见 <a href="neural-network.html">神经网络</a>）。</p>
+  <p>还有一个"模型"什么都不用算：不管是谁、是什么歌，一律说"不会听"。它把 458 个负样本全说对了：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">说"会听"的次数</th><th class="num">说对</th><th class="num">准确率</th></tr></thead>
+    <tbody>
+      <tr><td>一律说"不会听"</td><td class="num">0</td><td class="num">458</td><td class="num">76.3%</td></tr>
+      <tr><td>逻辑回归</td><td class="num">19</td><td class="num">455</td><td class="num">75.8%</td></tr>
+      <tr><td>GBDT</td><td class="num">7</td><td class="num">463</td><td class="num">77.2%</td></tr>
+      <tr><td>逻辑回归 + 交叉特征</td><td class="num">49</td><td class="num">471</td><td class="num">78.5%</td></tr>
+      <tr><td>DNN</td><td class="num">54</td><td class="num">472</td><td class="num">78.7%</td></tr>
+      <tr><td>真实概率 true_p</td><td class="num">53</td><td class="num">471</td><td class="num">78.5%</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>逻辑回归比一律说"不会听"还低。</strong>它在 0.5 这条线上说了 19 次"会听"，对了 8 次，错了 11 次，比一次都不说还少对 3 次。</li>
+    <li><strong>最好的 DNN 只高出 2.3 个百分点</strong>，600 条里多说对 14 条。</li>
+    <li><strong>知道答案也高不了多少。</strong>最后一行的真实概率，是生成数据时给每次曝光算的那个概率（列名 true_p），模型看不到。拿它当预测，准确率也只有 78.5%；就算在测试集上把线挑到最好（0.39），也只有 81.3%。</li>
+  </ul>
+  <div class="key">负样本占了四分之三还多，准确率主要在数负样本说对了多少。正样本越少，这个毛病越重：正样本只占 1% 时，一律说"不"就有 99%。要把正样本和负样本分开看。</div>
+</section>
+
+<section id="confusion">
+  <h2><span class="n">02</span>混淆矩阵：四个格子</h2>
+  <p>每一条测试样本，模型说"会听"或"不会听"，实际是"听了"或"没听"，两两组合出四种情况。把 600 条分进四个格子，这张表叫混淆矩阵（confusion matrix）。下面是 GBDT 把线定在 0.3 时的结果。这条线叫阈值（threshold）：p 不小于它，就算说"会听"。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 250" role="img" aria-label="GBDT 在阈值 0.3 时的混淆矩阵。说会听并且真听了 70 条，说会听但没听 64 条，说不会听但其实听了 72 条，说不会听也确实没听 394 条。精确率等于 70 除以 134，是 52.2%；召回率等于 70 除以 142，是 49.3%；假正率等于 64 除以 458，是 14.0%">
+      <rect class="ok" x="141" y="35" width="168" height="82" rx="6"/>
+      <rect class="err" x="311" y="35" width="168" height="82" rx="6"/>
+      <rect class="err" x="141" y="119" width="168" height="82" rx="6"/>
+      <rect class="ok" x="311" y="119" width="168" height="82" rx="6"/>
+      <g text-anchor="middle">
+        <text x="225" y="24">实际听了 · 142</text><text x="395" y="24">实际没听 · 458</text>
+        <text x="225" y="76" class="big">70</text><text x="225" y="102" class="m">TP：说会听，真听了</text>
+        <text x="395" y="76" class="big">64</text><text x="395" y="102" class="m">FP：说会听，没听</text>
+        <text x="225" y="160" class="big">72</text><text x="225" y="186" class="m">FN：说不会听，其实听了</text>
+        <text x="395" y="160" class="big">394</text><text x="395" y="186" class="m">TN：说不会听，也没听</text>
+      </g>
+      <g text-anchor="end">
+        <text x="130" y="72">说"会听"</text><text x="130" y="92" class="m">134 条</text>
+        <text x="130" y="156">说"不会听"</text><text x="130" y="176" class="m">466 条</text>
+      </g>
+      <g class="lead" fill="none"><path d="M490 39V113M485 39H490M485 113H490"/><path d="M145 213H305M145 208V213M305 208V213"/><path d="M315 213H475M315 208V213M475 208V213"/></g>
+      <text x="500" y="62">精确率</text><text x="500" y="84" class="mn">70 ÷ 134</text><text x="500" y="104" class="mn">= 52.2%</text>
+      <g text-anchor="middle">
+        <text x="225" y="238">召回率 <tspan class="mn">70 ÷ 142 = 49.3%</tspan></text>
+        <text x="395" y="238">假正率 <tspan class="mn">64 ÷ 458 = 14.0%</tspan></text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>横着看是模型怎么说，竖着看是实际怎么样。左上、右下两格是说对了，另外两格是说错了。精确率按行除，召回率和假正率按列除。</figcaption>
+  </figure>
+  <p>格子的名字是两个英文字母。第一个说这次说对没有（True 对，False 错），第二个说模型说的是哪一边（Positive 会听，Negative 不会听）。FP 就是"说成会听，说错了"。四个数可以组合出几个比例：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>指标</th><th>算法</th><th>这里</th><th>回答的问题</th></tr></thead>
+    <tbody>
+      <tr><td>精确率（precision）</td><td class="nw">TP ÷ (TP + FP)</td><td>70 ÷ 134 = 52.2%</td><td>说"会听"的里面，真听了多少</td></tr>
+      <tr><td>召回率（recall）</td><td class="nw">TP ÷ (TP + FN)</td><td>70 ÷ 142 = 49.3%</td><td>真听了的里面，找出来多少</td></tr>
+      <tr><td>假正率（FPR）</td><td class="nw">FP ÷ (FP + TN)</td><td>64 ÷ 458 = 14.0%</td><td>没听的里面，被错说成"会听"的有多少</td></tr>
+      <tr><td>准确率（accuracy）</td><td class="nw">(TP + TN) ÷ 全部</td><td>464 ÷ 600 = 77.3%</td><td>一共说对多少</td></tr>
+    </tbody>
+  </table></div>
+  <p>召回率也叫真正率（TPR，true positive rate）。它和假正率（FPR，false positive rate）是第 05 节 ROC 曲线的两个坐标。精确率和召回率的分子都是 TP，分母不同，回答的是两个问题。</p>
+  <p>把一律说"不会听"放进来：TP = 0，FP = 0，FN = 142，TN = 458。召回率是 0，精确率是 0 ÷ 0，没有意义。准确率 76.3% 藏住的问题，在这张表里一眼就看出来了。</p>
+</section>
+
+<section id="threshold">
+  <h2><span class="n">03</span>阈值一动，两个数反着走</h2>
+  <p>模型只给 p，线是人定的。把 GBDT 的阈值从 0.10 调到 0.50：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">阈值</th><th class="num">说"会听"</th><th class="num">其中真听了</th><th class="num">精确率</th><th class="num">召回率</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0.10</td><td class="num">578</td><td class="num">140</td><td class="num">24.2%</td><td class="num">98.6%</td></tr>
+      <tr><td class="num">0.20</td><td class="num">323</td><td class="num">113</td><td class="num">35.0%</td><td class="num">79.6%</td></tr>
+      <tr><td class="num">0.30</td><td class="num">134</td><td class="num">70</td><td class="num">52.2%</td><td class="num">49.3%</td></tr>
+      <tr><td class="num">0.40</td><td class="num">38</td><td class="num">26</td><td class="num">68.4%</td><td class="num">18.3%</td></tr>
+      <tr><td class="num">0.45</td><td class="num">20</td><td class="num">12</td><td class="num">60.0%</td><td class="num">8.5%</td></tr>
+      <tr><td class="num">0.50</td><td class="num">7</td><td class="num">6</td><td class="num">85.7%</td><td class="num">4.2%</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>线往下放，说"会听"的越来越多。</strong>找到的正样本多了，召回率上升；混进来的负样本更多，精确率下降。线往上提，反过来。没有哪条线能让两个数同时最高。</li>
+    <li><strong>0.5 没有什么特殊。</strong>GBDT 给出的 p 九成在 0.1 到 0.4 之间，最高只有 0.62，线定在 0.5 时 600 条里只有 7 条过线。正样本只占两成多，p 本来就很少过半：连真实概率也只有 53 条不小于 0.5。</li>
+    <li><strong>过线的条数少了，精确率会乱跳。</strong>从 0.40 提到 0.45，过线的从 38 条变成 20 条，精确率反而从 68.4% 掉到 60.0%。分母小，多一条说错，比例就差一截。</li>
+  </ul>
+  <p>四个模型放在同一条线上比，每格是精确率 / 召回率：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">阈值 0.2</th><th class="num">阈值 0.3</th><th class="num">阈值 0.5</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归</td><td class="num">35.2% / 75.4%</td><td class="num">49.2% / 41.5%</td><td class="num">42.1% / 5.6%</td></tr>
+      <tr><td>逻辑回归 + 交叉</td><td class="num">37.5% / 80.3%</td><td class="num">47.6% / 62.0%</td><td class="num">63.3% / 21.8%</td></tr>
+      <tr><td>GBDT</td><td class="num">35.0% / 79.6%</td><td class="num">52.2% / 49.3%</td><td class="num">85.7% / 4.2%</td></tr>
+      <tr><td>DNN</td><td class="num">36.9% / 74.6%</td><td class="num">45.9% / 50.7%</td><td class="num">63.0% / 23.9%</td></tr>
+    </tbody>
+  </table></div>
+  <p>阈值 0.3 时，GBDT 的精确率最高，逻辑回归 + 交叉的召回率最高，说不清谁更好；到了 0.5，GBDT 的召回率只剩 4.2%。各个模型的 p 分布也不一样：GBDT 在 0.08 到 0.62 之间，DNN 在 0.01 到 0.88 之间，同一个 0.3 在两个模型里的意思不同。把两者合成一个数的 F1（调和平均）也绑在一条线上。比模型需要一个不依赖阈值的数，就是第 05、06 节的 ROC 曲线和 AUC。</p>
+  <p class="caption"><a href="prediction.html#s9">主页面的评估那一步</a>可以拖动阈值，看这几个数一起变。</p>
+</section>
+
+<section id="use">
+  <h2><span class="n">04</span>阈值由用途定</h2>
+  <p>模型不知道 p 会被拿去做什么。线定在哪里，取决于两种错各要付出什么代价。这是产品的决定，不是模型的。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>用途</th><th>哪种错更贵</th><th>怎么用 p</th><th>看什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">推送通知</td><td>白推（FP）。不想听的推送是打扰，推多了用户会关掉通知，以后一条也推不到</td><td>只推分数最高的少数几条</td><td>精确率</td></tr>
+      <tr><td class="nw">候选太多，先筛掉一批</td><td>漏掉（FN）。被筛掉的歌，后面的模型再好也排不上来</td><td>线放得很低，只去掉分数最低的</td><td>召回率</td></tr>
+      <tr><td class="nw">首页信息流</td><td>没有"推不推"，一屏的位置总要填满，只有先后</td><td>不设阈值，按 p 从高到低排</td><td>排得对不对：AUC（第 06 节）</td></tr>
+      <tr><td class="nw">估明天的播放量</td><td>不做判断</td><td>把所有 p 加起来</td><td>概率准不准：校准（第 08 节）</td></tr>
+    </tbody>
+  </table></div>
+  <p>推送常见的做法是先定量，再反推阈值：每天能推多少条，就取分数最高的那么多条。在测试集上按分数从高到低取前 N 条，数里面有几条是正样本，除以 N 就是精确率：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>只推前 N 条</th><th class="num">逻辑回归</th><th class="num">逻辑回归 + 交叉</th><th class="num">GBDT</th><th class="num">DNN</th><th class="num">真实概率</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">30 条（5%）</td><td class="num">17</td><td class="num">18</td><td class="num">20</td><td class="num">22</td><td class="num">22</td></tr>
+      <tr><td class="nw">60 条（10%）</td><td class="num">32</td><td class="num">37</td><td class="num">34</td><td class="num">36</td><td class="num">38</td></tr>
+      <tr><td class="nw">180 条（30%）</td><td class="num">76</td><td class="num">86</td><td class="num">86</td><td class="num">80</td><td class="num">88</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>推得越少越准。</strong>GBDT 只推前 30 条，命中 20 条，精确率 67%；推到 180 条，降到 48%。</li>
+    <li><strong>AUC 高的，不一定在最前面最准。</strong>前 30 条里 DNN 命中 22 条，和真实概率一样，比 AUC 更高的逻辑回归 + 交叉多 4 条。AUC 看的是整条排序，推送只用最前面一小段。不过 30 条里差 4 条，误差很大，见第 12 节。</li>
+    <li><strong>线在验证集上定。</strong>验证集是另留的一份数据，专门用来做这类选择（第 09 节）。在验证集上按"只推最高的 10%"定线，GBDT 的线是 0.351；拿到测试集上，过线的是 71 条，占 11.8%：两段时间的分数分布不完全一样。上线以后也一样，阈值要定期复查。</li>
+  </ul>
+</section>
+
+<section id="roc">
+  <h2><span class="n">05</span>ROC 曲线：所有阈值连成线</h2>
+  <p>上两节的麻烦在于每个阈值都要单独看。ROC 曲线（receiver operating characteristic，名字来自雷达的信号检测）把所有阈值放进一张图：横坐标是假正率，纵坐标是召回率。</p>
+  <p>画法是把 600 条样本按 p 从高到低排好，让阈值从最高处往下降。每越过一条正样本，召回率涨 1/142，点往上走一格；每越过一条负样本，假正率涨 1/458，点往右走一格。从左下角 (0, 0) 出发，这时谁都不说"会听"；走到右上角 (1, 1)，这时全说"会听"。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 372" role="img" aria-label="五条 ROC 曲线，横轴是假正率，纵轴是召回率，都从 0 到 1。五条线几乎全程在对角线上方，挤在一起。按 AUC 从高到低：真实概率 0.7834，逻辑回归加交叉特征 0.7715，GBDT 0.7499，DNN 0.7310，逻辑回归 0.7175，对角线是随机打分 0.5。GBDT 的线上标出了阈值 0.4、0.3、0.2 三个点">
+      <path class="grid" d="M64 24H364M64 84H364M64 144H364M64 204H364M64 264H364M124 24V324M184 24V324M244 24V324M304 24V324M364 24V324"/>
+      <path class="axis" fill="none" d="M64 24V324H364"/>
+      <path class="diag" d="M64 324L364 24"/>
+      <path class="truth" d="M64 324l0-15 2 0 0-2 1 0 0-19 1 0 0-4 1 0 0-4 0-9 4 0 0-6 2 0 0-6 1 0 0-3 1 0 1-12 2-5 1-8 2 0 0-2 1 0 0-11 2-4 2-23 0-4 2 0 0-9 0-2 2 0 0-2 1 0 0-2 1 0 0-2 1 0 1-4 2 0 0-3 3 0 0-2 1 0 0-2 1 0 0-2 2-2 0-6 2 0 0-2 3 0 0-3 2-4 10 0 0-2 5 0 0-2 2 0 0-2 2 0 0-4 2 0 0-5 10 0 0-2 4 0 0-2 12 0 0-2 1 0 0-2 1 0 0-4 1 0 1-2 3 0 0-7 2 0 2-10 3 0 1-2 1 0 1-5 6 0 0-2 4 0 0-2 4 0 0-2 2 0 0-2 7 0 1-4 5 0 0-5 2 0 0-6 4 0 0-2 6 0 1-2 4 0 0-2 3 0 0-2 13 0 0-2 4 0 1-7 7 0 0-4 9 0 0-2 23 0 1-2 28 0 1-2 0-2 5 0 0-3 2 0 1-2 8 0 0-2 8 0 0-2 10 0 0-2 18 0"/>
+      <path class="c-dot" d="M64 324l1 0 0-2 1 0 0-6 3 0 0-5 1 0 0-4 1 0 2-29 1 0 0-3 2 0 0-2 2 0 0-2 2 0 0-4 0-2 2 0 0-9 4 0 0-2 0-2 2 0 0-2 5 0 0-4 2-4 0-22 2 0 0-4 3 0 1-12 2 0 2-9 4 0 0-2 4 0 1-11 2 0 0-2 6 0 0-2 5 0 0-4 1 0 0-2 2 0 0-9 3 0 0-2 4 0 0-2 4 0 0-2 2 0 1-6 3 0 0-2 7 0 0-11 4 0 0-2 5 0 0-2 3 0 1-9 3 0 0-2 2 0 1-4 2 0 0-6 2 0 1-7 8 0 0-2 2 0 0-4 4 0 0-2 4 0 0-2 6 0 0-7 7 0 0-2 2 0 0-2 4 0 0-4 6 0 0-4 1 0 0-2 5 0 0-5 5 0 0-2 2 0 0-4 13 0 0-2 6 0 0-2 8 0 0-2 1 0 0-2 7 0 0-5 6 0 1-4 7 0 0-2 14 0 0-2 7 0 0-2 2 0 0-2 2 0 0-2 3 0 0-2 15 0 0-3 13 0 0-2 1 0 0-2 3 0 0-2 5 0 0-2 16 0"/>
+      <path class="c-dash" d="M64 324l0-27 1 0 0-9 2 0 0-2 2 0 1-21 1 0 1-4 2 0 0-2 2 0 1-7 1 0 0-2 2-2 0-2 1 0 0-2 3 0 0-7 4 0 0-4 2 0 0-2 1 0 1-6 1-2 0-7 2 0 0-6 4 0 0-2 2 0 1-11 7 0 0-4 1-4 2 0 0-15 8 0 0-4 2 0 0-4 1 0 0-3 3 0 0-2 1-2 0-4 3 0 0-8 2 0 1-7 2 0 0-6 3 0 0-2 3 0 0-2 4 0 1-5 4 0 0-2 2 0 0-2 2 0 0-2 11-4 1-4 3 0 0-5 9 0 1-6 4 0 0-2 6 0 0-2 6 0 1-4 6 0 0-3 1 0 0-6 6 0 0-2 4 0 0-2 3 0 0-2 7 0 0-2 3 0 0-2 2 0 0-5 12 0 0-2 11 0 0-2 6 0 0-2 2 0 0-2 10 0 0-2 11 0 0-2 20 0 0-2 5 0 0-3 1 0 1-4 11 0 0-2 11 0 0-2 10 0 0-2 1 0 0-2 4 0 1-7 5 0 0-2 1 0 0-2 12 0 1-4"/>
+      <path class="c-warn" d="M64 324l0-13 3 0 1-2 0-4 1-2 0-11 1 0 0-6 1 0 0-8 1 0 0-9 2 0 1-4 1 0 1-4 2 0 0-5 2-4 1-6 1 0 0-9 2 0 1-6 2 0 0-6 4 0 0-2 1 0 1-15 1-7 2-2 0-2 2 0 0-12 5 0 0-3 1 0 1-8 1 0 0-2 1 0 1-4 1-2 1 0 0-5 1 0 0-2 5 0 0-8 3 0 0-2 1-2 3 0 0-3 2 0 0-4 7 0 0-2 1-2 6 0 0-4 4 0 0-2 4 0 0-5 6 0 0-2 3 0 1-4 2-2 5 0 0-2 1 0 0-2 1 0 0-2 3 0 1-2 3 0 0-3 2 0 0-2 2 0 0-6 2-2 0-2 3 0 0-2 3 0 3-3 11 0 2-2 0-2 3 0 0-2 4 0 0-6 3-4 0-3 7 0 0-2 4 0 0-2 12 0 0-2 13 0 1-2 17 0 1-6 5 0 0-7 2 0 2-2 4-2 3 0 0-2 13 0 0-2 2 0 0-4 19 0 2-2 2 0 0-3 10 0 4-4 16 0 1-2 2 0 4-2 6 0"/>
+      <path class="c-acc" d="M64 324l0-8 1 0 0-5 1-2 0-4 1 0 0-15 2 0 0-2 2 0 0-2 1 0 0-4 1-2 1-13 1-2 0-6 1-3 0-4 1 0 0-2 1 0 1-4 3 0 0-2 2-2 0-5 1-2 1-10 1 0 1-13 4 0 1-15 2 0 0-4 2-4 0-7 2 0 0-10 2 0 0-4 1 0 1-5 2 0 0-2 4 0 0-6 2 0 0-2 7 0 0-4 3 0 0-2 1 0 0-3 2 0 0-2 3 0 1-4 1 0 1-6 3 0 0-2 5 0 1-7 2 0 0-2 2 0 0-2 2 0 0-4 2 0 0-4 1 0 0-2 10 0 0-3 8 0 0-2 1 0 0-2 1 0 0-4 1 0 1-4 3 0 0-2 1 0 0-3 9 0 0-2 2 0 0-4 10 0 0-2 2 0 0-2 4 0 0-2 1 0 0-2 3 0 0-2 3 0 0-3 1 0 0-2 1 0 0-2 16 0 0-2 2 0 0-2 15 0 0-4 4 0 0-2 4 0 0-2 2 0 0-3 8 0 0-2 3 0 0-2 4 0 0-2 1 0 0-2 11 0 0-2 3 0 0-2 17 0 0-2 20 0 0-5 3 0 0-2 5 0 0-2 3 0 0-2 8 0 0-2 25 0"/>
+      <path class="lead" fill="none" d="M75 273L114 302M109 179L165 233M204 89L245 149"/>
+      <g class="dotw ring"><circle cx="71.9" cy="269.1" r="4"/><circle cx="105.9" cy="176.1" r="4"/><circle cx="201.6" cy="85.3" r="4"/></g>
+      <text x="118" y="312" class="m">阈值 0.4</text><text x="170" y="245" class="m">阈值 0.3</text><text x="249" y="160" class="m">阈值 0.2</text>
+      <g text-anchor="end"><text x="56" y="328" class="t">0</text><text x="56" y="268" class="t">0.2</text><text x="56" y="208" class="t">0.4</text><text x="56" y="148" class="t">0.6</text><text x="56" y="88" class="t">0.8</text><text x="56" y="28" class="t">1</text></g>
+      <g text-anchor="middle"><text x="64" y="342" class="t">0</text><text x="124" y="342" class="t">0.2</text><text x="184" y="342" class="t">0.4</text><text x="244" y="342" class="t">0.6</text><text x="304" y="342" class="t">0.8</text><text x="364" y="342" class="t">1</text></g>
+      <text x="214" y="366" class="m" text-anchor="middle">假正率：没听的 458 条里，被说成会听的比例</text>
+      <text x="64" y="14" class="m">召回率：听了的 142 条里，被找出来的比例</text>
+      <text x="392" y="40" class="m">曲线</text><text x="596" y="40" class="m" text-anchor="end">AUC</text>
+      <path class="truth" d="M392 60H420"/><text x="428" y="64">真实概率</text><text x="596" y="64" class="mn" text-anchor="end">0.7834</text>
+      <path class="c-acc" d="M392 88H420"/><text x="428" y="92">逻辑回归 + 交叉</text><text x="596" y="92" class="mn" text-anchor="end">0.7715</text>
+      <path class="c-warn" d="M392 116H420"/><text x="428" y="120">GBDT</text><text x="596" y="120" class="mn" text-anchor="end">0.7499</text>
+      <path class="c-dash" d="M392 144H420"/><text x="428" y="148">DNN</text><text x="596" y="148" class="mn" text-anchor="end">0.7310</text>
+      <path class="c-dot" d="M392 172H420"/><text x="428" y="176">逻辑回归</text><text x="596" y="176" class="mn" text-anchor="end">0.7175</text>
+      <path class="diag" d="M392 200H420"/><text x="428" y="204">随机打分</text><text x="596" y="204" class="mn" text-anchor="end">0.5</text>
+    </svg>
+    </div>
+    <figcaption>五条线几乎全程在对角线上方，越往左上鼓越好。GBDT 那条线上的三个点是阈值 0.4、0.3、0.2：调阈值，就是在同一条曲线上移动。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>对角线是随机打分。</strong>分数和结果无关时，正样本和负样本过线的速度一样快，召回率和假正率一起涨。</li>
+    <li><strong>曲线越往左上鼓越好。</strong>同样多的误报下，能找出更多正样本。完美的模型把 142 条正样本全排在最前面，曲线从 (0, 0) 直上 (0, 1)，再横着走到 (1, 1)。</li>
+    <li><strong>曲线会交叉。</strong>最左边那一小段（假正率不到 4%），DNN 的线在逻辑回归 + 交叉和 GBDT 上面，对应上一节"前 30 条"里 DNN 命中最多；到了假正率 15% 到 20% 一带，它又落到这两条线下面。</li>
+  </ul>
+  <p>曲线下面的面积，就是下一节的 AUC。</p>
+</section>
+
+<section id="auc">
+  <h2><span class="n">06</span>AUC：随便挑一对，谁排在前面</h2>
+  <p>AUC（area under the curve）是 ROC 曲线下面的面积。随机打分是那条对角线，面积 0.5；完美的模型是 1。</p>
+  <p>它有一个更好懂的意思：从正样本里随便挑一条，再从负样本里随便挑一条，模型给正样本的分数更高的概率。分数一样算半次。</p>
+  <p>测试集有 142 条正样本、458 条负样本，可以凑成 142 × 458 = 65,036 对。把每一对都比一遍：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>正样本分数高</th><th>一样高</th><th>负样本分数高</th><th>(高 + 一样 ÷ 2) ÷ 65,036</th><th>曲线下面积</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归</td><td class="num">46,665</td><td class="num">0</td><td class="num">18,371</td><td class="num">0.7175</td><td class="num">0.7175</td></tr>
+      <tr><td>逻辑回归 + 交叉</td><td class="num">50,174</td><td class="num">0</td><td class="num">14,862</td><td class="num">0.7715</td><td class="num">0.7715</td></tr>
+      <tr><td>GBDT</td><td class="num">48,741</td><td class="num">58</td><td class="num">16,237</td><td class="num">0.7499</td><td class="num">0.7499</td></tr>
+      <tr><td>DNN</td><td class="num">47,526</td><td class="num">30</td><td class="num">17,480</td><td class="num">0.7310</td><td class="num">0.7310</td></tr>
+      <tr><td>真实概率</td><td class="num">50,944</td><td class="num">14</td><td class="num">14,078</td><td class="num">0.7834</td><td class="num">0.7834</td></tr>
+    </tbody>
+  </table></div>
+  <p>两种算法得到同一个数，不是巧合。ROC 曲线每往右走一格，是越过了一条负样本；这一格下面的高度，正好是分数比这条负样本高的正样本占多少。把 458 格的面积加起来，就是在数"正样本排在负样本前面"的对数。分数相同时曲线走斜线，面积正好算半个。</p>
+  <p>放到首页上读：GBDT 的 0.75 意思是，一首会被听满 30 秒的歌和一首不会的歌放在一起，GBDT 有四分之三的机会把前者排在前面，四对里大约一对排反。</p>
+  <h3>AUC 只看先后，不看数值</h3>
+  <p>把逻辑回归 + 交叉给出的每个 p 都除以 2，先后顺序一点没变，AUC 还是 0.7715；平均预测却从 23.66% 变成 11.83%，对数损失从 0.4592 涨到 0.5233。都平方也一样：AUC 0.7715，平均预测 8.26%，对数损失 0.6036。</p>
+  <p>实际的正样本比例是 23.67%。一个说 24% 的模型和一个说 12% 的模型，AUC 可以一模一样。AUC 回答"排得对不对"，不回答"概率准不准"，后者要看下两节。</p>
+  <h3>整体 AUC 和每个人的列表</h3>
+  <p>这里的 AUC 把所有用户的曝光混在一起比。首页排序只在同一个用户的候选歌里比先后：甲用户的一个负样本和乙用户的一个正样本谁排在前面，不影响任何人看到的列表。所以推荐里常按用户分别算 AUC 再加权平均（权重常用曝光数），叫 GAUC（group AUC）。这份数据算不了它：测试集 600 条分在 256 个用户身上，平均每人 2.3 条，同时有正有负的只有 86 人。</p>
+</section>
+
+<section id="logloss">
+  <h2><span class="n">07</span>对数损失：给概率本身打分</h2>
+  <p>AUC 不管数值，对数损失（log loss，也叫交叉熵）管。一条样本的损失是：</p>
+<pre><code>听了（标签 1）：  −ln p
+没听（标签 0）：  −ln(1 − p)</code></pre>
+  <p>全部样本取平均，越小越好。它就是这几个模型训练时一直在往下压的那个数，见 <a href="gradient-descent.html">梯度下降</a>。几个例子：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">预测 p</th><th class="num">实际听了</th><th class="num">实际没听</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0.9</td><td class="num">0.105</td><td class="num">2.303</td></tr>
+      <tr><td class="num">0.5</td><td class="num">0.693</td><td class="num">0.693</td></tr>
+      <tr><td class="num">0.3</td><td class="num">1.204</td><td class="num">0.357</td></tr>
+      <tr><td class="num">0.1</td><td class="num">2.303</td><td class="num">0.105</td></tr>
+      <tr><td class="num">0.01</td><td class="num">4.605</td><td class="num">0.010</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>说得越肯定，错了罚得越重。</strong>对一条听了的说 0.01，罚 4.6；说 0.3，只罚 1.2。p 越接近 0，罚得越多，没有上限。</li>
+    <li><strong>每条都说 0.5，损失是 0.693。</strong>逻辑回归的权重全是 0 时就是这样，它的训练从 0.6931 开始。</li>
+    <li><strong>罚的是概率离结果有多远，不只是先后。</strong>上一节把 p 都除以 2，AUC 不变，对数损失却变差了。</li>
+  </ul>
+  <p>测试集上的结果，按对数损失从高到低：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>预测</th><th class="num">对数损失</th><th class="num">AUC</th></tr></thead>
+    <tbody>
+      <tr><td>一律报 22.7%（训练集的正样本比例）</td><td class="num">0.5475</td><td class="num">0.5</td></tr>
+      <tr><td>DNN 训 30 轮（第 10 节）</td><td class="num">0.5274</td><td class="num">0.6920</td></tr>
+      <tr><td>逻辑回归</td><td class="num">0.4985</td><td class="num">0.7175</td></tr>
+      <tr><td>DNN</td><td class="num">0.4851</td><td class="num">0.7310</td></tr>
+      <tr><td>GBDT</td><td class="num">0.4847</td><td class="num">0.7499</td></tr>
+      <tr><td>逻辑回归 + 交叉</td><td class="num">0.4592</td><td class="num">0.7715</td></tr>
+      <tr><td>真实概率</td><td class="num">0.4492</td><td class="num">0.7834</td></tr>
+    </tbody>
+  </table></div>
+  <p>两个数排出来的顺序大体一致，但不完全一致：GBDT 和 DNN 的对数损失几乎一样（0.4847 和 0.4851），AUC 却差了 0.019。真实概率的损失也不是 0，因为结果本身是随机的，第 11 节再说。</p>
+</section>
+
+<section id="calibration">
+  <h2><span class="n">08</span>校准：说 30% 时真有 30% 吗</h2>
+  <p>校准（calibration）说的是：模型说 30% 的那些曝光，实际是不是有 30% 被听了。先看最粗的一层，整个测试集的平均预测和实际比例。平均预测乘以 600，就是模型预计这 600 次曝光会带来多少次播放：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">平均预测</th><th class="num">预计播放</th><th class="num">实际播放</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归</td><td class="num">22.60%</td><td class="num">135.6</td><td class="num">142</td></tr>
+      <tr><td>逻辑回归 + 交叉</td><td class="num">23.66%</td><td class="num">142.0</td><td class="num">142</td></tr>
+      <tr><td>GBDT</td><td class="num">22.89%</td><td class="num">137.4</td><td class="num">142</td></tr>
+      <tr><td>DNN</td><td class="num">22.96%</td><td class="num">137.8</td><td class="num">142</td></tr>
+      <tr><td>DNN 训 30 轮</td><td class="num">26.09%</td><td class="num">156.5</td><td class="num">142</td></tr>
+      <tr><td>真实概率</td><td class="num">23.21%</td><td class="num">139.3</td><td class="num">142</td></tr>
+    </tbody>
+  </table></div>
+  <p>真实概率预计 139.3 次，实际 142 次，差的 2.7 次是抛硬币的运气。只看平均还不够：可能高的说低了、低的说高了，正好抵消。所以要分组看。把 600 条按预测值从小到大排好，每 60 条一组，共 10 组，比较每组的平均预测和实际比例。画出来叫可靠性图（reliability diagram）：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 372" role="img" aria-label="可靠性图。600 条按预测值排序后每 60 条一组，横轴是这组的平均预测，纵轴是这组实际听满 30 秒的比例，都从 0 到 80%。逻辑回归加交叉特征的 10 个点贴着对角线。训了 30 轮的 DNN 的点比对角线平：最低一组说 2.4%，实际 11.7%；最高一组说 75.0%，实际 56.7%">
+      <path class="grid" d="M64 24H364M64 99H364M64 174H364M64 249H364M139 24V324M214 24V324M289 24V324M364 24V324"/>
+      <path class="axis" fill="none" d="M64 24V324H364"/>
+      <path class="diag" d="M64 324L364 24"/>
+      <path class="c-acc" d="M83.2 305.2 90.1 299 100.1 286.5 113.4 280.2 130.6 274 148.9 249 166.9 224 190.9 205.2 224.4 136.5 278.8 92.8"/>
+      <path class="c-warn" d="M73.1 280.2 88.2 261.5 99.9 274 112.3 267.8 128.7 267.8 150 261.5 161.8 261.5 199.3 192.8 259.7 174 345.3 111.5"/>
+      <g class="dot ring"><circle cx="83.2" cy="305.2" r="4.5"/><circle cx="90.1" cy="299" r="4.5"/><circle cx="100.1" cy="286.5" r="4.5"/><circle cx="113.4" cy="280.2" r="4.5"/><circle cx="130.6" cy="274" r="4.5"/><circle cx="148.9" cy="249" r="4.5"/><circle cx="166.9" cy="224" r="4.5"/><circle cx="190.9" cy="205.2" r="4.5"/><circle cx="224.4" cy="136.5" r="4.5"/><circle cx="278.8" cy="92.8" r="4.5"/></g>
+      <g class="dotw ring"><rect x="69.1" y="276.2" width="8" height="8"/><rect x="84.2" y="257.5" width="8" height="8"/><rect x="95.9" y="270" width="8" height="8"/><rect x="108.3" y="263.8" width="8" height="8"/><rect x="124.7" y="263.8" width="8" height="8"/><rect x="146" y="257.5" width="8" height="8"/><rect x="157.8" y="257.5" width="8" height="8"/><rect x="195.3" y="188.8" width="8" height="8"/><rect x="255.7" y="170" width="8" height="8"/><rect x="341.3" y="107.5" width="8" height="8"/></g>
+      <g text-anchor="end"><text x="56" y="328" class="t">0</text><text x="56" y="253" class="t">20%</text><text x="56" y="178" class="t">40%</text><text x="56" y="103" class="t">60%</text><text x="56" y="28" class="t">80%</text></g>
+      <g text-anchor="middle"><text x="64" y="342" class="t">0</text><text x="139" y="342" class="t">20%</text><text x="214" y="342" class="t">40%</text><text x="289" y="342" class="t">60%</text><text x="364" y="342" class="t">80%</text></g>
+      <text x="214" y="366" class="m" text-anchor="middle">这一组的平均预测</text>
+      <text x="64" y="14" class="m">这一组实际听满 30 秒的比例</text>
+      <path class="c-acc" d="M392 52H420"/><circle class="dot ring" cx="406" cy="52" r="4.5"/><text x="428" y="56">逻辑回归 + 交叉</text>
+      <path class="c-warn" d="M392 80H420"/><rect class="dotw ring" x="402" y="76" width="8" height="8"/><text x="428" y="84">DNN 训 30 轮</text>
+      <path class="diag" d="M392 108H420"/><text x="428" y="112">对角线：说多少就是多少</text>
+      <text x="392" y="164" class="m">DNN 训 30 轮</text>
+      <text x="392" y="186">最低一组 说 <tspan class="mn">2.4%</tspan> 实际 <tspan class="mn">11.7%</tspan></text>
+      <text x="392" y="208">最高一组 说 <tspan class="mn">75.0%</tspan> 实际 <tspan class="mn">56.7%</tspan></text>
+    </svg>
+    </div>
+    <figcaption>落在对角线上，说多少就是多少。逻辑回归 + 交叉的 10 个点贴着对角线；训了 30 轮的 DNN 比对角线平，说得低的组实际更高，说得高的组实际更低。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>训过头的网络说得太绝对。</strong>DNN 训了 30 轮，最低一组说 2.4%，实际 11.7%；最高一组说 75.0%，实际 56.7%。它记住了训练集里的偶然，对新数据把握给得过头，第 10 节细说。</li>
+    <li><strong>GBDT 偏保守。</strong>它给的 p 挤在 0.08 到 0.62 之间，比真实概率的 0.02 到 0.82 窄；最高的两组说 33.9% 和 43.5%，实际是 53.3% 和 56.7%。</li>
+    <li><strong>单个点要打折扣。</strong>每组只有 60 条，实际比例本身就会晃 5 到 6 个百分点（一个标准差）。按真实概率分组，也有一组说 26.6%、实际 13.3%。要看整排点的走势。</li>
+  </ul>
+  <h3>什么时候需要校准</h3>
+  <p>排序只要先后对：p 全都乘以 2 或除以 2，首页列表都一样，看 AUC 就够。下面这些场合要用 p 的数值本身：</p>
+  <ul>
+    <li><strong>估量和做预算。</strong>预计明天推送 10 万条能带来多少次播放，就是把 10 万个 p 加起来。训了 30 轮的 DNN 会多估 10%，逻辑回归少估 4.5%。</li>
+    <li><strong>按概率出价。</strong>广告常按"一次点击值多少钱 × 预估点击概率"算一次展示值多少钱。概率高估一倍，这次展示的价值就高估一倍，排序和花的钱都跟着错，见 <a href="ctr-recommendation.html#score">推荐和点击率预估</a>。</li>
+    <li><strong>几个分数合在一起。</strong>排序分如果是"播放概率 × 预计收听时长"，或者要和另一路候选的分数比，每个数都得说多少就是多少，否则偏高的那一路总排在前面。</li>
+  </ul>
+  <p>校准可以事后单独修：在验证集上拟合一个只升不降的映射，把分数换成更准的概率。常见的一种是在分数上再套一个只有两个参数的逻辑回归（Platt scaling），另一种是分段的单调函数（isotonic regression）。映射只升不降，不会颠倒先后。训练时对负样本降过采样，概率会整体偏高，要按采样比例换算回来，见 <a href="features-samples.html#downsample">特征和样本</a>。</p>
+</section>
+
+<section id="split">
+  <h2><span class="n">09</span>训练、验证、测试按时间切</h2>
+  <p>3000 次曝光按天切成三份：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>份</th><th>天</th><th class="num">条数</th><th class="num">正样本</th><th class="num">比例</th><th>用来做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">训练集</td><td class="nw">第 1–20 天</td><td class="num">2000</td><td class="num">454</td><td class="num">22.7%</td><td>调权重：梯度下降只看这一份</td></tr>
+      <tr><td class="nw">验证集</td><td class="nw">第 21–24 天</td><td class="num">400</td><td class="num">82</td><td class="num">20.5%</td><td>做选择：训几轮、要几棵树、阈值定多少</td></tr>
+      <tr><td class="nw">测试集</td><td class="nw">第 25–30 天</td><td class="num">600</td><td class="num">142</td><td class="num">23.7%</td><td>最后量一次，这一页的数都出自它</td></tr>
+    </tbody>
+  </table></div>
+  <h3>为什么按时间切</h3>
+  <ul>
+    <li><strong>模型上线后预测的是明天。</strong>按时间切，验证集和测试集就是"训练时还没发生的事"，和上线后的处境一样。</li>
+    <li><strong>随机切会让模型提前看到未来。</strong>真实数据里，歌的热度、用户的口味都在随时间变。随机切时，同一天的曝光同时落进训练集和测试集，模型学到的"这几天这首歌火"在测试集上占了便宜，上线以后就没有了。这份示例数据的规律不随时间变，所以这里看不出这个差别。</li>
+    <li><strong>特征也要守时间。</strong>"最近 7 天听这个曲风的次数"只能数曝光之前的 7 天。把曝光之后的播放也数进去，模型等于偷看了答案，离线分数会好得不正常。这叫数据泄漏，推荐里也常叫特征穿越，见 <a href="features-samples.html#leak">特征和样本</a>。</li>
+  </ul>
+  <h3>验证集在这里做了什么</h3>
+  <p>有些数不是梯度下降学出来的，要由人定，比如网络训几轮、GBDT 要几棵树，这类数叫超参数（hyperparameter）。这里验证集定了两个：</p>
+  <ul>
+    <li><strong>DNN 训 12 轮。</strong>先训 30 轮，每轮量一次验证集的对数损失，第 12 轮最低（0.4794）；再用同一个随机种子从头训到第 12 轮，见 <a href="neural-network.html#dnn">神经网络</a>。</li>
+    <li><strong>GBDT 用 103 棵树。</strong>一棵棵加到 300 棵，验证集的对数损失在第 103 棵最低（0.4694），见 <a href="trees-gbdt.html#rounds">决策树和 GBDT</a>。</li>
+  </ul>
+  <h3>用测试集来挑，等于作弊</h3>
+  <p>如果当初看测试集来挑，报出来的数会好看一些：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>要挑的</th><th>按验证集挑</th><th class="num">测试集 AUC</th><th>按测试集 AUC 挑</th><th class="num">测试集 AUC</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">DNN 训几轮</td><td>第 12 轮</td><td class="num">0.7310</td><td>第 8 轮</td><td class="num">0.7476</td></tr>
+      <tr><td class="nw">GBDT 要几棵树</td><td>103 棵</td><td class="num">0.7499</td><td>92 棵</td><td class="num">0.7517</td></tr>
+    </tbody>
+  </table></div>
+  <p>模型并没有变好，只是挑中了运气。DNN 从第 4 轮到第 30 轮，测试集 AUC 在 0.68 到 0.75 之间来回跳，挑最高的那个，挑中的有一部分是噪声。测试集用来做过选择，报出的数就偏高，也再没有没碰过的数据能检查这个选择。验证集同理：第 12 轮是 30 轮里验证集损失最低的，它在验证集上的数也偏乐观。所以要留第三份数据，只在最后量一次。</p>
+  <h3>同一个模型，换一份数据分数就不同</h3>
+  <p>每个模型在验证集上的 AUC 都比测试集低 0.04 到 0.08：逻辑回归 0.6438 对 0.7175，逻辑回归 + 交叉 0.6961 对 0.7715，GBDT 0.7081 对 0.7499，DNN 0.6810 对 0.7310。拿真实概率去排，训练集、验证集、测试集上的 AUC 分别是 0.7503、0.723、0.7834。不是模型到了第 21 到 24 天变差了，是那 400 条碰巧难排，测试的 600 条碰巧好排。逻辑回归在测试集上（0.7175）比在训练集上（0.6738）还高，也是这个缘故，见 <a href="features-samples.html#split">特征和样本</a>。比较模型只能在同一份数据上比，不同份数据上的数不能放在一起比。</p>
+</section>
+
+<section id="fit">
+  <h2><span class="n">10</span>过拟合和欠拟合</h2>
+  <p>DNN 有 401 个参数，训练集只有 2000 条。训 30 轮，每轮结束量一次三份数据的对数损失：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 350" role="img" aria-label="DNN 训练 30 轮的对数损失曲线。训练集从第 1 轮的 0.503 一路降到第 30 轮的 0.387；验证集在第 12 轮降到最低的 0.479，之后回升，第 30 轮是 0.506；测试集同样先降后升，第 30 轮是 0.527">
+      <path class="grid" d="M60 30H480M60 97.5H480M60 165H480M60 232.5H480M117.9 30V300M190.3 30V300M262.8 30V300M335.2 30V300M407.6 30V300M480 30V300"/>
+      <path class="axis" fill="none" d="M60 30V300H480"/>
+      <path class="ghostline" d="M219.3 30V300"/>
+      <text x="226" y="46" class="m">第 12 轮：验证集损失最低</text>
+      <path class="c-fg" d="M60 93l14 20 15 21 14 18 15 14 14 18 15 8 14 2 15 7 14-3 15 10 14 17 15 4 14 8 15-3 14 3 15 14 14-14 15 11 14-5 15 14 14 17 15-8 14 6 15 3 14-9 15 3 14 16 15-3 14 6"/>
+      <path class="c-acc" d="M60 89l14-21 15 10 14 7 15 8 14 25 15 1 14-10 15 7 14-15 15-12 14 43 15-21 14-16 15 11 14-40 15 27 14 13 15-5 14 7 15-25 14 11 15 6 14-19 15-27 14 10 15-24 14 61 15-39 14 26"/>
+      <path class="c-warn" d="M60 61l14 3 15 19 14 23 15 3 14 3 15 17 14-1 15-2 14-3 15-2 14 2 15-10 14 12 15-19 14-6 15 10 14-19 15 27 14-39 15-4 14 18 15 7 14-17 15-27 14 19 15-38 14 31 15-14 14-3"/>
+      <text x="488" y="55">测试集 <tspan class="mn">0.527</tspan></text>
+      <text x="488" y="92">验证集 <tspan class="mn">0.506</tspan></text>
+      <text x="488" y="292">训练集 <tspan class="mn">0.387</tspan></text>
+      <g text-anchor="end"><text x="52" y="304" class="t">0.38</text><text x="52" y="236.5" class="t">0.42</text><text x="52" y="169" class="t">0.46</text><text x="52" y="101.5" class="t">0.50</text><text x="52" y="34" class="t">0.54</text></g>
+      <g text-anchor="middle"><text x="60" y="318" class="t">1</text><text x="117.9" y="318" class="t">5</text><text x="190.3" y="318" class="t">10</text><text x="262.8" y="318" class="t">15</text><text x="335.2" y="318" class="t">20</text><text x="407.6" y="318" class="t">25</text><text x="480" y="318" class="t">30</text></g>
+      <text x="270" y="342" class="m" text-anchor="middle">训练轮数</text>
+      <text x="60" y="16" class="m">对数损失，越低越好</text>
+      <path class="c-fg" d="M300 12H320"/><text x="326" y="16">训练集</text>
+      <path class="c-acc" d="M380 12H400"/><text x="406" y="16">验证集</text>
+      <path class="c-warn" d="M460 12H480"/><text x="486" y="16">测试集</text>
+    </svg>
+    </div>
+    <figcaption>训练集的损失一路往下；验证集和测试集在前几轮跟着降，之后不再降，慢慢往上走。竖线是验证集损失最低的第 12 轮。每处理一条样本就更新一次权重，所以曲线锯齿很多；第 0 轮（随机初始化）的损失在 0.8 以上，没有画。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">轮</th><th class="num">训练集损失</th><th class="num">验证集损失</th><th class="num">测试集损失</th><th class="num">训练集 AUC</th><th class="num">测试集 AUC</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td class="num">0.5027</td><td class="num">0.5048</td><td class="num">0.5214</td><td class="num">0.6631</td><td class="num">0.6408</td></tr>
+      <tr><td class="num">12</td><td class="num">0.4246</td><td class="num">0.4794</td><td class="num">0.4851</td><td class="num">0.8012</td><td class="num">0.7310</td></tr>
+      <tr><td class="num">20</td><td class="num">0.4137</td><td class="num">0.4935</td><td class="num">0.5109</td><td class="num">0.8135</td><td class="num">0.7009</td></tr>
+      <tr><td class="num">30</td><td class="num">0.3872</td><td class="num">0.5057</td><td class="num">0.5274</td><td class="num">0.8406</td><td class="num">0.6920</td></tr>
+    </tbody>
+  </table></div>
+  <p>训练集上越来越好，新数据上先好后坏，这叫过拟合（over-fitting）。模型开始记住这 2000 条样本自己的偶然：某些特征组合在训练集里碰巧多听了几次，网络就当成了规律，到了新数据上并不成立。</p>
+  <div class="key">最直接的证据：训到 30 轮，DNN 在训练集上的 AUC 是 0.8406，而真实概率在训练集上只有 0.7503。比"知道答案"的还高出 0.09，不可能是学到了规律，只能是背下了训练样本的结果。</div>
+  <p>这一页用的办法叫早停（early stopping）：在验证集损失最低的那一轮停下。别的常用办法有减少参数；在损失里加一项惩罚过大的权重，叫正则化；训练时随机关掉一部分神经元，叫 dropout；以及多找数据。</p>
+  <h3>欠拟合：两边都差</h3>
+  <p>反过来的情况叫欠拟合（under-fitting）：模型太简单，在训练集上都学不好。没有交叉特征的逻辑回归就是这样。真实规律里，"晚上"和"长歌"要组合起来才起作用。全部 3000 条里，白天的短歌有 34.7% 被听满 30 秒，晚上的长歌 31.6%，白天的长歌和晚上的短歌都只有 12.0%。逻辑回归只能给"晚上"和"长歌"各配一个权重，表达不了"两个一致才好"，见 <a href="features-samples.html#cross">特征和样本</a>。</p>
+  <p>三份数据的难易不同，所以拿每份数据上的真实概率当尺子：它在训练集上的 AUC 是 0.7503，在测试集上是 0.7834。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>欠拟合：逻辑回归</th><th>正好：逻辑回归 + 交叉</th><th>过拟合：DNN 训 30 轮</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">训练集 AUC</td><td>0.6738</td><td>0.7479</td><td>0.8406</td></tr>
+      <tr><td class="nw">测试集 AUC</td><td>0.7175</td><td>0.7715</td><td>0.6920</td></tr>
+      <tr><td class="nw">怎么看出来</td><td>训练集上就离上限很远</td><td>两份都贴着上限</td><td>训练集超过上限，测试集离得最远</td></tr>
+      <tr><td class="nw">怎么办</td><td>加特征，比如交叉特征；换能表达组合的模型</td><td>保持</td><td>早停、减参数、正则化、加数据</td></tr>
+    </tbody>
+  </table></div>
+  <p>真实数据里不知道上限在哪，就看训练集和验证集的差距：两边都差、差得不多，是欠拟合；训练集好得多，是过拟合。</p>
+</section>
+
+<section id="baseline">
+  <h2><span class="n">11</span>基线和上限</h2>
+  <p>单说"AUC 0.75"看不出好坏，要放在两个数中间看：最低能做到多少（基线），最高能做到多少（上限）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>预测</th><th>参数</th><th class="num">测试集 AUC</th><th class="num">对数损失</th><th class="num">离上限差的 AUC</th></tr></thead>
+    <tbody>
+      <tr><td>一律报 22.7%</td><td>1 个</td><td class="num">0.5</td><td class="num">0.5475</td><td class="num">0.2834</td></tr>
+      <tr><td>逻辑回归</td><td>16 个</td><td class="num">0.7175</td><td class="num">0.4985</td><td class="num">0.0659</td></tr>
+      <tr><td>DNN</td><td>401 个</td><td class="num">0.7310</td><td class="num">0.4851</td><td class="num">0.0524</td></tr>
+      <tr><td>GBDT</td><td>103 棵树</td><td class="num">0.7499</td><td class="num">0.4847</td><td class="num">0.0335</td></tr>
+      <tr><td>逻辑回归 + 交叉</td><td>17 个</td><td class="num">0.7715</td><td class="num">0.4592</td><td class="num">0.0119</td></tr>
+      <tr><td>真实概率</td><td>—</td><td class="num">0.7834</td><td class="num">0.4492</td><td class="num">0</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>最低的基线：给所有人同一个数。</strong>用训练集的正样本比例 22.7%，不看任何特征。所有分数都一样，每一对都算平手，AUC 正好 0.5，对数损失 0.5475。一个模型连它都比不过，一定是哪里出了错。</li>
+    <li><strong>第二条基线：简单模型。</strong>逻辑回归训得快、好解释，常被当作新模型要越过的线。复杂的模型要比它好出噪声之外（第 12 节），才值得用。</li>
+    <li><strong>参数多不等于好。</strong>17 个参数的逻辑回归 + 交叉，排在 401 个参数的 DNN 和 103 棵树的 GBDT 前面。这个交叉特征正是真实规律里的那个组合，等于人把一部分答案告诉了模型。GBDT 和 DNN 能自己找组合，但 2000 条数据不够它们找准。真实数据里通常不知道该交叉什么，这正是用树和网络的原因。</li>
+  </ul>
+  <h3>上限为什么到不了 1</h3>
+  <p>真实概率就是生成数据时用的那个概率，标签是照着它抛硬币抛出来的：true_p 是 0.3，这次曝光就有 30% 的机会是 1。没有哪个模型能知道得比它更多，所以它是这份数据上的上限。它的 AUC 是 0.7834，不是 1：</p>
+  <ul>
+    <li>测试集里真实概率不小于 0.5 的曝光有 53 次，其中 20 次没听。</li>
+    <li>真实概率低于 0.1 的有 155 次，其中 8 次听了。</li>
+    <li>真实概率最高的一次也只有 0.82，没有哪一次是板上钉钉的。</li>
+  </ul>
+  <p>按真实概率排序，65,036 对里仍有 14,078 对排反，占 21.6%。比如上面那 8 条"不太可能却听了"的，和那 20 条"很可能却没听"的，两两组成的 160 对一定排反。这不是排序的错，是结果本身带着随机。对数损失也一样，真实概率的 0.4492 就是这份数据上的地板。</p>
+  <p>真实数据里不知道上限在哪，只知道它小于 1。人选歌受很多记录不到的东西影响，比如当时的心情、手边正在做什么，这部分对任何模型来说都是随机的。</p>
+</section>
+
+<section id="noise">
+  <h2><span class="n">12</span>600 条样本能分出多少高低</h2>
+  <p>测试集只有 600 条，其中 142 条正样本，换一批 600 条，AUC 就是另一个数。差多少，可以用 bootstrap（自助法）估：从这 600 条里有放回地抽 600 次，组成一份新的测试集（有的样本抽到几次，有的一次没抽到），算一次 AUC；重复 2000 次，去掉最低和最高的各 2.5%，剩下的范围叫 95% 置信区间（confidence interval），表示样本有限带来的大致误差。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">测试集 AUC</th><th class="num">95% 区间</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归</td><td class="num">0.7175</td><td class="num">0.672 – 0.765</td></tr>
+      <tr><td>DNN</td><td class="num">0.7310</td><td class="num">0.682 – 0.780</td></tr>
+      <tr><td>GBDT</td><td class="num">0.7499</td><td class="num">0.705 – 0.796</td></tr>
+      <tr><td>逻辑回归 + 交叉</td><td class="num">0.7715</td><td class="num">0.729 – 0.816</td></tr>
+      <tr><td>真实概率</td><td class="num">0.7834</td><td class="num">0.742 – 0.826</td></tr>
+    </tbody>
+  </table></div>
+  <p>拿 GBDT 来说，0.7499 前后各有大约 0.045 的余地。几个模型的区间互相重叠，连最低的逻辑回归和最高的逻辑回归 + 交叉也有重叠。</p>
+  <h3>两个模型比，要成对比</h3>
+  <p>区间重叠不等于分不出高低。几个模型是在同样的 600 条上量的，碰上难排的样本，大家一起变低。比两个模型，要在同一份重抽的样本上算差，再看差的区间：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>比较</th><th class="num">AUC 差</th><th class="num">差的 95% 区间</th><th class="num">2000 次里差 ≤ 0 的次数</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归 + 交叉 − 逻辑回归</td><td class="num">+0.054</td><td class="num">+0.015 – +0.093</td><td class="num">11</td></tr>
+      <tr><td>GBDT − 逻辑回归</td><td class="num">+0.032</td><td class="num">+0.005 – +0.060</td><td class="num">25</td></tr>
+      <tr><td>逻辑回归 + 交叉 − GBDT</td><td class="num">+0.022</td><td class="num">−0.013 – +0.057</td><td class="num">208</td></tr>
+      <tr><td>GBDT − DNN</td><td class="num">+0.019</td><td class="num">−0.023 – +0.058</td><td class="num">377</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>差的区间不跨过 0，基本可以认定有高低。</strong>加了交叉特征的逻辑回归确实比原来好；GBDT 也比逻辑回归好，但区间下沿只有 +0.005。</li>
+    <li><strong>跨过 0，就说不清。</strong>逻辑回归 + 交叉比 GBDT 高 0.022，GBDT 比 DNN 高 0.019，看着不小，但在 600 条样本上，这样的差有一到两成的机会是反的。</li>
+  </ul>
+  <p>样本越多，区间越窄，宽度大致和样本数的平方根成反比：样本多 4 倍，区间窄一半。真实系统的数据多得多，区间也窄得多，那时更要担心的是下一节：离线和线上对不上。</p>
+  <h3>上限自己也在晃</h3>
+  <p>这份数据是脚本生成的，还能做一件真实数据做不到的事：600 次曝光不变，只按 true_p 重新抛硬币生成标签，抛 2000 次。真实概率的 AUC 平均 0.756，中间 95% 在 0.711 到 0.800 之间。这一次的 0.7834 偏高：测试的 600 条碰巧好排，第 09 节里测试集 AUC 比验证集高、逻辑回归的甚至比训练集高，原因就在这里。连上限也随抽样晃动。</p>
+</section>
+
+<section id="online">
+  <h2><span class="n">13</span>离线评估和线上实验</h2>
+  <p>前面的数都是离线评估：拿已经发生的日志，事后算。模型到底好不好，要放到用户面前看。</p>
+  <h3>A/B 测试</h3>
+  <p>把用户随机分成几组，同一段时间里，A 组用旧模型，B 组用新模型，其他一切相同。分组随机，两组用户在别的方面没有系统差别，结果的差别只能来自模型。比的不是 AUC，是业务想要的数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>指标</th><th>例子</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">核心指标</td><td>人均播放次数、人均收听时长</td><td>决定新模型上不上</td></tr>
+      <tr><td class="nw">长期指标</td><td>次日留存、7 日留存</td><td>变得慢，要跑更久才看得出来</td></tr>
+      <tr><td class="nw">护栏指标</td><td>跳过率、关闭推送的比例、接口耗时、崩溃率</td><td>核心指标涨了，也不能把它们弄坏</td></tr>
+    </tbody>
+  </table></div>
+  <p>线上的数同样有噪声，同样要算置信区间；分组要够大，时间至少覆盖完整的一周，因为工作日和周末的习惯不同。头几天的上涨可能只是新鲜感，叫新奇效应。每天盯着看、哪天显著了就停，和第 09 节用测试集挑模型是同一个错误，所以时长和指标要事先定好。</p>
+  <h3>离线涨了，线上不一定涨</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>原因</th><th>怎么回事</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">测试集是旧模型选出来的</td><td>日志里只有旧模型推过的歌和用户的反应。新模型想推、旧模型从没推过的歌，没有标签，离线评估根本没覆盖到</td></tr>
+      <tr><td class="nw">标签不等于目标</td><td>"听满 30 秒"只是一个代理。多推短而抓耳的歌，能拉高正样本比例，人均收听时长却不一定涨</td></tr>
+      <tr><td class="nw">一条一条打分，用户看的是一整屏</td><td>排在第一位的天然更容易被点；十首同一曲风的歌各自都"准"，放在一起就腻。位置和多样性都不在 AUC 里</td></tr>
+      <tr><td class="nw">线上线下的特征不一致</td><td>离线从日志里补算"最近 7 天的播放次数"，线上这个数可能晚几个小时才更新，模型在线上看到的和训练时不一样</td></tr>
+      <tr><td class="nw">模型会改变数据</td><td>新模型推什么，用户就听什么，下一轮的训练数据也跟着变，见 <a href="ctr-recommendation.html#loop">推荐和点击率预估</a></td></tr>
+      <tr><td class="nw">线上有时间限制</td><td>每次请求要在很短的时间里给大量候选打分，大模型可能只能少打几首，或者根本上不了</td></tr>
+    </tbody>
+  </table></div>
+  <p>所以离线评估是一道筛子：比基线好出噪声之外、校准也没出问题的模型，才值得拿去做 A/B 测试；上不上线，由 A/B 测试的业务指标决定。线上的推荐怎么用这些分数，见 <a href="ctr-recommendation.html#score">推荐和点击率预估</a>；模型上线这一步，见主页面的 <a href="prediction.html#s10">上线</a>。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>准确率很高，一个正样本也没找出来</td><td>正样本少，一律说"不"就有 76.3%</td><td>先算一律说"不"的准确率当底线；看混淆矩阵、精确率和召回率</td></tr>
+      <tr><td>阈值用 0.5，模型几乎从不说"会听"</td><td>正样本只占两成多，GBDT 的 p 九成在 0.1 到 0.4 之间</td><td>按用途定阈值，在验证集上定</td></tr>
+      <tr><td>在测试集上挑了轮数或参数，上线后达不到报告的数</td><td>测试集被用来做选择，报出的是挑中的好运气</td><td>选择只用验证集，测试集只在最后量一次</td></tr>
+      <tr><td>训练集越训越好，验证集变差</td><td>过拟合。DNN 训到 30 轮，训练集 AUC 0.84，超过了上限</td><td>早停；减参数、正则化、加数据</td></tr>
+      <tr><td>训练集和验证集都差，而且差不多</td><td>欠拟合，模型表达不了数据里的组合</td><td>加特征，比如交叉特征；换能表达组合的模型</td></tr>
+      <tr><td>离线 AUC 好得不正常</td><td>特征用了曝光之后的数据；或者随机切分让模型看到了未来</td><td>每个特征只用曝光时刻之前的数据；按时间切</td></tr>
+      <tr><td>AUC 涨了，预估的播放量却偏得厉害</td><td>AUC 只看先后，不管概率的数值</td><td>同时看对数损失和分组校准；需要时在验证集上做校准</td></tr>
+      <tr><td>AUC 高了 0.01，就宣布新模型更好</td><td>600 条样本上，单个 AUC 的误差约 ±0.045</td><td>bootstrap 算区间；两个模型成对比较；加大样本</td></tr>
+      <tr><td>整体 AUC 不错，每个人的列表却排得一般</td><td>整体 AUC 混着比不同用户的曝光</td><td>按用户分别算（GAUC），或者直接看每个人前几位的命中</td></tr>
+      <tr><td>离线指标涨了，线上收听时长没涨</td><td>标签不等于业务目标；测试集只覆盖旧模型推过的歌</td><td>上不上线，看 A/B 测试的业务指标</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">数据和模型都来自脚本 <code>ml_reference.mjs</code>（Node 20，随机数 mulberry32，种子 20261123），3000 次曝光照一条写死的规律抛硬币生成，不是真实数据。模型配方：逻辑回归用 15 个标准化特征，权重从 0 开始，全量梯度下降，学习率 0.5，600 轮；交叉版多一个"晚上和长歌是否一致"；DNN 为 15→16→8→1、ReLU、He 初始化（种子 11），逐条样本随机梯度下降，学习率 0.01，按验证集损失取第 12 轮；GBDT 为深度 2 的树、学习率 0.05、叶子用牛顿步，按验证集损失取 103 棵。这一页的数是在脚本末尾加一段、导出每条样本的预测值后算的，训练部分未改，重新生成的数据和 reference.json 与原来逐字节相同。混淆矩阵、前 N 条命中、成对计数的 AUC 和 ROC 曲线都用 600 条测试样本，分数相同的一对算半次；可靠性图按预测值排序后每 60 条一组；bootstrap 有放回重抽 2000 次（mulberry32，种子 20261123），取 2.5% 和 97.5% 分位，两个模型的差在同一次重抽上相减；"重新抛硬币"保持曝光不变，按 true_p 重抽标签 2000 次（种子 7）；"按测试集挑"的 GBDT 数字来自每加一棵树记一次的曲线。ROC 曲线画图前做过折线简化，偏差不到 1 个像素。GAUC、校准的修正方法和线上实验一节是一般做法的介绍，没有在这份数据上验证。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 5 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="trees-gbdt.html"><span class="t">← 上一篇：决策树和 GBDT</span><span class="d">决策树和 GBDT：另一类常用算法</span></a>
+    <a class="demo" href="ctr-recommendation.html"><span class="t">下一篇：推荐和点击率预估 →</span><span class="d">放到线上：用户上亿、歌上千万，一次刷新只有一百来毫秒，同样的想法要怎么搭起来。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

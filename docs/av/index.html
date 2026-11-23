@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>音视频 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../assets/kb.css?v=6">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../index.html">知识库</a><span class="sep">/</span>音视频</nav>
+  <header class="hero">
+    <h1>音视频</h1>
+    <p class="lede">一个视频文件怎么变成画面和声音。先看地图把六步走一遍，再按播放的先后往下读：先把文件拆开，再分声音和画面两条线，最后是自己动手编译。</p>
+  </header>
+
+  <!-- 音视频这个领域的目录页。先看地图（playback.html），再按播放的先后排四个分类：封装格式 → 音频 → 视频 → 构建。
+       一个分类是一个 .group（id 给别的页面当锚点用），里面的 .sub 是主题或文章：
+       文章多的主题有自己的主题页（如 audio/codec/index.html，主题页里再按编码格式分组）；只有一两篇的直接链到文章。
+       加主题或文章：在对应 .group 的 .subs 里加一个 .sub。加分类：复制一个 .group，补上前后的 .bridge。
+       以后的同步、播放器结构也放这个领域。改完回首页（../index.html），更新音视频那张卡片上的 data-cats / data-articles / data-demos。 -->
+  <div class="label">先看地图</div>
+  <div class="topics path">
+    <a class="topic" href="playback.html">
+      <span class="no" aria-hidden="true">0</span>
+      <span class="t">一个视频是怎么播出来的</span>
+      <span class="d">从一个 MP4 文件，到屏幕亮起、喇叭出声，Android 上的六步：文件、解封装、解码、同步、渲染、出画出声。每一步做什么，数据变成了什么样，去下面哪个分类细看。</span>
+      <span class="m">6 步 · 数据来自 landscape_720p.mp4</span>
+    </a>
+  </div>
+
+  <div class="label">按播放的先后读<span class="c">4</span></div>
+  <div class="topics path">
+    <p class="bridge">地图有了。播放的第一步是解封装：先看一个 MP4 文件里到底装了什么。</p>
+    <div class="group" id="container">
+      <span class="no" aria-hidden="true">1</span>
+      <h2 class="t">封装格式</h2>
+      <span class="d">封装格式也叫容器，管的是音轨、视频轨、时间戳和解码参数怎么装进一个文件。按容器类型分开讲。</span>
+      <div class="subs">
+        <a class="sub" href="container/mp4-format.html"><span class="t">MP4</span><span class="d">把示例文件按字节拆开：盒子结构，每一帧的位置、大小、时间怎么记，关键帧和跳转，moov 在前在后，fMP4。</span><span class="m">1 篇 · 14 节</span></a>
+      </div>
+      <span class="m">还没写的容器：MKV / WebM、MPEG-TS、FLV</span>
+    </div>
+
+    <p class="bridge">拆出来的音频包和视频包都是压缩过的，要分两条线解码。先看声音这条线。</p>
+    <div class="group" id="audio">
+      <span class="no" aria-hidden="true">2</span>
+      <h2 class="t">音频</h2>
+      <span class="d">容器里读出来的压缩音频包，先解码成 PCM，再交给 AudioTrack 送到喇叭。</span>
+      <div class="subs">
+        <a class="sub" href="audio/codec/index.html"><span class="t">音频解码</span><span class="d">PCM 之前的那一步：压缩数据怎么解成 PCM。先读总览，再按格式分：AAC。</span><span class="m">2 篇</span></a>
+        <a class="sub" href="audio/pcm/index.html"><span class="t">PCM</span><span class="d">未压缩的声音数据：它是什么、怎么播、怎么加工。</span><span class="m">1 篇 · 4 个交互演示</span></a>
+      </div>
+    </div>
+
+    <p class="bridge">声音到 PCM 就能播了。画面那条线多两步：解出来的 YUV 要换算，还要画到屏幕上。</p>
+    <div class="group" id="video">
+      <span class="no" aria-hidden="true">3</span>
+      <h2 class="t">视频</h2>
+      <span class="d">压缩的视频包解码成一帧 YUV，换算成 RGB，再用 OpenGL 画到屏幕上。</span>
+      <div class="subs">
+        <a class="sub" href="video/codec/index.html"><span class="t">视频解码</span><span class="d">YUV 之前的那一步：几百字节怎么变回一帧画面。按格式分：H.264。</span><span class="m">1 篇</span></a>
+        <a class="sub" href="video/yuv/index.html"><span class="t">YUV 与像素格式</span><span class="d">解码后的一帧画面：三个平面怎么排，怎么换算成 RGB。</span><span class="m">1 篇 · 1 个交互演示</span></a>
+        <a class="sub" href="video/opengl/index.html"><span class="t">OpenGL 渲染</span><span class="d">把解码出来的 YUV 画到屏幕上。</span><span class="m">1 篇</span></a>
+      </div>
+    </div>
+
+    <p class="bridge">到这里，一个视频已经能出画出声。想自己动手，先得把 FFmpeg 编进 Android。</p>
+    <div class="group" id="build">
+      <span class="no" aria-hidden="true">4</span>
+      <h2 class="t">构建</h2>
+      <span class="d">把 FFmpeg 这样的 C 代码，在 Mac 上交叉编译成 Android App 能用的原生库。</span>
+      <div class="subs">
+        <a class="sub" href="build/ffmpeg-android.html"><span class="t">在 Mac 上编出 Android 的 FFmpeg</span><span class="d">什么是交叉编译，NDK 工具链里有什么，configure 的每组参数在回答什么问题，产物怎么验证、怎么接进 App。</span><span class="m">1 篇 · 10 节</span></a>
+        <a class="sub" href="build/configure-options.html"><span class="t">configure_android.sh 参数详解</span><span class="d">脚本里每个参数的作用、默认值和不写的后果，裁剪列表里每个组件是什么，想查某个参数时去哪里找。</span><span class="m">1 篇 · 14 节</span></a>
+      </div>
+    </div>
+  </div>
+
+  <div class="label">接着读</div>
+  <div class="demos">
+    <a class="demo" href="../network/index.html"><span class="t">网络 →</span><span class="d">视频不在手机里、要边下边播时，数据是怎么一路送过来的。</span></a>
+    <a class="demo" href="../ai/index.html"><span class="t">AI →</span><span class="d">换一个领域：模型怎么从数据里学会预测。</span></a>
+  </div>
+
+  <!-- 这一行原来在知识库首页的页脚。它只和音视频有关，所以放在这里；升级 FFmpeg 或 NDK 时跟着改 -->
+  <p class="foot">music_demo 工程用的版本：<span class="mono">FFmpeg n8.1.3 · NDK 27 · API 24</span></p>
+</main>
+</body>
+</html>

@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>拥塞控制：TCP 怎么决定发多快</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../assets/kb.css?v=6">
+<style>
+/* 本页独有：图里的上限标注用告警色；等超时那一段用点线表示"窗口还在，但什么也发不出去" */
+.fig text.w{fill:var(--warn)}
+.fig .stall{fill:none;stroke:var(--accent);stroke-opacity:.8;stroke-width:2;stroke-dasharray:2 5;stroke-linecap:round}
+.caption+p,.caption+ul{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 网络</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#why">没人告诉发送方路有多宽</a></li>
+    <li><a href="#windows">两个窗口，各管各的</a></li>
+    <li><a href="#slowstart">慢启动：从 10 段翻倍</a></li>
+    <li><a href="#aimd">拥塞避免：慢加快减</a></li>
+    <li><a href="#loss">丢包：三个重复确认</a></li>
+    <li><a href="#rto">超时：等多久怎么算</a></li>
+    <li><a href="#cubic">CUBIC：按时间涨</a></li>
+    <li><a href="#bbr">BBR：不等丢包</a></li>
+    <li><a href="#nagle">延迟确认和 Nagle</a></li>
+    <li><a href="#bloat">缓冲膨胀和 ECN</a></li>
+    <li><a href="#video">对视频意味着什么</a></li>
+    <li><a href="#tools">在自己的机器上看</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">网络 · 两端怎么对话</div>
+  <h1>拥塞控制：TCP 怎么决定发多快</h1>
+  <p class="lede"><a href="journey.html">全流程</a>那一页用几句话带过了这件事：发送方先只发 10 段，没丢就翻倍，丢了就降下来。这份笔记把这几句话展开。拥塞窗口是什么，按什么规则涨和降，丢包是怎么发现的，超时要等多久，CUBIC 和 BBR 各换了什么思路，最后落到边下边播的视频上。</p>
+  <div class="journey" aria-label="拥塞窗口的四个关键数">
+    <div class="step"><span class="k">新连接起步</span><span class="v hex">10 段</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">没丢，每个来回</span><span class="v">× 2</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">丢了一段（CUBIC）</span><span class="v">× 0.7</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">等到超时</span><span class="v">1 段</span></div>
+  </div>
+  <p class="caption">例子沿用全流程那一页的线路：一个来回约 10 ms，每段 1448 字节。两张窗口随时间变化的图是按 RFC 的规则用脚本模拟、按公式算的，不是抓包。标了"实测"的数是在一台 macOS 15.7 的机器上读出来的。算法里的常数取自 RFC 5681、6298、6928、8985、9438 和 Linux 内核文档写的默认值。</p>
+</header>
+
+<section id="why">
+  <h2><span class="n">01</span>没人告诉发送方路有多宽</h2>
+  <p>从服务器到手机，中间隔着好几段链路：机房的光纤、运营商的骨干网、小区的宽带、家里的 Wi-Fi。每一段的速度不一样，最慢的那一段决定整条路能跑多快，它叫瓶颈。发送方看不到这些。它不知道瓶颈在哪、有多宽，也不知道此刻有多少别的连接在和它分这条路。</p>
+  <p>路由器忙不过来时的做法很简单：先排队，队列满了就丢，而且不通知任何人（<a href="journey.html#s10">第 10 步</a>）。发得太快的后果就是丢包，丢了要重发，重发的包又挤进同一条队列。</p>
+  <h3>拥塞崩溃</h3>
+  <p>1986 年 10 月，这件事在当时的互联网上真的发生了。劳伦斯伯克利实验室到加州大学伯克利分校，相距 400 码（约 366 米），中间只有两台转发设备，吞吐量从 32 kbps 掉到了 40 bps，剩下八百分之一。线路没有坏，坏在所有发送方的做法上：</p>
+  <ul>
+    <li>网络一堵，确认回来得慢。发送方等不到确认，以为丢了，于是重发。</li>
+    <li>原来那一份其实还在队列里排着。同一段数据在路上有了两三份，队列更长。</li>
+    <li>更长的队列让更多连接超时、重发。链路一直满负荷在转，转的大多是重复的包。</li>
+  </ul>
+  <p>这叫拥塞崩溃（congestion collapse）。Van Jacobson 在 1988 年给 TCP 加了一组算法来防止它，后面几节讲的慢启动、拥塞避免、超时时间的算法都出自那一次。原则只有一条：<strong>连接稳定之后，收到一个确认，才放一个新的段进网络。</strong>旧的出去一个，新的才进来一个，路上的总量就不会涨。</p>
+  <p>发送方要自己回答四个问题，这一页就是按它们排的：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>问题</th><th>经典的答案（Reno）</th><th>在哪一节</th></tr></thead>
+    <tbody>
+      <tr><td>一开始发多少，怎么往上试</td><td>10 段起步，每个来回翻倍</td><td><a href="#slowstart">03</a></td></tr>
+      <tr><td>试到差不多了怎么办</td><td>改成每个来回只加 1 段</td><td><a href="#aimd">04</a></td></tr>
+      <tr><td>怎么知道丢了</td><td>3 个重复确认，或者等到超时</td><td><a href="#loss">05</a>、<a href="#rto">06</a></td></tr>
+      <tr><td>丢了降多少</td><td>减半；超时的话降到 1 段</td><td><a href="#aimd">04</a> 到 <a href="#rto">06</a></td></tr>
+    </tbody>
+  </table></div>
+  <div class="key">拥塞控制完全是发送方的事。接收方只管回确认，不需要知道对方用哪种算法，两边用不同的算法也能通。所以 App 下载视频时，起作用的是服务器上的算法；手机上的算法只在往外传的时候起作用，比如推流、上传文件。</div>
+</section>
+
+<section id="windows">
+  <h2><span class="n">02</span>两个窗口，各管各的</h2>
+  <p>TCP 里有两个都叫"窗口"的数，管的是两件不同的事。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>接收窗口（rwnd）</th><th>拥塞窗口（cwnd）</th></tr></thead>
+    <tbody>
+      <tr><td>回答的问题</td><td>对方还收得下多少</td><td>网络还扛得住多少</td></tr>
+      <tr><td>保护的是</td><td>接收方的缓冲区</td><td>路上的路由器，和共用这条路的其他连接</td></tr>
+      <tr><td>谁定的</td><td>接收方，写在每个确认的 TCP 头里</td><td>发送方自己估，不出现在任何包里</td></tr>
+      <tr><td>这种控制叫</td><td>流量控制（flow control）</td><td>拥塞控制（congestion control）</td></tr>
+      <tr><td>什么时候变小</td><td>接收方的程序读得慢，缓冲区快满了</td><td>发现丢包，或者别的拥塞信号</td></tr>
+      <tr><td>抓包能看到吗</td><td>能，TCP 头的窗口字段</td><td>不能，只能在发送方的机器上查</td></tr>
+    </tbody>
+  </table></div>
+  <p>发送方同时守这两个限制。已经发出去、还没被确认的数据叫在途数据，它不能超过两个窗口里小的那个：</p>
+<pre><code>在途数据 ≤ min(拥塞窗口, 接收窗口)</code></pre>
+  <h3>接收窗口：16 位再乘一个倍数</h3>
+  <p>TCP 头里的窗口字段只有 16 位，最大 65,535 字节。握手时两边各报一个"窗口放大"的位数，之后这个字段要左移那么多位再用。最多移 14 位，所以接收窗口的上限是 65,535 × 2<sup>14</sup> = 1,073,725,440 字节，约 1 GB。全流程那一页拆开的那一帧里（<a href="journey.html#s5">第 5 步</a>），手机报的是 8，也就是乘 256。</p>
+  <p>接收窗口变成 0 是正常现象：接收方的程序暂时不读数据，缓冲区满了，就告诉对方先别发。发送方停下来，隔一阵发一个很小的探测包，问窗口开了没有。播放器就会造成这种情况：缓冲够了，它不再从 socket 里读，系统的接收缓冲区填满，接收窗口缩到 0，服务器被卡住。这时候慢不是网络的问题。</p>
+  <h3>拥塞窗口：发送方的一个变量</h3>
+  <p>拥塞窗口只存在于发送方的内存里。规范用字节计，Linux 内核用段数计。下面统一说"段"，一段按 1448 字节算。后面所有的算法改的都是这一个数：什么时候加、加多少，什么时候减、减多少。</p>
+  <h3>它要逼近的那个数</h3>
+  <p>一条路同时能装多少数据，是瓶颈带宽乘以一个来回的时间，叫带宽时延积（BDP）。50 Mbps、来回 10 ms 的路：</p>
+<pre><code>50,000,000 ÷ 8 × 0.010 = 62,500 字节 ≈ 43 段</code></pre>
+  <p>拥塞窗口比这个数小，路没用满。比它大，多出来的只能在瓶颈那台路由器的队列里排着。队列也排满，就丢。拥塞控制要找的就是这个数，而它随时在变：别的连接来了，它变小；Wi-Fi 信号差了，它也变小。</p>
+</section>
+
+<section id="slowstart">
+  <h2><span class="n">03</span>慢启动：从 10 段翻倍</h2>
+  <p>连接刚建立时，发送方对这条路一无所知。它从一个小的窗口开始，每收到一个确认就把窗口加大，直到出事为止。</p>
+  <ul>
+    <li><strong>初始窗口是 10 段。</strong>RFC 6928（2013 年）定的，Linux 从 2.6.39 起默认就是这个数。再往前是 2 到 4 段（RFC 3390，每段 1460 字节时是 3 段）。</li>
+    <li><strong>每确认一段，窗口加一段。</strong>一轮发出去 10 段，10 段的确认都回来，窗口变成 20；下一轮 40。每个来回翻一倍。</li>
+    <li><strong>翻到慢启动阈值（ssthresh）为止。</strong>新连接的阈值是一个极大的数，等于没有，所以第一次慢启动通常以丢包收场。</li>
+  </ul>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">第几个来回</th><th class="num">这一轮的窗口</th><th class="num">累计发出的段</th><th class="num">累计字节</th><th class="num">这一轮相当于</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td class="num">10</td><td class="num">10</td><td class="num">14,480</td><td class="num">11.6 Mbps</td></tr>
+      <tr><td class="num">2</td><td class="num">20</td><td class="num">30</td><td class="num">43,440</td><td class="num">23.2 Mbps</td></tr>
+      <tr><td class="num">3</td><td class="num">40</td><td class="num">70</td><td class="num">101,360</td><td class="num">46.3 Mbps</td></tr>
+      <tr><td class="num">4</td><td class="num">80</td><td class="num">150</td><td class="num">217,200</td><td class="num">92.7 Mbps</td></tr>
+      <tr><td class="num">5</td><td class="num">160</td><td class="num">310</td><td class="num">448,880</td><td class="num">185.3 Mbps</td></tr>
+      <tr><td class="num">6</td><td class="num">320</td><td class="num">630</td><td class="num">912,240</td><td class="num">370.7 Mbps</td></tr>
+      <tr><td class="num">7</td><td class="num">640</td><td class="num">1270</td><td class="num">1,838,960</td><td class="num">741.4 Mbps</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">字节数按每段 1448 算，速率是"窗口 × 1448 × 8 ÷ 10 ms"。这是理想情况：一个包不丢，接收窗口够大，瓶颈带宽也够。</p>
+  <p>对上全流程那一页（<a href="journey.html#s9">第 9 步</a>）的两个数：</p>
+  <ul>
+    <li><strong>首页一个来回传完。</strong>页面 7,722 字节加响应头是 8,406 字节，6 段，不到 10 段，第一轮就发完了。</li>
+    <li><strong>1 MB 要 7 个来回。</strong>1,048,576 字节是 725 段。前 6 轮累计 630 段，不够；第 7 轮累计 1270 段，够了。</li>
+  </ul>
+  <p>名字叫"慢"，是和它之前的做法比：更早的 TCP 一上来就按接收窗口的大小全发出去。按倍数涨其实很快，慢的是开头那几轮。开头几轮要多久，只取决于来回时间，和带宽无关：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>一个来回</th><th class="num">10 ms</th><th class="num">50 ms</th><th class="num">100 ms</th><th class="num">200 ms</th></tr></thead>
+    <tbody>
+      <tr><td>传完 1 MB（7 个来回）</td><td class="num">70 ms</td><td class="num">350 ms</td><td class="num">700 ms</td><td class="num">1.4 秒</td></tr>
+    </tbody>
+  </table></div>
+  <h3>慢启动什么时候结束</h3>
+  <ul>
+    <li><strong>发现丢包。</strong>最常见，见第 05 节。</li>
+    <li><strong>窗口涨到了 ssthresh。</strong>转入下一节的拥塞避免。</li>
+    <li><strong>来回时间明显变长。</strong>Linux 的 CUBIC 默认带一个叫 HyStart 的检测：来回时间开始变长，说明瓶颈的队列在积压，就提前结束慢启动，不等丢包。</li>
+    <li><strong>碰到接收窗口。</strong>拥塞窗口再大，也不能超过对方报的接收窗口。</li>
+  </ul>
+  <h3>窗口是每条连接自己的</h3>
+  <p>拥塞窗口不跨连接共享。新建一条连接，就从 10 段重新开始。一条连接闲得太久，窗口也会被降回去：闲的时间超过一个超时时间（RTO，第 06 节），Linux 就把窗口往初始值收，开关是 <code>tcp_slow_start_after_idle</code>，默认 1。理由是隔了这么久，原来对这条路的估计已经不可信。这两条对分片下载的视频影响很大，见第 11 节。</p>
+</section>
+
+<section id="aimd">
+  <h2><span class="n">04</span>拥塞避免：慢加快减</h2>
+  <p>窗口过了 ssthresh，说明已经接近上次出事的地方，不能再翻倍。改成每个来回只加 1 段，这个阶段叫拥塞避免（congestion avoidance）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>慢启动</th><th>拥塞避免</th></tr></thead>
+    <tbody>
+      <tr><td>什么时候</td><td>窗口 &lt; ssthresh</td><td>窗口 ≥ ssthresh</td></tr>
+      <tr><td>每收到一个确认</td><td>窗口加 1 段</td><td>窗口加"1 ÷ 窗口"段</td></tr>
+      <tr><td>一个来回合计</td><td>翻倍</td><td>加 1 段</td></tr>
+      <tr><td>从 40 段涨到 80 段</td><td>1 个来回</td><td>40 个来回</td></tr>
+    </tbody>
+  </table></div>
+  <p>加的时候一次加一点，发现丢包时一次砍掉一截。这个组合叫加法增、乘法减（AIMD）。经典的 Reno 算法砍一半。把慢启动、拥塞避免和两种丢包的反应放在一条时间线上：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 284" role="img" aria-label="拥塞窗口随时间变化的模拟。0 到 30 毫秒慢启动，窗口 10、20、40、80 段；80 超过了路径上限 60，丢一段后降到 40。之后每个来回加 1 段涨到 61，再丢一段，降到 30，形成锯齿。第 440 毫秒窗口 48 段时整轮丢失，等了 210 毫秒超时，窗口降到 1 段，重新慢启动到 24 段，再转为每个来回加 1 段。">
+      <rect class="band" x="244" y="26" width="94.5" height="210"/>
+      <line class="grid" x1="46" y1="26" x2="586" y2="26"/><line class="grid" x1="46" y1="131" x2="586" y2="131"/><line class="grid" x1="46" y1="183.5" x2="586" y2="183.5"/>
+      <line class="lim" x1="46" y1="78.5" x2="586" y2="78.5"/>
+      <line class="axis" x1="46" y1="236" x2="586" y2="236"/><line class="axis" x1="46" y1="20" x2="46" y2="236"/>
+      <path class="ghostline" d="M64 131H163M163 157.2H338.5M338.5 173H532M532 157.2H586"/>
+      <path class="stall" d="M244 110H338.5V233.4"/>
+      <polyline class="out" points="46,209.8 50.5,183.5 55,131 59.5,26 64,131 68.5,128.4 73,125.8 77.5,123.1 82,120.5 86.5,117.9 91,115.2 95.5,112.6 100,110 104.5,107.4 109,104.8 113.5,102.1 118,99.5 122.5,96.9 127,94.2 131.5,91.6 136,89 140.5,86.4 145,83.8 149.5,81.1 154,78.5 158.5,75.9 163,157.2 167.5,154.6 172,152 176.5,149.4 181,146.8 185.5,144.1 190,141.5 194.5,138.9 199,136.2 203.5,133.6 208,131 212.5,128.4 217,125.8 221.5,123.1 226,120.5 230.5,117.9 235,115.2 239.5,112.6 244,110"/>
+      <polyline class="out" points="338.5,233.4 343,230.8 347.5,225.5 352,215 356.5,194 361,173 365.5,170.4 370,167.8 374.5,165.1 379,162.5 383.5,159.9 388,157.2 392.5,154.6 397,152 401.5,149.4 406,146.8 410.5,144.1 415,141.5 419.5,138.9 424,136.2 428.5,133.6 433,131 437.5,128.4 442,125.8 446.5,123.1 451,120.5 455.5,117.9 460,115.2 464.5,112.6 469,110 473.5,107.4 478,104.8 482.5,102.1 487,99.5 491.5,96.9 496,94.2 500.5,91.6 505,89 509.5,86.4 514,83.8 518.5,81.1 523,78.5 527.5,75.9 532,157.2 536.5,154.6 541,152 545.5,149.4 550,146.8 554.5,144.1 559,141.5 563.5,138.9 568,136.2 572.5,133.6 577,131 581.5,128.4 586,125.8"/>
+      <text x="46" y="12" class="m">拥塞窗口（段）</text>
+      <text x="40" y="30" text-anchor="end" class="t">80</text><text x="40" y="82.5" text-anchor="end" class="t">60</text><text x="40" y="135" text-anchor="end" class="t">40</text><text x="40" y="187.5" text-anchor="end" class="t">20</text><text x="40" y="240" text-anchor="end" class="t">0</text>
+      <text x="46" y="254" text-anchor="middle" class="t">0</text><text x="136" y="254" text-anchor="middle" class="t">200</text><text x="226" y="254" text-anchor="middle" class="t">400</text><text x="316" y="254" text-anchor="middle" class="t">600</text><text x="406" y="254" text-anchor="middle" class="t">800</text><text x="496" y="254" text-anchor="middle" class="t">1000</text><text x="586" y="254" text-anchor="end" class="t">1200</text>
+      <text x="586" y="276" text-anchor="end" class="m">时间（毫秒），一个来回 10 ms</text>
+      <text x="72" y="40" class="a">① 慢启动</text>
+      <text x="72" y="57" class="m">每个来回翻倍</text>
+      <text x="70" y="152" class="a">② 拥塞避免</text>
+      <text x="70" y="169" class="m">每轮加 1 段</text>
+      <text x="168" y="70" class="w">上限 60 段</text>
+      <text x="168" y="97" class="a">③ 重复确认</text>
+      <text x="168" y="114" class="m">减半</text>
+      <text x="291.2" y="44" text-anchor="middle" class="a">④ 等超时</text>
+      <text x="291.2" y="61" text-anchor="middle" class="m">210 ms</text>
+      <text x="348" y="44" class="a">降到 1 段</text>
+      <text x="348" y="61" class="m">重新慢启动，到 ssthresh 为止</text>
+      <text x="372" y="204" class="m">灰色虚线：ssthresh</text>
+    </svg>
+    </div>
+    <figcaption>模拟，不是抓包。按 RFC 5681 的规则逐个来回算：初始窗口 10 段，一个来回 10 ms；这条路最多同时装 60 段（路上飞着的加上瓶颈队列里排着的），窗口超过它就丢 1 段，由重复确认发现，窗口减半；第 440 ms 整轮的段全部丢失，没有确认回来，等 210 ms 后超时。</figcaption>
+  </figure>
+  <div class="lanes">
+    <div class="lane"><div class="who">① 0–30 ms</div><ol><li>10 → 20 → 40 → 80</li><li>80 超过上限 60，丢了一段</li></ol></div>
+    <div class="lane"><div class="who">② 40–250 ms</div><ol><li>ssthresh 记成 40，窗口降到 40</li><li>每个来回加 1，涨到 61</li></ol></div>
+    <div class="lane"><div class="who">③ 260 ms</div><ol><li>又超了，丢一段</li><li>减半到 30，接着涨</li></ol></div>
+    <div class="lane"><div class="who">④ 440–650 ms</div><ol><li>整轮丢失，干等 210 ms</li><li>ssthresh 记成 24，窗口回到 1</li></ol></div>
+  </div>
+  <p>图里能读出三件事：</p>
+  <ul>
+    <li><strong>锯齿是常态。</strong>稳定之后窗口在 30 和 61 之间来回，平均 45.5 段，是峰值的 75%。Reno 平均只用到这条路容量的四分之三。</li>
+    <li><strong>ssthresh 记的是"上次出事时的一半"。</strong>超时之后的慢启动只翻到 24 段就停，之后改成一段一段地加，因为再往上就是上次出事的区域。</li>
+    <li><strong>超时比丢一段贵得多。</strong>等的那 21 个来回，按当时 48 段的窗口本来能发 1008 段，约 1.46 MB。窗口从 1 段涨回 48 段又用了 29 个来回。从出事到恢复原样一共 500 ms，而重复确认发现的那次丢包没有停顿。</li>
+  </ul>
+  <h3>为什么是慢加快减</h3>
+  <p>目的是让共用一条路的连接最后分得差不多。假设这条路能装 100 段，两条连接一条占 80、一条占 20，同时丢包：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">甲</th><th class="num">乙</th><th class="num">相差</th></tr></thead>
+    <tbody>
+      <tr><td>丢包前</td><td class="num">80</td><td class="num">20</td><td class="num">60</td></tr>
+      <tr><td>各减半</td><td class="num">40</td><td class="num">10</td><td class="num">30</td></tr>
+      <tr><td>各加 25 段，又到 100 段，再丢</td><td class="num">65</td><td class="num">35</td><td class="num">30</td></tr>
+      <tr><td>各减半</td><td class="num">32.5</td><td class="num">17.5</td><td class="num">15</td></tr>
+      <tr><td>各加 25 段</td><td class="num">57.5</td><td class="num">42.5</td><td class="num">15</td></tr>
+    </tbody>
+  </table></div>
+  <p>减半让差距减半，加的时候两边加得一样多，差距不变。每丢一次，两条连接的差距缩小一半，几次之后接近平分。如果加和减都按比例来，差距的比例永远不变，先到的连接永远占着大头。</p>
+  <h3>丢包率决定速度的上限</h3>
+  <p>锯齿的形状只由"多久丢一次"决定，所以平均速度可以从丢包率直接估出来（Mathis 等人 1997 年给出的公式）：</p>
+<pre><code>速率 ≈ (每段的字节数 ÷ 来回时间) × 1.22 ÷ √丢包率</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">丢包率</th><th class="num">来回 10 ms</th><th class="num">来回 50 ms</th><th class="num">来回 100 ms</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0.01%</td><td class="num">141.9 Mbps</td><td class="num">28.4 Mbps</td><td class="num">14.2 Mbps</td></tr>
+      <tr><td class="num">0.1%</td><td class="num">44.9 Mbps</td><td class="num">9.0 Mbps</td><td class="num">4.5 Mbps</td></tr>
+      <tr><td class="num">1%</td><td class="num">14.2 Mbps</td><td class="num">2.8 Mbps</td><td class="num">1.4 Mbps</td></tr>
+      <tr><td class="num">2%</td><td class="num">10.0 Mbps</td><td class="num">2.0 Mbps</td><td class="num">1.0 Mbps</td></tr>
+      <tr><td class="num">5%</td><td class="num">6.3 Mbps</td><td class="num">1.3 Mbps</td><td class="num">0.6 Mbps</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">按公式算的，每段 1448 字节。公式是针对 Reno 推的，假设丢包零星出现、都由重复确认发现。CUBIC 的系数不同，趋势一样。丢包率到百分之几时还会频繁超时，实际比表里更低。</p>
+  <p>表里没有带宽这一列。千兆的线路上丢 1% 的包、来回 100 ms，Reno 也只能跑到 1.4 Mbps。</p>
+</section>
+
+<section id="loss">
+  <h2><span class="n">05</span>丢包：三个重复确认</h2>
+  <p>接收方的确认号是"下一个我要第几号"。中间缺了一段，后面的段每到一个，接收方都立刻回一个确认，确认号不变，还是缺的那一号。这些内容相同的确认叫重复确认。拿全流程那一页的 6 段来看，第 3 段丢了：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>服务器发出</th><th>手机回的确认</th><th>附带的选择确认</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>第 1 段，1–1448</td><td>要 1449</td><td></td><td></td></tr>
+      <tr><td>第 2 段，1449–2896</td><td>要 2897</td><td></td><td></td></tr>
+      <tr><td>第 3 段，2897–4344</td><td></td><td></td><td>路上丢了</td></tr>
+      <tr><td>第 4 段，4345–5792</td><td>要 2897</td><td>已有 4345–5792</td><td>第 1 个重复确认</td></tr>
+      <tr><td>第 5 段，5793–7240</td><td>要 2897</td><td>已有 4345–7240</td><td>第 2 个</td></tr>
+      <tr><td>第 6 段，7241–8406</td><td>要 2897</td><td>已有 4345–8406</td><td>第 3 个，服务器立刻重发第 3 段</td></tr>
+      <tr><td>重发的第 3 段</td><td>要 8407</td><td></td><td>一次确认到末尾</td></tr>
+    </tbody>
+  </table></div>
+  <h3>为什么等三个</h3>
+  <p>包在路上可能乱序：第 4 段比第 3 段先到，也会产生一个重复确认，但第 3 段随后就到，并没有丢。等到第三个，是在"反应快"和"别误判"之间取的数。代价是丢的那一段后面至少还要有三段到达，才凑得齐。最后几段丢了凑不齐，只能靠下一节的超时。</p>
+  <h3>快重传和快恢复</h3>
+  <ul>
+    <li><strong>快重传。</strong>收到第 3 个重复确认，立刻重发缺的那一段，不等定时器。一般只耽误一个来回。</li>
+    <li><strong>快恢复。</strong>还能收到重复确认，说明后面的段在陆续到达，路是通的，只是挤。所以不用回到 1 段重新慢启动：把 ssthresh 设成当前在途数据的一半，窗口也降到这个数，直接进入拥塞避免。恢复期间每来一个重复确认，就说明又有一段离开了网络，可以再放一段新的进去。</li>
+  </ul>
+  <h3>一个窗口里丢了不止一段</h3>
+  <p>慢启动冲过头时，一轮里常常丢好几段。几代算法的差别主要在这里：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>版本</th><th>丢包后怎么做</th><th>同一个窗口里丢了 3 段</th></tr></thead>
+    <tbody>
+      <tr><td>Tahoe（1988）</td><td>不管怎么发现的，窗口都回到 1 段，重新慢启动</td><td>能恢复，但每次都从头爬</td></tr>
+      <tr><td>Reno（1990）</td><td>加了快恢复：重复确认发现的只减半</td><td>补上第 1 段就退出恢复，剩下两段多半要等超时</td></tr>
+      <tr><td>NewReno（RFC 6582）</td><td>恢复期间收到的确认如果只往前推了一部分，就知道紧接着的那一段也丢了，接着重发，直到当时已发出的数据全部被确认</td><td>每个来回补 1 段，3 个来回补完，不用超时</td></tr>
+      <tr><td>选择确认 SACK（RFC 2018、6675）</td><td>接收方在确认里附上"后面哪些我已经有了"，发送方一次看清所有的洞</td><td>一个来回里把 3 段都补上</td></tr>
+    </tbody>
+  </table></div>
+  <h3>选择确认在包里长什么样</h3>
+  <p>选择确认是 TCP 头里的一个选项，握手时两边都声明支持才启用（<a href="journey.html#s7">第 7 步</a>）。每一块是一对序号，表示"从这到这我已经有了"，上面表里的第三列就是它。TCP 头的选项区最多 40 字节，一个确认里最多放 4 块；连接开了时间戳的话，时间戳占掉 12 字节，只剩 3 块的位置。洞多于 3 个时，一个确认说不全，要靠后续的确认轮流报。</p>
+  <p>现在的系统默认都开着选择确认：Linux 的 <code>tcp_sack</code> 默认是 1，第 12 节那台 Mac 上 <code>net.inet.tcp.sack</code> 也是 1。实际的连接走的是表里最后一行。</p>
+</section>
+
+<section id="rto">
+  <h2><span class="n">06</span>超时：等多久怎么算</h2>
+  <p>重复确认要靠后面的段来触发。后面没有段了，或者整轮都丢了，就没有任何确认回来。这时只剩最后一道保险：重传定时器。发出数据后开始计时，到点还没等到确认就重发。这个时长叫 RTO（retransmission timeout）。</p>
+  <p>RTO 定短了，确认只是晚到一点就被当成丢包，白白重发，还要把窗口降到 1。定长了，真丢的时候干等。不同线路的来回时间从不到 1 ms 到几秒都有，所以它不能是固定值，要按这条连接实际量到的来回时间算。</p>
+  <h3>算法（RFC 6298）</h3>
+  <p>发送方记两个数：平滑过的来回时间 SRTT，和来回时间的波动幅度 RTTVAR。每量到一次新的来回时间 R：</p>
+<pre><code># 第一次
+SRTT   = R
+RTTVAR = R ÷ 2
+
+# 之后每次，先算 RTTVAR
+RTTVAR = 3/4 × RTTVAR + 1/4 × |SRTT − R|
+SRTT   = 7/8 × SRTT   + 1/8 × R
+
+RTO    = SRTT + 4 × RTTVAR</code></pre>
+  <p>RTO 等于平均的来回时间，加上四倍的波动。线路稳，RTO 贴着来回时间；线路抖，RTO 自动放宽。按公式走一遍，来回时间一直是 10 ms，中间有一次抖到 110 ms：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">第几次采样</th><th class="num">R</th><th class="num">SRTT</th><th class="num">RTTVAR</th><th class="num">SRTT + 4 × RTTVAR</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td class="num">10</td><td class="num">10.0</td><td class="num">5.0</td><td class="num">30.0</td></tr>
+      <tr><td class="num">2</td><td class="num">10</td><td class="num">10.0</td><td class="num">3.8</td><td class="num">25.0</td></tr>
+      <tr><td class="num">3</td><td class="num">10</td><td class="num">10.0</td><td class="num">2.8</td><td class="num">21.3</td></tr>
+      <tr><td class="num">4</td><td class="num">10</td><td class="num">10.0</td><td class="num">2.1</td><td class="num">18.4</td></tr>
+      <tr><td class="num">5</td><td class="num">110</td><td class="num">22.5</td><td class="num">26.6</td><td class="num">128.8</td></tr>
+      <tr><td class="num">6</td><td class="num">10</td><td class="num">20.9</td><td class="num">23.1</td><td class="num">113.2</td></tr>
+      <tr><td class="num">7</td><td class="num">10</td><td class="num">19.6</td><td class="num">20.0</td><td class="num">99.7</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">单位毫秒，按公式逐步算的。一次抖动让算出来的值从 18 ms 跳到 129 ms，之后每次采样只回落一点。</p>
+  <h3>下限、初值和翻倍</h3>
+  <p>公式算出来的值还要过几道限制：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>RFC 6298</th><th>Linux</th></tr></thead>
+    <tbody>
+      <tr><td>还没量到来回时间（握手阶段）</td><td>1 秒</td><td>1 秒</td></tr>
+      <tr><td>下限</td><td>建议 1 秒</td><td>200 ms</td></tr>
+      <tr><td>上限</td><td>可以设，不低于 60 秒</td><td>120 秒</td></tr>
+      <tr><td>超时一次之后</td><td colspan="2">RTO 翻倍，再超时再翻倍</td></tr>
+    </tbody>
+  </table></div>
+  <p>Linux 的 200 ms 下限加在波动那一项上：4 × RTTVAR 不足 200 ms 时按 200 ms 算。来回 10 ms 的连接，RTO 大约是 10 + 200 = 210 ms，是来回时间的 21 倍。全流程那一页说的"最少 200 毫秒"、第 04 节图里的 210 ms，都是这个数。</p>
+  <p>macOS 的做法不一样，实测是在公式的结果上再加 200 ms。读法见第 12 节，下面是两条连接各自的读数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>连接</th><th class="num">系统报的 SRTT</th><th class="num">RTTVAR</th><th class="num">系统报的 RTO</th><th class="num">SRTT + 4 × RTTVAR + 200</th></tr></thead>
+    <tbody>
+      <tr><td>来回约 15 ms 的服务器</td><td class="num">15</td><td class="num">7</td><td class="num">245</td><td class="num">243</td></tr>
+      <tr><td></td><td class="num">15</td><td class="num">6</td><td class="num">240</td><td class="num">239</td></tr>
+      <tr><td></td><td class="num">16</td><td class="num">6</td><td class="num">242</td><td class="num">240</td></tr>
+      <tr><td>来回约 220 ms 的服务器</td><td class="num">218</td><td class="num">109</td><td class="num">854</td><td class="num">854</td></tr>
+      <tr><td></td><td class="num">218</td><td class="num">83</td><td class="num">752</td><td class="num">750</td></tr>
+      <tr><td></td><td class="num">219</td><td class="num">63</td><td class="num">674</td><td class="num">671</td></tr>
+      <tr><td></td><td class="num">220</td><td class="num">49</td><td class="num">617</td><td class="num">616</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">macOS 15.7 上实测，单位毫秒。每行对应一次请求：SRTT 和 RTTVAR 是发请求前读的，RTO 是请求发出后、回应到达前读的。第二条连接握手后 SRTT 218、RTTVAR 109，正是"第一次 RTTVAR = R ÷ 2"；之后线路稳定，RTTVAR 每次缩到四分之三左右，RTO 跟着从 854 降到 617。多出来的 200 和这台机器上 <code>net.inet.tcp.rexmt_slop</code> 的值相同。</p>
+  <h3>超时之后</h3>
+  <ul>
+    <li><strong>窗口降到 1 段。</strong>ssthresh 设成在途数据的一半，窗口回到 1 段，重新慢启动。第 04 节图里第 440 ms 那一次就是。</li>
+    <li><strong>重发的那一段再超时，等的时间翻倍。</strong>Linux 上从 200 ms 起步是 0.2、0.4、0.8 … 秒，到 120 秒封顶；默认最多重发 15 次（<code>tcp_retries2</code>），全部等完是 924.6 秒，约 15 分钟。对端突然消失时（手机切了网络，服务器断电），一条没设超时的连接可以挂这么久才报错。</li>
+    <li><strong>握手的第一个包没有回应，从 1 秒起翻倍。</strong>Linux 默认重发 6 次（<code>tcp_syn_retries</code>），1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 秒之后 <code>connect</code> 才失败。</li>
+  </ul>
+  <div class="callout"><b>所以超时要自己设：</b>系统默认的 127 秒和 15 分钟是给无人值守的服务准备的，App 里等不起。OkHttp 的连接、读、写超时默认各是 10 秒。</div>
+  <h3>重发过的段不能用来量时间</h3>
+  <p>一段数据重发过，再收到确认时，分不清它确认的是第一次发的还是重发的，量出来的时间不可信。老办法是这种确认一律不采样（Karn 算法）。时间戳选项解决了这个问题：每个段带上发送时刻，确认原样带回，对一下就知道是哪一次。每段装 1448 字节而不是 1460，少的那 12 字节换来的就是这个。</p>
+  <h3>不等超时的新办法：RACK 和尾部探测</h3>
+  <p>超时太贵，新的系统尽量不走到那一步。RFC 8985（2021 年）把两个办法合在一起，Linux 默认都开着：</p>
+  <ul>
+    <li><strong>RACK：按时间判断，不数个数。</strong>每个段记着自己的发送时刻。比它晚发的段已经被确认了，而它过了一小段容忍乱序的时间（默认是最小来回时间的四分之一）还没被确认，就算丢了。不需要凑三个重复确认，重发的段再丢一次也能发现。</li>
+    <li><strong>尾部探测（TLP）：最后几段没动静，先试探一下。</strong>发完数据后大约两个来回的时间没等到确认，就再发一段：有新数据发新的，没有就把最后一段重发一遍。对方回的确认会暴露前面缺了什么，接着走快恢复，窗口不用降到 1。来回 10 ms 的连接，这是等 20 ms 和等 210 ms 的差别。在途的只剩一段时，探测还要多等一个延迟确认的时间（第 09 节），就不比超时快了。</li>
+  </ul>
+  <p>超时本身也可能是误判，确认只是晚到。Linux 默认开着 F-RTO（RFC 5682）：超时重发之后先看接下来的确认，如果它确认的是没重发过的数据，说明原来那批其实到了，就撤销刚才的降窗。</p>
+</section>
+
+<section id="cubic">
+  <h2><span class="n">07</span>CUBIC：按时间涨</h2>
+  <p>Reno 每个来回加 1 段。这在 1990 年代的线路上够用，线路一快就出问题：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>1 Gbps、来回 100 ms 的路</th><th class="num">算出来</th></tr></thead>
+    <tbody>
+      <tr><td>同时能装的数据：125,000,000 字节/秒 × 0.1 秒</td><td class="num">12,500,000 字节 ≈ 8633 段</td></tr>
+      <tr><td>Reno 丢一次包后的窗口</td><td class="num">4316 段</td></tr>
+      <tr><td>每个来回加 1 段，涨回去要</td><td class="num">4316 个来回 ≈ 432 秒</td></tr>
+    </tbody>
+  </table></div>
+  <p>丢一个包，要 7 分多钟才回到原来的速度。而且 Reno 是按来回的次数涨的：来回 10 ms 的连接比来回 100 ms 的涨得快十倍，同一个瓶颈上，近的总是抢赢远的。</p>
+  <p>CUBIC 换了增长的方式：窗口不按"收到了多少确认"涨，而是按"距离上次丢包过了多少秒"涨。Linux 从 2.6.19（2006 年）起默认用它，Android 用的是 Linux 内核，默认也是它，macOS 现在也是。规范是 RFC 9438。</p>
+  <h3>一条三次曲线</h3>
+<pre><code>W(t) = C × (t − K)³ + W_max
+K    = ∛( W_max × (1 − β) ÷ C )
+
+C = 0.4，β = 0.7</code></pre>
+  <ul>
+    <li><strong><code>W_max</code></strong> 是上次丢包前的窗口，单位是段。</li>
+    <li><strong><code>β</code></strong> 是丢包后保留的比例。窗口降到 0.7 × W_max，砍三成，比 Reno 的砍一半温和。全流程那一页说的"降到原来的七成左右"就是它。</li>
+    <li><strong><code>t</code></strong> 是距离上次丢包的秒数。<strong><code>K</code></strong> 是涨回 W_max 需要的秒数。</li>
+  </ul>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 284" role="img" aria-label="同一次丢包之后 Reno 和 CUBIC 的窗口变化。丢包前窗口 500 段。CUBIC 降到 350 段，先快后慢地涨，7.2 秒回到 500 段，在 500 段附近停留几秒，之后越涨越快，第 15 秒到 689 段。Reno 降到 250 段，沿直线每秒涨 10 段，第 15 秒才到 400 段。">
+      <line class="grid" x1="46" y1="26" x2="586" y2="26"/><line class="grid" x1="46" y1="56" x2="586" y2="56"/><line class="grid" x1="46" y1="116" x2="586" y2="116"/><line class="grid" x1="46" y1="146" x2="586" y2="146"/><line class="grid" x1="46" y1="176" x2="586" y2="176"/><line class="grid" x1="46" y1="206" x2="586" y2="206"/>
+      <line class="lim" x1="46" y1="86" x2="586" y2="86"/>
+      <line class="lead" x1="331.1" y1="86" x2="331.1" y2="236"/>
+      <line class="axis" x1="46" y1="236" x2="586" y2="236"/><line class="axis" x1="46" y1="20" x2="46" y2="236"/>
+      <polyline class="ghostline" points="46,86 95.1,86 95.1,161 586,116"/>
+      <polyline class="out" points="46,86 95.1,86 95.1,131 103.3,126.5 111.5,122.3 119.6,118.4 127.8,114.8 136,111.4 144.2,108.4 152.4,105.5 160.5,103 168.7,100.7 176.9,98.5 185.1,96.7 193.3,95 201.5,93.5 209.6,92.1 217.8,91 226,90 234.2,89.1 242.4,88.4 250.5,87.8 258.7,87.3 266.9,86.9 275.1,86.6 283.3,86.4 291.5,86.2 299.6,86.1 307.8,86 316,86 324.2,86 332.4,86 340.5,86 348.7,86 356.9,85.9 365.1,85.9 373.3,85.7 381.5,85.6 389.6,85.3 397.8,85 406,84.6 414.2,84 422.4,83.4 430.5,82.6 438.7,81.7 446.9,80.7 455.1,79.5 463.3,78.1 471.5,76.5 479.6,74.8 487.8,72.8 496,70.6 504.2,68.2 512.4,65.6 520.5,62.7 528.7,59.6 536.9,56.2 545.1,52.5 553.3,48.5 561.5,44.2 569.6,39.5 577.8,34.6 586,29.3"/>
+      <text x="46" y="12" class="m">拥塞窗口（段）</text>
+      <text x="40" y="30" text-anchor="end" class="t">700</text><text x="40" y="60" text-anchor="end" class="t">600</text><text x="40" y="90" text-anchor="end" class="t">500</text><text x="40" y="120" text-anchor="end" class="t">400</text><text x="40" y="150" text-anchor="end" class="t">300</text><text x="40" y="180" text-anchor="end" class="t">200</text><text x="40" y="210" text-anchor="end" class="t">100</text><text x="40" y="240" text-anchor="end" class="t">0</text>
+      <text x="95.1" y="254" text-anchor="middle" class="t">0</text><text x="258.7" y="254" text-anchor="middle" class="t">5</text><text x="422.4" y="254" text-anchor="middle" class="t">10</text><text x="586" y="254" text-anchor="end" class="t">15</text>
+      <text x="331.1" y="254" text-anchor="middle" class="a">K = 7.2</text>
+      <text x="586" y="276" text-anchor="end" class="m">距离丢包的时间（秒）</text>
+      <text x="101" y="76" class="w">W_max = 500 段</text>
+      <text x="530" y="40" text-anchor="end" class="a">还没丢，越涨越快</text>
+      <text x="342" y="108" class="a">CUBIC：降到 0.7 倍，先快后慢</text>
+      <text x="342" y="162" class="m">Reno：降到一半，每轮加 1 段</text>
+    </svg>
+    </div>
+    <figcaption>按公式算的，不是抓包。CUBIC 用 RFC 9438 的窗口函数（C = 0.4，β = 0.7），Reno 是减半后每个来回加 1 段。假设丢包前窗口 500 段，一个来回 100 ms（约 58 Mbps），丢这一次之后不再丢包。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>离 W_max 远时涨得快。</strong>第 1 秒已经回到 404 段，第 3 秒 470 段。</li>
+    <li><strong>接近 W_max 时几乎不动。</strong>从第 3.2 秒到第 11.2 秒，窗口都在 500 段上下 5% 以内。上次就是在这里丢的，在这附近多待一会儿最划算。</li>
+    <li><strong>过了 W_max 还没丢，越涨越快。</strong>说明路变宽了，要尽快找到新的上限。第 12 秒 544 段，第 15 秒 689 段。</li>
+    <li><strong>Reno 要到第 25 秒才回到 500 段。</strong>从丢包到回到原处这段时间里，CUBIC 的平均窗口是 W_max 的 92.5%，Reno 是 75%。</li>
+  </ul>
+  <h3>为什么和来回时间无关</h3>
+  <p>公式里只有 t，没有来回时间，也没有确认的个数。两条连接共用一个瓶颈，一条来回 10 ms，一条来回 100 ms，只要上次丢包前的窗口一样大，之后每一秒的窗口也一样大。K 只由 W_max 决定：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">丢包前的窗口</th><th class="num">CUBIC 的 K</th><th class="num">Reno 涨回去，来回 100 ms</th><th class="num">Reno 涨回去，来回 10 ms</th></tr></thead>
+    <tbody>
+      <tr><td class="num">100 段</td><td class="num">4.2 秒</td><td class="num">5 秒</td><td class="num">0.5 秒</td></tr>
+      <tr><td class="num">500 段</td><td class="num">7.2 秒</td><td class="num">25 秒</td><td class="num">2.5 秒</td></tr>
+      <tr><td class="num">1000 段</td><td class="num">9.1 秒</td><td class="num">50 秒</td><td class="num">5 秒</td></tr>
+      <tr><td class="num">8633 段</td><td class="num">18.6 秒</td><td class="num">432 秒</td><td class="num">43 秒</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">按公式算的。窗口大了 86 倍，K 只长到 4.4 倍，因为它是窗口的立方根。</p>
+  <p>窗口一样大不等于速度一样。速度是窗口除以来回时间，远的那条连接还是慢，但不会再因为涨得慢而被越甩越远。</p>
+  <h3>线路短、窗口小的时候，它走的还是 Reno 的路</h3>
+  <p>表里右上角的几格反过来了：窗口 100 段、来回 10 ms 时，Reno 0.5 秒就涨回去，三次曲线要 4.2 秒。CUBIC 不会让自己比 Reno 慢：它同时按 Reno 的方式估一个窗口，哪个大用哪个。所以在来回时间短、窗口不大的线路上，CUBIC 实际走的是一条直线，和 Reno 的差别只剩丢包后降到 0.7 而不是 0.5。</p>
+  <p>按 RFC 9438 的公式估，来回 10 ms 时，窗口要到两千段上下（2 Gbps 以上），三次曲线才比 Reno 那条线先回到原处；来回 100 ms 时，64 段（约 7 Mbps）以上就是三次曲线说了算。全流程那一页那条来回 10 ms 的线路属于前一种。CUBIC 的好处主要体现在又远又快的线路上。</p>
+</section>
+
+<section id="bbr">
+  <h2><span class="n">08</span>BBR：不等丢包</h2>
+  <p>Reno 和 CUBIC 都靠丢包来发现"到顶了"。这有两个毛病：</p>
+  <ul>
+    <li><strong>丢包时队列已经满了。</strong>它们总是把瓶颈的队列填满才收手。队列里排着的数据不增加吞吐量，只增加延迟（第 10 节）。</li>
+    <li><strong>丢包不一定是因为堵。</strong>无线信号不好也丢，这时候降速没有道理（第 11 节）。</li>
+  </ul>
+  <p>BBR 是 Google 在 2016 年发表的，Linux 4.9 起内核自带。它不把丢包当成信号，而是直接去量这条路的两个参数，名字就是这两个参数的缩写（Bottleneck Bandwidth and Round-trip propagation time）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>量什么</th><th>怎么量</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>瓶颈带宽</td><td>最近约 10 个来回里，数据被确认送达的速率的最大值</td><td>这条路每秒最多能送到多少</td></tr>
+      <tr><td>最小来回时间</td><td>最近 10 秒里量到的最小值</td><td>队列是空的时候，一个来回要多久</td></tr>
+    </tbody>
+  </table></div>
+  <p>两个数相乘就是第 02 节的带宽时延积：这条路上该有多少数据在飞，不多不少。BBR 的发送方式围绕它来：</p>
+  <ul>
+    <li><strong>按速率发，不是一来确认就连发一串。</strong>算出瓶颈带宽后，把段均匀地摊在时间上发出去，叫 pacing。50 Mbps 时是大约每 0.23 ms 发一段。拥塞窗口还在，只当保险用的上限，设成带宽时延积的 2 倍。</li>
+    <li><strong>启动时照样每个来回翻倍。</strong>送达速率连续 3 个来回涨不到 25%，就认为到顶了，不用等丢包。然后放慢一小会儿，把刚才多发的排空。</li>
+    <li><strong>平时轮流试探。</strong>8 个来回一圈：1 个来回快 25%，看送达速率有没有跟着涨，涨了说明路变宽了；1 个来回慢 25%，把多出来的排空；其余 6 个照量到的带宽发。</li>
+    <li><strong>定期重量最小来回时间。</strong>10 秒没量到更小的值，就把窗口压到 4 段，持续至少 200 ms，让队列排空再量。</li>
+  </ul>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>CUBIC</th><th>BBR（第一版）</th></tr></thead>
+    <tbody>
+      <tr><td>靠什么判断到顶</td><td>丢包</td><td>送达速率不再涨</td></tr>
+      <tr><td>瓶颈的队列</td><td>填满为止</td><td>尽量保持很短</td></tr>
+      <tr><td>遇到不是拥塞造成的丢包</td><td>每次都砍三成</td><td>基本不理会</td></tr>
+      <tr><td>发送的节奏</td><td>跟着确认走</td><td>按速率均匀地发</td></tr>
+      <tr><td>和别的算法共用瓶颈</td><td>同类之间比较公平</td><td>和 CUBIC 混跑时可能占多也可能占少，队列浅时重传偏多</td></tr>
+    </tbody>
+  </table></div>
+  <p>最后一行是第一版的已知问题。后来的第二、三版把丢包和 ECN 标记重新当成信号的一部分，用来约束自己。</p>
+  <p>BBR 最先用在 Google 自己的服务器上。Google 在 2017 年公布的数据是：YouTube 换用 BBR 后，全球平均吞吐量提高 4%，个别国家超过 14%。现在不少 CDN 和视频网站的服务器也开着它。开的方法是服务器上的一条命令：<code>sysctl -w net.ipv4.tcp_congestion_control=bbr</code>。手机上不用改，改了也没用：下载时的发送方是服务器。</p>
+</section>
+
+<section id="nagle">
+  <h2><span class="n">09</span>延迟确认和 Nagle</h2>
+  <p>这两个算法不属于拥塞控制，但都在决定"一个包什么时候发"，而且凑到一起会出一个很有名的问题。</p>
+  <h3>延迟确认：接收方省包</h3>
+  <p>确认本身也是一个包。不带数据的确认也有 52 字节的头（IP 20 + TCP 20 + 时间戳 12）。每收到一段就回一个，来回的包里有一半是确认。所以接收方会稍等一下：也许马上有数据要回，确认可以搭在数据包里顺路带回去；或者再来一段，两段合回一个确认。规范的要求是连续收到满长的段时，至少每两段回一个，最多等不超过 500 ms。Linux 上这个等待最短 40 ms，最长 200 ms。</p>
+  <p>确认少了一半，慢启动如果按"每个确认加 1 段"算，窗口每个来回只涨到 1.5 倍。现在的系统改成按确认了多少数据来加（RFC 3465），两段合成一个确认就加 2 段，所以还是翻倍。第 12 节在 Mac 上能直接看到：确认了 64 字节，窗口就涨 64 字节。</p>
+  <h3>Nagle 算法：发送方省包</h3>
+  <p>程序每次只写几个字节时，比如远程终端里敲一个键发 1 字节，装成包就是 40 字节的头带 1 字节的数据。Nagle 算法（RFC 896，1984 年）的规则是：</p>
+  <ul>
+    <li>攒够一个满长的段，立刻发。</li>
+    <li>路上没有未确认的数据，立刻发，哪怕只有 1 字节。</li>
+    <li>其他情况先攒着，等之前的确认回来再一起发。</li>
+  </ul>
+  <h3>两个凑到一起：卡 40 ms</h3>
+  <p>App 把一个请求分两次写：先写请求头，再写请求体。线路还是来回 10 ms，单程 5 ms，对方是 Linux：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">时刻</th><th>发生了什么</th><th>按的是哪条规则</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0 ms</td><td>App 写请求头，200 字节，立刻发出</td><td>Nagle：路上没有未确认的数据</td></tr>
+      <tr><td class="num">0 ms</td><td>App 写请求体，100 字节，没有发出</td><td>Nagle：不满一段，前一段还没确认，攒着</td></tr>
+      <tr><td class="num">5 ms</td><td>对方收到请求头，没有回任何东西</td><td>延迟确认：请求不完整，没有数据可回，等等看</td></tr>
+      <tr><td class="num">45 ms</td><td>对方发出确认</td><td>延迟确认等满 40 ms</td></tr>
+      <tr><td class="num">50 ms</td><td>确认到达，请求体这才发出</td><td>Nagle：之前的确认回来了</td></tr>
+      <tr><td class="num">55 ms</td><td>对方收到完整的请求，开始处理</td><td></td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">按两条规则推演的时间线，不是抓包。</p>
+  <p>本来 5 ms 就能送到的请求用了 55 ms。两边各自都在按规矩省包，合起来就是每个请求白等 40 ms。触发条件是"写、写、读"：一个请求分两次以上的小块写出去，然后等回应。</p>
+  <ul>
+    <li><strong>根本的办法是一次写完。</strong>把头和体拼进一个缓冲区再写，或者用带缓冲的输出流，最后 <code>flush</code> 一次。</li>
+    <li><strong>或者关掉 Nagle。</strong>选项叫 <code>TCP_NODELAY</code>。Kotlin 里是 <code>socket.tcpNoDelay = true</code>，C 里是 <code>setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, …)</code>。关掉之后每次写都立刻成包，小块写得多会多出很多小包，所以仍然应该攒好再写。</li>
+    <li><strong>实时性要求高的协议基本都关。</strong>信令、聊天、推流的控制消息、游戏。成熟的 HTTP 库会把请求攒好再发，这个坑主要出在自己写的 Socket 协议上。</li>
+  </ul>
+  <div class="callout"><b>40 ms 这个数很有辨识度：</b>局域网里一个请求本该不到 1 ms，却稳定地要 40 ms 上下（有的系统是 200 ms），多半就是这两个算法撞上了。</div>
+</section>
+
+<section id="bloat">
+  <h2><span class="n">10</span>缓冲膨胀和 ECN</h2>
+  <h3>缓冲膨胀：不丢包，但延迟很高</h3>
+  <p>靠丢包判断拥塞的算法，要等瓶颈的队列满了才收到信号。队列小，问题不大。队列很大时，在丢包之前数据已经排了很久的队。家用路由器、基站这类设备的缓冲区常常做得很大，于是出现一种怪现象：一个包没丢，带宽也跑满了，延迟却高得离谱。这叫缓冲膨胀（bufferbloat），2010 年前后才有了这个名字。</p>
+<pre><code># 上行 10 Mbps，路由器的队列能存 1 MB。队列排满时，新来的包要等：
+1,048,576 × 8 ÷ 10,000,000 ≈ 0.84 秒</code></pre>
+  <p>一个来回从 10 ms 变成 850 ms。传文件的那条连接自己不在乎，它要的是吞吐量。遭殃的是同一个 Wi-Fi 下打视频电话、玩游戏的人，他们的包排在同一条队列里。家里有人上传大文件时全家的网都"卡"，多半是这个原因。</p>
+  <p>解决办法在路由器这一侧，叫主动队列管理（AQM）：不等队列满，发现包在队列里待得太久，就提前丢一两个，让发送方早点降速。CoDel（RFC 8289）的标准是排队时间连续 100 ms 都超过 5 ms。FQ-CoDel（RFC 8290）再把不同的连接分到不同的队列里，大流量堵不住小流量。第 08 节的 BBR 是从发送方这一侧解决同一个问题。</p>
+  <h3>ECN：不丢包也能通知</h3>
+  <p>提前丢包是在用丢包传话，被丢的那一段还得重发。显式拥塞通知（ECN，RFC 3168）让路由器改成打标记：</p>
+  <ul>
+    <li><strong>IP 头里有 2 位留给它。</strong>发送方在这 2 位上写明"我支持 ECN"。路由器觉得要堵了，不丢这个包，而是把这 2 位改成 <code>11</code>，意思是"我这里拥塞了"。</li>
+    <li><strong>接收方把话带回去。</strong>它看到标记，在回去的确认里把 TCP 头的 ECE 标志置 1。</li>
+    <li><strong>发送方像遇到丢包一样降窗。</strong>同时在下一段里置 CWR 标志，告诉对方"我已经降了"。</li>
+  </ul>
+  <p>效果和丢一个包一样，但没有数据真的丢，不用重发，也不用等。前提是两端和中间的路由器都支持，两端在握手时商量。Linux 的默认是 <code>tcp_ecn = 2</code>：对方提出要用就配合，自己不主动提。</p>
+</section>
+
+<section id="video">
+  <h2><span class="n">11</span>对视频意味着什么</h2>
+  <h3>起播：前几个来回省不掉</h3>
+  <p>点开一个视频到第一帧出来，网络上先要走完域名解析、TCP 握手、TLS 握手、发请求（<a href="dns.html">DNS</a>、<a href="tls.html">TLS</a> 各有一页）。然后数据才开始回来，而且是从 10 段的窗口开始回来：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>起播前要先拿到</th><th class="num">段数</th><th class="num">来回</th><th class="num">来回 10 ms</th><th class="num">来回 50 ms</th><th class="num">来回 100 ms</th></tr></thead>
+    <tbody>
+      <tr><td>14,480 字节以内</td><td class="num">≤ 10</td><td class="num">1</td><td class="num">10 ms</td><td class="num">50 ms</td><td class="num">100 ms</td></tr>
+      <tr><td>500 KB，一个低码率的分片</td><td class="num">346</td><td class="num">6</td><td class="num">60 ms</td><td class="num">300 ms</td><td class="num">600 ms</td></tr>
+      <tr><td>1 MB</td><td class="num">725</td><td class="num">7</td><td class="num">70 ms</td><td class="num">350 ms</td><td class="num">700 ms</td></tr>
+      <tr><td>2 MB，一个高码率的分片</td><td class="num">1382</td><td class="num">8</td><td class="num">80 ms</td><td class="num">400 ms</td><td class="num">800 ms</td></tr>
+      <tr><td>4 MB</td><td class="num">2763</td><td class="num">9</td><td class="num">90 ms</td><td class="num">450 ms</td><td class="num">900 ms</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">按慢启动理想的翻倍算的：不丢包，接收窗口和带宽都够。1 MB 那一行按 1,048,576 字节算，和全流程那一页一致；其余按 1000 进制。</p>
+  <p>第一行有个现成的例子。<a href="../av/container/mp4-format.html">MP4 封装格式</a>那一页的示例文件，文件头加索引一共 10,113 字节，小于 14,480，第一轮就能拿到，播放器这时已经知道每一帧在哪了。第一帧 7,618 字节，结束在偏移 17,731，超出了第一轮，要等第二个来回。</p>
+  <ul>
+    <li><strong>首帧时间主要是"来回次数 × 来回时间"，不是带宽。</strong>把服务器放近（CDN），比加带宽管用。</li>
+    <li><strong>连接要复用。</strong>传过数据的连接，窗口是开着的。每个分片新建一条连接，就每次都从 10 段爬，还要重新握手。HTTP 的长连接和多路复用都是为了这个，见 <a href="http2-http3.html">HTTP/2 与 HTTP/3</a>。</li>
+    <li><strong>起播先下小的。</strong>先用低码率的分片，500 KB 是 6 个来回，2 MB 是 8 个。</li>
+    <li><strong>索引放前面。</strong>MP4 的索引在文件末尾时，要多一次请求、多几个来回，见 <a href="../av/container/mp4-format.html#faststart">moov 在前还是在后</a>。</li>
+    <li><strong>歇久了窗口会收回去。</strong>播放器缓冲满了停止下载，过几秒再下一个分片，这个分片又是从小窗口开始的（第 03 节）。</li>
+  </ul>
+  <h3>弱网：丢一点，慢很多</h3>
+  <p>信号差的 Wi-Fi 和移动网络上，丢包多半不是因为堵，而是无线信号本身出了错。Reno 和 CUBIC 分不清，一律当成拥塞降窗。回到第 04 节那张表：丢包率 1%、来回 50 ms，上限是 2.8 Mbps，和带宽是 100 Mbps 还是 1000 Mbps 没有关系。高清视频的码率是几 Mbps，这就不够了。</p>
+  <p>无线链路在下面其实已经帮了忙：Wi-Fi 和蜂窝网在链路层会自己重发几次，大部分错误 TCP 根本看不到（<a href="physical-layer.html">物理层和链路层</a>）。代价是重发要时间，表现为来回时间忽长忽短。来回时间一抖，RTO 就被撑大（第 06 节的例子），真丢的时候等得更久。</p>
+  <p>还有一层影响来自 TCP 必须按顺序交付：少了一段，后面已经到了的数据都压在内核里，App 一个字节也读不到，直到那一段补上。快重传补上只要一个来回，走到超时就是 200 ms 以上的完全停顿。播放器看到的是数据一阵一阵地来。点播可以靠缓冲扛过去，直播和通话扛不住，所以它们改用 UDP，晚到的包直接不要（<a href="streaming-protocols.html">流媒体协议</a>；播放器这一侧同样的取舍见 <a href="../av/playback.html#s4">同步和丢帧</a>）。</p>
+  <h3>播放器怎么估网速</h3>
+  <p>自适应码率（ABR）的播放器要决定下一个分片下哪一档清晰度，依据之一是"现在网速多少"。它没法问 TCP，拥塞窗口对普通的 App 代码不可见。它能做的是在应用层自己量：这个分片多少字节，从发请求到收完用了多久，一除就是吞吐量。再把最近几次的结果平滑一下，乘一个保守的系数，选码率不超过这个数的最高一档。ExoPlayer 的做法是取最近若干次采样的加权中位数，选轨时默认只用估计值的 0.7。</p>
+  <p>这样量到的是 TCP 表现出来的结果，TCP 的脾气会原样带进估计值：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>后果</th></tr></thead>
+    <tbody>
+      <tr><td>分片越小，量出来的网速越低</td><td>小分片在慢启动里就传完了，窗口还没涨起来</td><td>来回 50 ms 时，500 KB 的分片 6 个来回传完，算出来 13.3 Mbps；2 MB 的分片 8 个来回，算出来 40 Mbps。是同一条线路</td></tr>
+      <tr><td>歇一会儿再下载，开头慢</td><td>空闲之后窗口被收回去</td><td>缓冲满了以后的每个分片都被低估</td></tr>
+      <tr><td>丢一次包，估计值掉一截</td><td>降窗，加上按序交付造成的停顿</td><td>清晰度被切低，过一阵才切回来</td></tr>
+      <tr><td>和别的下载抢带宽时估得偏低</td><td>对方是不间断的长流，窗口一直开着；播放器是一段一段地下</td><td>本来能分到一半带宽，实际拿不到</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">第一行的两个数按慢启动理想的翻倍算，没有计入握手和服务器的响应时间。</p>
+  <p>所以也有播放器不看网速，只看缓冲区里还剩几秒：缓冲多就升档，少就降档。两种办法常常混着用。</p>
+  <h3>QUIC 和 BBR 帮在哪</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>改了什么</th><th>对视频的好处</th></tr></thead>
+    <tbody>
+      <tr><td>BBR：不把随机丢包当拥塞，队列保持很短</td><td>弱网下不会丢一点就大幅降速；延迟稳</td></tr>
+      <tr><td>QUIC：一条连接里的多路数据各自排序</td><td>丢的包只耽误它所属的那一路，别的请求照常交付</td></tr>
+      <tr><td>QUIC：重发的包用新的编号</td><td>不存在"这个确认是确认哪一次"的歧义，来回时间量得准，丢包判断得快</td></tr>
+      <tr><td>QUIC：确认里能报很多段已收到的区间</td><td>不受 TCP 选项区只放得下 3 块的限制</td></tr>
+      <tr><td>QUIC：握手和加密合成一个来回，重连可以不等</td><td>起播少一到两个来回</td></tr>
+      <tr><td>QUIC：连接靠连接 ID 识别，不靠地址和端口</td><td>Wi-Fi 切到移动网络不用重新握手</td></tr>
+      <tr><td>QUIC：算法在 App 带的库里，不在内核里</td><td>换算法不用等系统升级</td></tr>
+    </tbody>
+  </table></div>
+  <p>QUIC 的拥塞控制原理没有变。RFC 9002 写的默认做法就是慢启动加上和 NewReno 类似的增减，初始窗口同样是 10 个包，实际部署多用 CUBIC 或 BBR。它改进的是发现丢包和恢复的那一圈，以及把"哪一路被卡住"分开。</p>
+</section>
+
+<section id="tools">
+  <h2><span class="n">12</span>在自己的机器上看</h2>
+  <h3>Linux 和 Android</h3>
+  <p>Android 上先 <code>adb shell</code>。<code>ss</code> 在不在、不 root 能看到多少，因系统版本而异。</p>
+<pre><code>cat /proc/sys/net/ipv4/tcp_congestion_control             # 默认用哪种算法，一般是 cubic
+cat /proc/sys/net/ipv4/tcp_available_congestion_control   # 内核里编进了哪些，有没有 bbr
+ss -ti                                                    # 每条连接此刻的状态，见下表
+netstat -s | grep -i retrans                              # 开机以来重传了多少段
+nstat -az | grep -E 'Timeouts|FastRetrans|LossProbes'     # 超时、快重传、尾部探测各多少次</code></pre>
+  <p>抓包的话，Wireshark 里用过滤条件 <code>tcp.analysis.retransmission</code>、<code>tcp.analysis.duplicate_ack</code>、<code>tcp.analysis.zero_window</code>，分别挑出重传、重复确认和接收窗口为 0 的包。</p>
+  <p><code>ss -ti</code> 给每条连接打印一行，是这一页大部分概念的现场读数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>字段的样子</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>cubic</code>，或者 <code>bbr</code></td><td>这条连接用的算法</td></tr>
+      <tr><td><code>wscale:8,7</code></td><td>两个方向的窗口放大位数</td></tr>
+      <tr><td><code>rto:212</code></td><td>当前的超时时间，毫秒</td></tr>
+      <tr><td><code>rtt:10.3/2.1</code></td><td>平滑后的来回时间和它的波动，毫秒</td></tr>
+      <tr><td><code>ato:40</code></td><td>延迟确认的等待时间，毫秒</td></tr>
+      <tr><td><code>mss:1448</code></td><td>每段装多少数据</td></tr>
+      <tr><td><code>cwnd:10</code></td><td>拥塞窗口，单位是段</td></tr>
+      <tr><td><code>ssthresh:24</code></td><td>慢启动阈值，没丢过包时不显示</td></tr>
+      <tr><td><code>retrans:0/3</code></td><td>此刻在重传的段数和累计重传过的段数</td></tr>
+      <tr><td><code>pacing_rate</code>、<code>delivery_rate</code></td><td>发送的节奏，和实际送达的速率</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">左列的数值是说明格式用的示例，不是实测。这一页没有在 Linux 或 Android 设备上实测。</p>
+  <p>Linux 内核文档写的默认值如下。发行版和手机厂商可能改过，以自己机器上 <code>sysctl</code> 的结果为准：</p>
+<pre><code>net.ipv4.tcp_congestion_control = cubic
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_ecn = 2
+net.ipv4.tcp_slow_start_after_idle = 1
+net.ipv4.tcp_recovery = 1           # RACK
+net.ipv4.tcp_early_retrans = 3      # 尾部探测
+net.ipv4.tcp_frto = 2
+net.ipv4.tcp_retries2 = 15
+net.ipv4.tcp_syn_retries = 6</code></pre>
+  <h3>macOS</h3>
+  <p>macOS 没有 <code>ss</code>，也没有一项直接写着算法名字的设置。一台 macOS 15.7 的机器上，<code>sysctl net.inet.tcp</code> 里和这一页有关的几项是这样的：</p>
+<pre><code>net.inet.tcp.use_newreno: 0           # 不用 NewReno，默认是 CUBIC
+net.inet.tcp.cubic_rfc_compliant: 1
+net.inet.tcp.sack: 1                  # 选择确认开着
+net.inet.tcp.rexmt_thresh: 3          # 几个重复确认触发快重传
+net.inet.tcp.enable_tlp: 1            # 尾部探测开着
+net.inet.tcp.rack: 0
+net.inet.tcp.delayed_ack: 3           # 非 0，延迟确认开着
+net.inet.tcp.rfc3465: 1               # 按确认的字节数涨窗口
+net.inet.tcp.rexmt_slop: 200</code></pre>
+  <p class="caption">macOS 上看到的默认值，井号后面是加的说明。</p>
+  <h3>读一条连接的状态</h3>
+  <p>程序可以用 <code>getsockopt</code> 读自己的 socket 的状态。Linux 和 Android 上的选项是 <code>TCP_INFO</code>，<code>ss</code> 显示的就是它的内容，字段有 <code>tcpi_snd_cwnd</code>、<code>tcpi_rtt</code>、<code>tcpi_rto</code>、<code>tcpi_total_retrans</code>。带 JNI 的工程在 native 层对自己的 socket 调一次就能拿到，不需要 root。macOS 上对应的选项是 <code>TCP_CONNECTION_INFO</code>。在那台 Mac 上对三个公共的 HTTP 服务器各建一条连接，握手刚完成时读到的是：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>连接</th><th class="num">每段大小</th><th class="num">拥塞窗口</th><th class="num">窗口 ÷ 每段</th><th class="num">ssthresh</th><th class="num">SRTT / RTTVAR</th></tr></thead>
+    <tbody>
+      <tr><td>甲</td><td class="num">1388</td><td class="num">13,880</td><td class="num">10</td><td class="num">1,073,725,440</td><td class="num">218 / 109 ms</td></tr>
+      <tr><td>乙</td><td class="num">1400</td><td class="num">14,000</td><td class="num">10</td><td class="num">1,073,725,440</td><td class="num">15 / 7 ms</td></tr>
+      <tr><td>丙</td><td class="num">1420</td><td class="num">14,200</td><td class="num">10</td><td class="num">1,073,725,440</td><td class="num">20 / 10 ms</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">macOS 15.7 上实测，窗口和 ssthresh 的单位是字节。</p>
+  <ul>
+    <li><strong>初始窗口是 10 段。</strong>三条连接每段的大小各不相同，窗口都正好是它的 10 倍。</li>
+    <li><strong>每段不一定是 1448 字节。</strong>它取决于对方报的 MSS、路上的 MTU 和有没有开时间戳，换一个服务器就可能变。</li>
+    <li><strong>ssthresh 的初值是 65,535 × 2<sup>14</sup>。</strong>就是第 02 节算的接收窗口的理论上限，等于没有阈值。</li>
+    <li><strong>第一次量到来回时间 R 时，SRTT = R，RTTVAR = R ÷ 2。</strong>和第 06 节的公式一致。</li>
+    <li><strong>确认多少字节，窗口涨多少字节。</strong>在乙上每发一个 64 字节的请求并被确认，窗口依次是 14,000、14,064、14,128、14,192。这是慢启动在按字节数加窗口。</li>
+  </ul>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">13</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>内网里每个请求稳定慢 40 ms 或 200 ms</td><td>Nagle 遇上延迟确认：请求被拆成了几次小的写</td><td>攒好一次写出去；或者设 <code>TCP_NODELAY</code></td></tr>
+      <tr><td>测速有 100 Mbps，传文件只有几 Mbps</td><td>线路有丢包，百分之一就够；或者来回时间长</td><td>看重传的比例；换近的节点；服务器开 BBR</td></tr>
+      <tr><td>抓包看到接收窗口很大，以为不会被限速</td><td>限速的是拥塞窗口，它不在包里</td><td>在发送方用 <code>ss -ti</code> 或 <code>TCP_INFO</code> 看 <code>cwnd</code></td></tr>
+      <tr><td>下载慢，但几乎没有重传</td><td>接收方读得慢，接收窗口缩小甚至到 0</td><td>查读数据的线程是不是被解码、写盘占住了</td></tr>
+      <tr><td>每个分片的开头都慢</td><td>每次新建连接，或者空闲之后窗口被收回去</td><td>复用连接；分片之间别停太久</td></tr>
+      <tr><td>起播时清晰度总是偏低</td><td>头一两个分片在慢启动里就传完了，估出来的网速偏低</td><td>起播用上次记下的估计值；估计值结合缓冲区的水位</td></tr>
+      <tr><td>对端没了，请求挂十几分钟才报错</td><td>重传定时器一路翻倍，Linux 默认重发 15 次，约 15 分钟</td><td>自己设连接超时和读超时</td></tr>
+      <tr><td>丢一个包就卡 200 ms 以上</td><td>丢的是最后一段，凑不够三个重复确认，等的是超时</td><td>App 层改不了；实时的数据改走 UDP 或 QUIC</td></tr>
+      <tr><td>家里有人上传时，通话延迟到几百毫秒</td><td>缓冲膨胀：路由器的队列被填满了</td><td>路由器上开带 FQ-CoDel 的队列管理，或者把上行限速到略低于实际带宽</td></tr>
+      <tr><td>丢包率是 0，视频通话还是卡</td><td>链路层的重发把丢包变成了延迟的抖动</td><td>除了丢包率，同时看来回时间的变化</td></tr>
+      <tr><td>在手机上换了拥塞算法，下载没变快</td><td>下载时的发送方是服务器</td><td>改服务器那一侧；手机的算法只影响上传</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">两张窗口随时间变化的图不是抓包。第一张按 RFC 5681 的规则逐个来回模拟：初始窗口 10 段，一个来回 10 ms，路径上限 60 段，超过上限每次丢 1 段并减半，第 440 ms 整轮丢失，RTO 取 210 ms。第二张按 RFC 9438 的窗口函数（C = 0.4，β = 0.7）和 Reno 的规则算：丢包前 500 段，一个来回 100 ms。各表里的来回数、速率、K 值、超时的累计时间，都是按文中写出的公式用脚本算的。标了"实测"的数来自一台 macOS 15.7.5 的机器：<code>sysctl net.inet.tcp</code> 的默认值，和用 <code>getsockopt(TCP_CONNECTION_INFO)</code> 读的三条到公共 HTTP 服务器的连接（握手后的窗口、ssthresh、SRTT、RTTVAR；请求在途时的 RTO 读了 12 次，和 SRTT + 4 × RTTVAR + 200 相差 0 到 3 ms）。Linux 的默认值取自内核文档，没有在 Linux 或 Android 设备上实测。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 6 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="dns.html"><span class="t">← 上一篇：DNS</span><span class="d">DNS：域名是怎么查到 IP 的</span></a>
+    <a class="demo" href="tls.html"><span class="t">下一篇：TLS 握手 →</span><span class="d">TCP 送的是明文，路上谁都看得见。TLS 在它上面再握一次手，把内容加密。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

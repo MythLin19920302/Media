@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>YUV 与像素格式 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../../assets/kb.css?v=6">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../../../index.html">知识库</a><span class="sep">/</span><a href="../../index.html">音视频</a><span class="sep">/</span><a href="../../index.html#video">视频</a><span class="sep">/</span>YUV 与像素格式</nav>
+  <header class="hero">
+    <div class="eyebrow">音视频 · 视频</div>
+    <h1>YUV 与像素格式</h1>
+    <p class="lede">解码后的一帧画面：三个平面怎么排，怎么换算成 RGB。</p>
+  </header>
+
+  <div class="label">文章<span class="c">1</span></div>
+  <div class="topics">
+    <a class="topic" href="yuv-pixel-format.html">
+      <span class="t">YUV 与像素格式</span>
+      <span class="d">为什么视频用 YUV 而不是 RGB，4:2:0 的三个平面在内存里怎么排，linesize 为什么不等于宽度，以及换算成 RGB 时最容易弄错的两件事：用哪套系数，数值范围是多少。</span>
+      <span class="m">12 节 · 数据来自 landscape_720p.mp4 第一帧</span>
+    </a>
+  </div>
+
+  <div class="label">交互演示<span class="c">1</span></div>
+  <div class="demos">
+    <a class="demo" href="demos/yuv-to-rgb.html"><span class="t">YUV → RGB 换算器</span><span class="d">拖动 Y、U、V，切换标准和范围，看同一组数换算出的颜色差多少。</span></a>
+  </div>
+
+  <div class="label">接着读</div>
+  <div class="demos">
+    <a class="demo" href="../opengl/index.html"><span class="t">OpenGL 渲染 →</span><span class="d">把这三个平面画到屏幕上。</span></a>
+    <a class="demo" href="../codec/index.html"><span class="t">← 视频解码</span><span class="d">这一帧画面是怎么从压缩包里解出来的。</span></a>
+  </div>
+</main>
+</body>
+</html>

@@ -8,18 +8,18 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
 <style>
-/* 首页「晴空」：明亮、柔和的大纲页。每个类目一块带底色的圆角面板，里面是白色主题卡；
+/* 首页「晴空」：明亮、柔和。首页只放领域：每个领域一块带底色的圆角大卡片，点进去是它的领域页；
    背景是几块柔光色斑，首屏一条渐变色的波形丝带。
-   扩展方式见 <body> 里的注释：加主题 = 加一个 .card，加类目 = 加一个 .cat，其余自动更新。 */
-:root{--bg:#FBFAF6;--fg:#1D2330;--muted:#687083;--card:#FFFFFF;--chip:rgba(255,255,255,.75);--chip-b:rgba(29,35,48,.08);--shadow:rgba(29,35,48,.5);
+   扩展方式见 <body> 里的注释：加领域 = 加一个 .dom，统计数字自动更新。 */
+:root{--bg:#FBFAF6;--fg:#1D2330;--muted:#687083;--card:#FFFFFF;--shadow:rgba(29,35,48,.5);
   --g1:#2F6BDE;--g2:#7B5CF0;--g3:#D9582B;--blob1:#BFD9FF;--blob2:#FFD3BD;--blob3:#BDEBD5;
-  /* 类目色：面板底色 / 强调色。类目用 data-tone 选一种 */
+  /* 领域色：卡片底色 / 强调色。领域用 data-tone 选一种 */
   --sky:#DCEBFF;--sky-d:#2F6BDE;--peach:#FFE4D6;--peach-d:#D9582B;--mint:#D8F3E6;--mint-d:#128A5B;--violet:#E9E2FF;--violet-d:#6B4FE0;--sand:#F6EBC8;--sand-d:#A67400;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;--sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--chip:rgba(255,255,255,.06);--chip-b:rgba(255,255,255,.12);--shadow:rgba(0,0,0,.8);
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--shadow:rgba(0,0,0,.8);
   --g1:#7FB0FF;--g2:#A995FF;--g3:#FF9A73;--blob1:#1B3A6B;--blob2:#5A2E1F;--blob3:#16483A;
   --sky:#16233D;--sky-d:#7FB0FF;--peach:#37221A;--peach-d:#FF9A73;--mint:#14302A;--mint-d:#5FD4A4;--violet:#251F42;--violet-d:#A995FF;--sand:#332B14;--sand-d:#E6BE55;color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--chip:rgba(255,255,255,.06);--chip-b:rgba(255,255,255,.12);--shadow:rgba(0,0,0,.8);
+:root[data-theme="dark"]{--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--shadow:rgba(0,0,0,.8);
   --g1:#7FB0FF;--g2:#A995FF;--g3:#FF9A73;--blob1:#1B3A6B;--blob2:#5A2E1F;--blob3:#16483A;
   --sky:#16233D;--sky-d:#7FB0FF;--peach:#37221A;--peach-d:#FF9A73;--mint:#14302A;--mint-d:#5FD4A4;--violet:#251F42;--violet-d:#A995FF;--sand:#332B14;--sand-d:#E6BE55;color-scheme:dark}
 *{box-sizing:border-box}
@@ -38,9 +38,6 @@ a:focus-visible{outline:2px solid var(--g1);outline-offset:3px;border-radius:8px
 .nav{display:flex;justify-content:space-between;align-items:center;gap:16px;font-size:13.5px}
 .brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);letter-spacing:.06em}
 .brand i{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--g1),var(--g2));display:block}
-.pills{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-.pills a{padding:6px 14px;border-radius:999px;background:var(--chip);border:1px solid var(--chip-b)}
-.pills a:hover{border-color:var(--muted)}
 
 .hero{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px;align-items:end;padding:64px 0 44px}
 .hero svg{position:absolute;left:-40px;top:20px;width:calc(100% + 80px);height:220px;z-index:-1}
@@ -53,50 +50,37 @@ h1 span{background:linear-gradient(100deg,var(--g1),var(--g2) 30%,var(--g3) 55%,
 .stat b{display:block;font-size:34px;line-height:1.1;font-weight:900;font-variant-numeric:tabular-nums}
 .stat span{font-size:12.5px;color:var(--muted)}
 
-/* 总览卡片：排在类目上面的一整行，渐变描边。下面那排步骤会依次亮起，像数据在流过去 */
-.tour{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 20px;align-items:center;margin:0 0 18px;padding:24px 26px;border-radius:30px;border:2px solid transparent;background:linear-gradient(var(--card),var(--card)) padding-box,linear-gradient(110deg,var(--g1),var(--g2) 50%,var(--g3)) border-box;box-shadow:0 18px 40px -28px var(--shadow);transition:transform .18s,box-shadow .18s}
-.tour:hover{transform:translateY(-3px);box-shadow:0 24px 44px -26px var(--shadow)}
-.tour .k{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--g1)}
-.tour .t{grid-column:1;width:fit-content;font-size:26px;font-weight:900;line-height:1.35}
-.tour .d{grid-column:1;font-size:14.5px;color:var(--muted)}
-.tour .steps{grid-column:1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px;font-size:13px}
-.tour .steps i{font-style:normal;padding:4px 12px;border-radius:999px;background:var(--bg)}
-.tour .steps b{font-weight:400;color:var(--muted)}
-.tour .go{grid-row:1/5;grid-column:2;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;font-size:20px;color:var(--bg);background:linear-gradient(135deg,var(--g1),var(--g2))}
-
-/* 类目面板：每列至少 380px，放不下自动换行 */
-.cats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:18px;align-items:start}
-.cat{border-radius:30px;padding:26px 22px 22px;background:var(--tint);scroll-margin-top:16px}
-.cat[data-tone="sky"]{--tint:var(--sky);--tone:var(--sky-d)}
-.cat[data-tone="peach"]{--tint:var(--peach);--tone:var(--peach-d)}
-.cat[data-tone="mint"]{--tint:var(--mint);--tone:var(--mint-d)}
-.cat[data-tone="violet"]{--tint:var(--violet);--tone:var(--violet-d)}
-.cat[data-tone="sand"]{--tint:var(--sand);--tone:var(--sand-d)}
-.cat h2{display:flex;align-items:center;gap:12px;margin:0 6px 18px;font-size:26px;font-weight:900}
-.cat h2 .ic{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;color:var(--bg);background:var(--tone);flex:none}
-.cat h2 .ic svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.cat h2 small{margin-left:auto;font-family:var(--mono);font-size:12px;font-weight:400;opacity:.6}
-.card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:center;background:var(--card);border-radius:20px;padding:18px 20px;margin-bottom:10px;box-shadow:0 12px 28px -22px var(--shadow);transition:transform .18s,box-shadow .18s}
-.card:last-child{margin-bottom:0}
-.card:hover{transform:translateY(-3px);box-shadow:0 18px 34px -20px var(--shadow)}
-.card .t{font-size:19px;font-weight:700}
-.card .d{grid-column:1;font-size:14px;color:var(--muted)}
-.card .m{grid-column:1;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:4px}
-.card .go{grid-row:1/4;grid-column:2;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-size:17px;background:var(--bg);transition:background .18s,color .18s}
-.card:hover .go{background:var(--tone);color:var(--bg)}
+/* 领域卡片：一行三张，整张都是链接。上面是图标和名字，中间一句话和分类名，底下是脚本写的篇数 */
+.doms{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.dom{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:10px;min-height:340px;border-radius:30px;padding:28px 26px 26px;background:var(--tint);transition:transform .18s,box-shadow .18s}
+.dom:hover{transform:translateY(-4px);box-shadow:0 26px 44px -30px var(--shadow)}
+.dom[data-tone="sky"]{--tint:var(--sky);--tone:var(--sky-d)}
+.dom[data-tone="peach"]{--tint:var(--peach);--tone:var(--peach-d)}
+.dom[data-tone="mint"]{--tint:var(--mint);--tone:var(--mint-d)}
+.dom[data-tone="violet"]{--tint:var(--violet);--tone:var(--violet-d)}
+.dom[data-tone="sand"]{--tint:var(--sand);--tone:var(--sand-d)}
+.dom .ic{width:52px;height:52px;border-radius:17px;display:grid;place-items:center;color:var(--bg);background:var(--tone)}
+.dom .ic svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.dom .t{font-size:clamp(34px,3.4vw,46px);font-weight:900;line-height:1.2;margin-top:10px}
+.dom .d{font-size:16px;max-width:22em}
+.dom .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.dom .chips i{font-style:normal;font-size:13.5px;line-height:1.5;padding:4px 13px;border-radius:999px;background:var(--card)}
+.dom .m{margin-top:auto;padding:22px 62px 0 0;font-family:var(--mono);font-size:12px;opacity:.75}
+.dom .go{position:absolute;right:24px;bottom:24px;width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-size:20px;background:var(--card);transition:background .18s,color .18s}
+.dom:hover .go{background:var(--tone);color:var(--bg)}
 .foot{margin-top:36px;display:flex;justify-content:space-between;gap:16px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
 
 @media (max-width:760px){
   .page{padding:18px max(16px,env(safe-area-inset-right,0px)) 40px max(16px,env(safe-area-inset-left,0px))}
   .hero{grid-template-columns:minmax(0,1fr);padding:40px 0 28px}
   .stats{justify-content:flex-start}.stat{min-width:0;padding:10px 16px;border-radius:16px}.stat b{font-size:26px}
-  .cat{border-radius:24px;padding:20px 14px 14px}
-  .tour{border-radius:24px;padding:18px 16px}.tour .t{font-size:21px}.tour .go{width:40px;height:40px;font-size:17px}
+  .dom{border-radius:24px;padding:22px 18px 20px}.dom .go{right:18px;bottom:18px}
 }
-@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.card,.card .go,.tour{transition:none}}
+@media (max-width:900px){.doms{grid-template-columns:minmax(0,1fr)}.dom{min-height:0}}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.dom,.dom .go{transition:none}.dom:hover{transform:none}}
 
 /* ---- 动画 ----
-   入场：标题、统计、类目面板、卡片依次浮现（--i 是脚本写入的序号，用来错开时间）。
+   入场：标题、统计、领域卡片依次浮现（--i 是脚本写入的序号，用来错开时间）。
    常驻：背景色斑缓慢漂移，波形丝带起伏，"库"字的渐变流动。
    系统开了"减少动态效果"时全部关闭。 */
 @keyframes rise{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
@@ -110,19 +94,16 @@ h1 span{background:linear-gradient(100deg,var(--g1),var(--g2) 30%,var(--g3) 55%,
 .blob.b1{animation:drift1 16s ease-in-out infinite alternate}
 .blob.b2{animation:drift2 20s ease-in-out infinite alternate}
 .blob.b3{animation:drift3 18s ease-in-out infinite alternate}
-.brand,.pills{animation:rise .6s cubic-bezier(.2,.7,.2,1) both}
+.brand{animation:rise .6s cubic-bezier(.2,.7,.2,1) both}
 h1{animation:rise .8s cubic-bezier(.2,.7,.2,1) .05s both}
 h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
 .lede{animation:rise .8s cubic-bezier(.2,.7,.2,1) .18s both}
 .hero svg{animation:rise 1.2s ease-out .1s both}
 .stat{animation:pop .7s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(.3s + var(--i,0) * .08s)}
-.cat{animation:rise .8s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(.45s + var(--i,0) * .12s)}
-.card{animation:rise .6s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:calc(.6s + var(--i,0) * .07s)}
-.cat:hover h2 .ic{animation:beat .5s ease}
-.card:hover .go,.tour:hover .go{animation:nudge .7s ease-in-out infinite}
-@keyframes hop{0%,16%,100%{background:var(--bg);color:inherit}6%{background:var(--g1);color:var(--bg)}}
-.tour{animation:rise .8s cubic-bezier(.2,.7,.2,1) .38s both}
-.tour .steps i{animation:hop 4.2s ease-in-out infinite;animation-delay:calc(1.2s + var(--n) * .55s)}
+/* 卡片入场只填充开头（backwards），结束后不占着 transform，悬停上浮才生效 */
+.dom{animation:rise .8s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:calc(.42s + var(--i,0) * .12s)}
+.dom:hover .ic{animation:beat .5s ease}
+.dom:hover .go{animation:nudge .7s ease-in-out infinite}
 /* 页面过渡：与 assets/kb.css 里的规则配套，两边都声明才会生效 */
 @view-transition{navigation:auto}
 @keyframes vt-out{to{opacity:0;transform:translateY(-12px)}}
@@ -133,7 +114,7 @@ h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
 ::view-transition-old(page-title),::view-transition-new(page-title){height:100%;object-fit:contain;object-position:left center}
 @media (prefers-reduced-motion: reduce){
   ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}
-  .blob,.brand,.pills,h1,h1 span,.lede,.hero svg,.stat,.cat,.card,.cat:hover h2 .ic,.card:hover .go,.tour,.tour .steps i,.tour:hover .go{animation:none}
+  .blob,.brand,h1,h1 span,.lede,.hero svg,.stat,.dom,.dom:hover .ic,.dom:hover .go{animation:none}
 }
 </style>
 </head>
@@ -143,8 +124,6 @@ h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
 <div class="page">
   <div class="nav">
     <div class="brand"><i></i>MUSIC_DEMO</div>
-    <!-- 类目跳转由脚本根据下面的类目生成 -->
-    <nav class="pills" id="pills" aria-label="类目"></nav>
   </div>
 
   <header class="hero">
@@ -161,12 +140,12 @@ h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
     </svg>
     <div>
       <h1>知识<span>库</span></h1>
-      <p class="lede">做这个工程时整理的学习笔记。按类目列出主题，点进主题再看文章和演示。</p>
+      <p class="lede">做这个工程时整理的学习笔记，以音视频为主，也记别的。先选一个领域，进去先看地图，再按顺序往下读。</p>
     </div>
-    <!-- 四个数字由脚本根据下面的卡片自动统计，不用手改 -->
+    <!-- 四个数字由脚本根据下面的领域卡片自动统计，不用手改 -->
     <div class="stats" aria-label="统计">
-      <div class="stat"><b id="n-cat">–</b><span>类目</span></div>
-      <div class="stat"><b id="n-topic">–</b><span>主题</span></div>
+      <div class="stat"><b id="n-dom">–</b><span>领域</span></div>
+      <div class="stat"><b id="n-kind">–</b><span>分类</span></div>
       <div class="stat"><b id="n-article">–</b><span>文章</span></div>
       <div class="stat"><b id="n-demo">–</b><span>演示</span></div>
     </div>
@@ -174,66 +153,60 @@ h1 span{background-size:200% 100%;animation:sheen 7s linear infinite}
 
   <!--
     扩展方式
-    · 加主题：在对应类目的 <section class="cat"> 里复制一个 <a class="card">，
-      改 href、标题、说明，并填 data-articles / data-demos（文章数 / 演示数）。
-      类目内的顺序按"数据流动的先后"排，比如音频解码在 PCM 前面。
-      主题页里再按格式或类型分组（解码按编码格式，封装格式按容器类型），首页不展开到那一层。
-      "通用"放不专属于音频或视频的知识：封装格式、构建，以后的同步、播放器结构也放这里。
-    · 加类目：复制一个 <section class="cat">，改 id、标题、路径，
-      data-tone 从 sky / peach / mint / violet / sand 里选一个没用过的颜色。
-    顶部的类目跳转、首屏四个统计数字、卡片上的"N 篇文章"都是脚本生成的。
-    · 总览卡片（.tour）是总纲，不属于任何类目，也不计入统计数字。
+    首页只放领域，一个领域一张 <a class="dom">；分类、主题、文章都在各自的领域页里（av/、network/、ai/ 下的 index.html）。
+    · 加文章、主题或分类：改对应的领域页，再回来改这张卡片上的三个数：
+      data-cats（分类数）/ data-articles（文章数，领域页最上面「先看地图」那一页不算）/ data-demos（交互演示数）。
+      .chips 里一个 <i> 写一个分类名，和领域页里的分类对上。
+    · 加领域：复制一个 <a class="dom">，改 href、名字、一句话说明、分类名和三个数，
+      data-tone 从 sky / peach / mint / violet / sand 里选一个没用过的颜色；
+      再照 av/index.html 写它的领域页：先看地图，再按知识的先后排分类，分类之间写一句承接。
+    首屏四个统计数字和卡片底下的「N 个分类 · N 篇文章」都是脚本生成的。
   -->
-  <a class="tour" href="overview/playback.html">
-    <span class="k">总览 · 先看这张图</span>
-    <span class="t">一个视频是怎么播出来的</span>
-    <span class="d">从 MP4 文件到屏幕和喇叭，Android 上的六步。每一步做什么、数据变成什么样、去哪个主题细看。</span>
-    <span class="steps" aria-hidden="true"><i style="--n:0">文件</i><b>→</b><i style="--n:1">解封装</i><b>→</b><i style="--n:2">解码</i><b>→</b><i style="--n:3">同步</i><b>→</b><i style="--n:4">渲染</i><b>→</b><i style="--n:5">出画出声</i></span>
-    <span class="go" aria-hidden="true">→</span>
-  </a>
+  <main class="doms">
+    <a class="dom" href="av/index.html" data-tone="sky" data-cats="4" data-articles="9" data-demos="5">
+      <span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10.5 9.5 4 2.5-4 2.5z"/></svg></span>
+      <span class="t">音视频</span>
+      <span class="d">一个视频文件怎么变成画面和声音。</span>
+      <span class="chips"><i>封装格式</i><i>音频</i><i>视频</i><i>构建</i></span>
+      <span class="m"></span>
+      <span class="go" aria-hidden="true">→</span>
+    </a>
 
-  <main class="cats">
-    <section class="cat" id="audio" data-tone="sky" data-name="音频">
-      <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h2l2-6 4 12 3-9 2 5 2-2h3"/></svg></span>音频<small>audio/</small></h2>
-      <a class="card" href="audio/codec/index.html" data-articles="2" data-demos="0"><span class="t">音频解码</span><span class="d">PCM 之前的那一步：压缩数据怎么解成 PCM。总览，再按格式分：AAC。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-      <a class="card" href="audio/pcm/index.html" data-articles="1" data-demos="4"><span class="t">PCM</span><span class="d">未压缩的声音数据：它是什么、怎么播、怎么加工。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-    </section>
+    <a class="dom" href="network/index.html" data-tone="mint" data-cats="3" data-articles="10" data-demos="0">
+      <span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.7 2.9 2.7 15.1 0 18M12 3c-2.7 2.9-2.7 15.1 0 18"/></svg></span>
+      <span class="t">网络</span>
+      <span class="d">一个请求怎么送到对方，再把页面带回来。</span>
+      <span class="chips"><i>包怎么送到对方</i><i>两端怎么对话</i><i>拼起来用</i></span>
+      <span class="m"></span>
+      <span class="go" aria-hidden="true">→</span>
+    </a>
 
-    <section class="cat" id="video" data-tone="peach" data-name="视频">
-      <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 10 5-3v10l-5-3"/></svg></span>视频<small>video/</small></h2>
-      <a class="card" href="video/codec/index.html" data-articles="1" data-demos="0"><span class="t">视频解码</span><span class="d">YUV 之前的那一步：几百字节怎么变回一帧画面。按格式分：H.264。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-      <a class="card" href="video/yuv/index.html" data-articles="1" data-demos="1"><span class="t">YUV 与像素格式</span><span class="d">解码后的一帧画面：三个平面怎么排，怎么换算成 RGB。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-      <a class="card" href="video/opengl/index.html" data-articles="1" data-demos="0"><span class="t">OpenGL 渲染</span><span class="d">把解码出来的 YUV 画到屏幕上。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-    </section>
-
-    <section class="cat" id="general" data-tone="mint" data-name="通用">
-      <h2><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4-9 5 9 5 9-5-9-5ZM3 14l9 5 9-5"/></svg></span>通用<small>general/</small></h2>
-      <a class="card" href="general/network/index.html" data-articles="11" data-demos="0"><span class="t">网络</span><span class="d">一个请求从连上 Wi-Fi 到页面回来的十二步，再从下往上细讲：物理层、宽带和流量接入、运营商骨干，DNS、TCP、TLS、HTTP，最后是 VPN 和流媒体。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-      <a class="card" href="general/container/index.html" data-articles="1" data-demos="0"><span class="t">封装格式</span><span class="d">把音视频和时间戳装进一个文件的容器。按类型分：MP4。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-      <a class="card" href="general/build/index.html" data-articles="2" data-demos="0"><span class="t">构建</span><span class="d">交叉编译：在 Mac 上编出给 Android 运行的原生库。</span><span class="m"></span><span class="go" aria-hidden="true">→</span></a>
-    </section>
+    <a class="dom" href="ai/index.html" data-tone="violet" data-cats="1" data-articles="7" data-demos="0">
+      <span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 6.8 17 11.2M7 17.2l10-4.4M5 8v8"/></svg></span>
+      <span class="t">AI</span>
+      <span class="d">模型怎么从数据里学会预测。</span>
+      <span class="chips"><i>机器学习</i></span>
+      <span class="m"></span>
+      <span class="go" aria-hidden="true">→</span>
+    </a>
   </main>
 
-  <div class="foot"><span>docs/index.html</span><span>FFmpeg n8.1.3 · NDK 27 · API 24</span></div>
+  <div class="foot"><span>docs/index.html</span></div>
 </div>
 
 <script>
-// 根据卡片生成类目跳转、统计数字和每张卡片上的"N 篇文章 · N 个交互演示"
-let topics=0,articles=0,demos=0;
-const cats=[...document.querySelectorAll('.cat')],pills=document.getElementById('pills');
-cats.forEach(c=>{
-  c.querySelectorAll('.card').forEach(k=>{
-    const a=+k.dataset.articles||0,d=+k.dataset.demos||0;articles+=a;demos+=d;topics++;
-    k.querySelector('.m').textContent=[a&&`${a} 篇文章`,d&&`${d} 个交互演示`].filter(Boolean).join(' · ');
-  });
-  const j=document.createElement('a');j.href='#'+c.id;j.textContent=c.dataset.name;pills.append(j);
+// 根据领域卡片生成统计数字和每张卡片底下的"N 个分类 · N 篇文章 · N 个交互演示"
+let kinds=0,articles=0,demos=0;
+const doms=[...document.querySelectorAll('.dom')];
+doms.forEach((k,i)=>{
+  const c=+k.dataset.cats||0,a=+k.dataset.articles||0,d=+k.dataset.demos||0;kinds+=c;articles+=a;demos+=d;
+  k.querySelector('.m').textContent=[c&&`${c} 个分类`,a&&`${a} 篇文章`,d&&`${d} 个交互演示`].filter(Boolean).join(' · ');
+  k.style.setProperty('--i',i);
 });
-// 动画：给统计、类目、卡片写入序号用来错开入场时间；统计数字从 0 滚到目标值
+// 动画：给统计写入序号用来错开入场时间；统计数字从 0 滚到目标值
 const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
 document.querySelectorAll('.stat').forEach((e,i)=>e.style.setProperty('--i',i));
-cats.forEach((c,i)=>c.style.setProperty('--i',i));
-document.querySelectorAll('.card').forEach((e,i)=>e.style.setProperty('--i',i));
-[['n-cat',cats.length],['n-topic',topics],['n-article',articles],['n-demo',demos]].forEach(([id,n],i)=>{
+[['n-dom',doms.length],['n-kind',kinds],['n-article',articles],['n-demo',demos]].forEach(([id,n],i)=>{
   const el=document.getElementById(id);
   if(still){el.textContent=n;return;}
   el.textContent=0;
@@ -244,16 +217,15 @@ document.querySelectorAll('.card').forEach((e,i)=>e.style.setProperty('--i',i));
 });
 if(still)document.getElementById('ribbon').pauseAnimations();
 
-// 页面过渡：点哪张卡片，就让它的标题变形成下一页的大标题；从主题页返回时反过来。
+// 页面过渡：点哪张卡片，就让它的名字变形成领域页的大标题；从领域里的页面返回时反过来。
 // "page-title" 这个名字同一时刻只能给一个元素，所以每次先清掉再设。
-const cards=[...document.querySelectorAll('.card,.tour')];
-const nameTitle=card=>{cards.forEach(k=>k.querySelector('.t').style.viewTransitionName='');if(card)card.querySelector('.t').style.viewTransitionName='page-title';};
-cards.forEach(k=>k.addEventListener('click',()=>nameTitle(k)));
+const nameTitle=card=>{doms.forEach(k=>k.querySelector('.t').style.viewTransitionName='');if(card)card.querySelector('.t').style.viewTransitionName='page-title';};
+doms.forEach(k=>k.addEventListener('click',()=>nameTitle(k)));
 addEventListener('pagereveal',e=>{
   const from=window.navigation?.activation?.from?.url;
   if(!e.viewTransition||!from){nameTitle(null);return;}
-  // 从哪个主题目录回来的，就把那张卡片的标题作为变形的终点
-  const back=cards.find(k=>from.startsWith(new URL('.',k.href).href));
+  // 从哪个领域的目录回来的，就把那张卡片的名字作为变形的终点
+  const back=doms.find(k=>from.startsWith(new URL('.',k.href).href));
   nameTitle(back||null);
   e.viewTransition.finished.finally(()=>nameTitle(null));
 });

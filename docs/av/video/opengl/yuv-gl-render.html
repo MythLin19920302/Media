@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>用 OpenGL 把 YUV 画到屏幕</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../../assets/kb.css?v=6">
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← OpenGL 渲染</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#problem">要解决的问题</a></li>
+    <li><a href="#flow">整体流程</a></li>
+    <li><a href="#words">OpenGL 的几个词</a></li>
+    <li><a href="#surface">GLSurfaceView 的三个回调</a></li>
+    <li><a href="#textures">三张单通道纹理</a></li>
+    <li><a href="#quad">一个全屏四边形</a></li>
+    <li><a href="#shader">着色器</a></li>
+    <li><a href="#rotate">旋转靠纹理坐标</a></li>
+    <li><a href="#handoff">帧怎么交接</a></li>
+    <li><a href="#project">落到 music_demo</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">音视频 · OpenGL 渲染</div>
+  <h1>用 OpenGL 把 YUV 画到屏幕</h1>
+  <p class="lede">解码器给的是三块 YUV 数据，屏幕要的是 RGB 像素。中间的换算、缩放和旋转都交给 GPU：把三个平面当成三张纹理传上去，画一个铺满的矩形，让着色器对每个像素做一次矩阵乘法。这份笔记对着工程里的 <code>YuvGlRenderer</code> 走一遍。</p>
+  <div class="journey" aria-label="一帧画面的旅程">
+    <div class="step"><span class="k">解码线程</span><span class="v">YuvFrame</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">上传</span><span class="v hex">3 张纹理</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">画</span><span class="v">2 个三角形</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">片元着色器，每像素</span><span class="v">mat3 × (yuv − offset)</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">屏幕</span><span class="v">RGB</span></div>
+  </div>
+  <p class="caption">代码引自 <code>app/src/main/java/com/example/music/player/YuvGlRenderer.kt</code>，用的是 OpenGL ES 2.0。YUV 的排列和换算公式见 <a href="../yuv/yuv-pixel-format.html">YUV 与像素格式</a>。</p>
+</header>
+
+<section id="problem">
+  <h2><span class="n">01</span>要解决的问题</h2>
+  <p>把一帧 1280×720 的 <code>yuv420p</code> 显示出来，要做三件事：把色度放大回全尺寸，逐像素换算成 RGB，再缩放到 View 的大小。按 30 帧算：</p>
+<pre><code>921,600 像素 × 30 帧/秒 ≈ 每秒 2765 万次"取 3 个数、乘一个 3×3 矩阵"</code></pre>
+  <p>在 CPU 上做，一颗核的相当一部分时间就花在这上面，还要另外分配一块 RGB 内存。GPU 天生就是干这个的：它对每个像素并行运行同一小段程序，放大和缩放由纹理采样顺带完成，结果直接写进屏幕的缓冲区。CPU 只需要把三块 YUV 原样交出去。</p>
+</section>
+
+<section id="flow">
+  <h2><span class="n">02</span>整体流程</h2>
+  <p>涉及两个线程。解码线程只管产出帧，所有 OpenGL 调用都在 GLSurfaceView 自己的渲染线程上。</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">解码线程</div><ol><li>从帧池取一个空帧</li><li>解码，填满 Y、U、V</li><li>等到该显示的时刻</li><li><code>renderer.submit(frame)</code></li></ol></div>
+    <div class="lane"><div class="who">交接</div><ol><li>帧放进 <code>pending</code></li><li>旧的没画就还回帧池</li><li><code>requestRender()</code></li></ol></div>
+    <div class="lane"><div class="who">渲染线程</div><ol><li><code>onDrawFrame</code> 被调用</li><li>取走 <code>pending</code></li><li>三个平面上传成纹理</li><li>帧还回帧池</li></ol></div>
+    <div class="lane"><div class="who">GPU</div><ol><li>画一个铺满的矩形</li><li>每个像素跑一次着色器</li><li>交换缓冲区，上屏</li></ol></div>
+  </div>
+</section>
+
+<section id="words">
+  <h2><span class="n">03</span>OpenGL 的几个词</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>词</th><th>是什么</th><th>这里的用法</th></tr></thead>
+    <tbody>
+      <tr><td>上下文（context）</td><td>OpenGL 的全部状态，绑定在一个线程上</td><td>GLSurfaceView 创建并管理，只能在渲染线程上用</td></tr>
+      <tr><td>纹理（texture）</td><td>存在显存里的一张图</td><td>Y、U、V 各一张</td></tr>
+      <tr><td>顶点着色器</td><td>对每个顶点运行，决定它在屏幕上的位置</td><td>原样输出四个角</td></tr>
+      <tr><td>片元着色器</td><td>对每个像素运行，决定它的颜色</td><td>取 Y、U、V，换算成 RGB</td></tr>
+      <tr><td>程序（program）</td><td>一对编译链接好的着色器</td><td>只有一个</td></tr>
+      <tr><td><code>attribute</code></td><td>每个顶点各不相同的输入</td><td>位置、纹理坐标</td></tr>
+      <tr><td><code>uniform</code></td><td>整次绘制都相同的输入</td><td>三张纹理、换算矩阵、零点</td></tr>
+      <tr><td><code>varying</code></td><td>顶点着色器传给片元着色器的值，在三角形内部自动插值</td><td>纹理坐标</td></tr>
+    </tbody>
+  </table></div>
+  <p>OpenGL 是一台状态机：先"绑定"一个对象，后面的调用都作用在它身上。所以代码里总是成对出现 <code>glBindTexture</code> 然后 <code>glTexImage2D</code>。</p>
+</section>
+
+<section id="surface">
+  <h2><span class="n">04</span>GLSurfaceView 的三个回调</h2>
+  <p>GLSurfaceView 替你建好上下文和渲染线程，你只实现 <code>Renderer</code> 的三个方法，它们都在渲染线程上被调用：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>回调</th><th>什么时候</th><th>工程里做什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>onSurfaceCreated</code></td><td>上下文刚建好，或丢失后重建</td><td>编译着色器、创建三张纹理、设置纹理参数。之前的 GL 对象全部作废，必须重建</td></tr>
+      <tr><td><code>onSurfaceChanged</code></td><td>View 尺寸变了</td><td><code>glViewport(0, 0, width, height)</code>：画满整个 View</td></tr>
+      <tr><td><code>onDrawFrame</code></td><td>需要画一帧时</td><td>有新帧就上传，然后画</td></tr>
+    </tbody>
+  </table></div>
+  <p>View 的创建在 <code>SoftwarePlayerScreen.kt</code> 里，有三处设置值得注意：</p>
+<pre><code>GLSurfaceView(viewContext).apply {
+  setEGLContextClientVersion(2)                          // 用 OpenGL ES 2.0
+  preserveEGLContextOnPause = true                       // 切后台时尽量保留上下文
+  setRenderer(renderer)
+  renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY       // 有新帧时才画
+}</code></pre>
+  <ul>
+    <li><strong><code>RENDERMODE_WHEN_DIRTY</code>：</strong>默认模式是按屏幕刷新率不停地画。视频只有 30 帧，没有新帧时重画是浪费电。改成这个模式后，只有调用 <code>requestRender()</code> 才会触发 <code>onDrawFrame</code>。</li>
+    <li><strong>画面比例不在 GL 里处理。</strong>GL 总是把画面拉伸铺满 View，由 Compose 布局把 View 的宽高比设成视频的宽高比。</li>
+    <li><strong>生命周期：</strong>页面 <code>onPause</code> / <code>onResume</code> 时要调用 GLSurfaceView 的同名方法，否则渲染线程不会停。</li>
+  </ul>
+</section>
+
+<section id="textures">
+  <h2><span class="n">05</span>三张单通道纹理</h2>
+  <p>OpenGL ES 2.0 没有"YUV 纹理"这种东西。做法是把每个平面当成一张只有一个通道的灰度图：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>纹理</th><th>内容</th><th>尺寸（1280×720 时）</th><th>纹理单元</th></tr></thead>
+    <tbody>
+      <tr><td><code>uTexY</code></td><td>Y 平面</td><td class="num">1280 × 720</td><td><code>GL_TEXTURE0</code></td></tr>
+      <tr><td><code>uTexU</code></td><td>U 平面</td><td class="num">640 × 360</td><td><code>GL_TEXTURE1</code></td></tr>
+      <tr><td><code>uTexV</code></td><td>V 平面</td><td class="num">640 × 360</td><td><code>GL_TEXTURE2</code></td></tr>
+    </tbody>
+  </table></div>
+<pre><code>GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i)
+GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textures[i])
+if (reallocate) {
+  GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, width, height, 0,
+      GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, planes[i])       // 分配显存并上传
+} else {
+  GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
+      GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, planes[i])       // 只更新内容
+}</code></pre>
+  <p>四个细节，每一个漏掉都会出一种特定的问题：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>设置</th><th>作用</th><th>不设会怎样</th></tr></thead>
+    <tbody>
+      <tr><td><code>GL_LUMINANCE</code></td><td>每个像素 1 字节。着色器里读 <code>.r</code> 得到 0–1 的值</td><td>—</td></tr>
+      <tr><td><code>glPixelStorei(GL_UNPACK_ALIGNMENT, 1)</code></td><td>告诉 GL 每行数据不做 4 字节对齐</td><td>默认按 4 对齐。宽度不是 4 的倍数时每行错位，画面斜纹</td></tr>
+      <tr><td><code>GL_CLAMP_TO_EDGE</code></td><td>纹理坐标超出边缘时取边缘的值</td><td>ES 2.0 里宽高不是 2 的幂的纹理必须用它，否则采样结果是黑的</td></tr>
+      <tr><td><code>GL_LINEAR</code></td><td>采样时在相邻像素间线性插值</td><td>用 <code>GL_NEAREST</code> 的话放大后有锯齿，色度边缘尤其明显</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>GL_LINEAR</code> 顺带解决了色度放大：U、V 纹理只有画面的四分之一大，着色器用和 Y 相同的纹理坐标去采样，GPU 自动插值出每个像素该用的色度值，不需要自己把 U、V 放大。</p>
+  <p>只在尺寸变化时用 <code>glTexImage2D</code> 重新分配，平时用 <code>glTexSubImage2D</code> 只换内容，省掉每帧重新分配显存的开销。</p>
+</section>
+
+<section id="quad">
+  <h2><span class="n">06</span>一个全屏四边形</h2>
+  <p>GPU 只会画三角形。要让着色器对屏幕上每个像素都跑一遍，就画两个三角形拼成的矩形，正好铺满整个视口。</p>
+<pre><code>屏幕坐标（范围固定是 −1 到 +1，原点在中心，y 向上）
+
+(-1, 1) ③────────④ (1, 1)
+        │ ╲      │              顶点顺序 ① ② ③ ④
+        │   ╲    │              GL_TRIANGLE_STRIP 把它画成
+        │     ╲  │              ①②③ 和 ②③④ 两个三角形
+(-1,-1) ①────────② (1,-1)</code></pre>
+<pre><code>private val positions = floatBufferOf(-1f, -1f,  1f, -1f,  -1f, 1f,  1f, 1f)   // 左下、右下、左上、右上
+…
+GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)</code></pre>
+  <p>每个顶点除了位置，还带一个<strong>纹理坐标</strong>：这个角对应图像的哪个位置。纹理坐标的范围是 0 到 1，<code>(0, 0)</code> 是上传数据的第一行最左边，也就是画面的左上角。不旋转时四个角的对应关系是：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>顶点</th><th>屏幕位置</th><th>纹理坐标</th><th>取的是画面的</th></tr></thead>
+    <tbody>
+      <tr><td>①</td><td>左下 (−1, −1)</td><td>(0, 1)</td><td>左下角</td></tr>
+      <tr><td>②</td><td>右下 (1, −1)</td><td>(1, 1)</td><td>右下角</td></tr>
+      <tr><td>③</td><td>左上 (−1, 1)</td><td>(0, 0)</td><td>左上角</td></tr>
+      <tr><td>④</td><td>右上 (1, 1)</td><td>(1, 0)</td><td>右上角</td></tr>
+    </tbody>
+  </table></div>
+  <p>屏幕坐标的 y 向上，而图像数据的第一行在上面，所以纹理坐标的纵向是反着配的。配反了画面就上下颠倒。</p>
+</section>
+
+<section id="shader">
+  <h2><span class="n">07</span>着色器</h2>
+  <p>顶点着色器没有任何计算，位置原样输出，纹理坐标传给下一级：</p>
+<pre><code>attribute vec4 aPosition;
+attribute vec2 aTexCoord;
+varying vec2 vTexCoord;
+void main() {
+  gl_Position = aPosition;
+  vTexCoord = aTexCoord;
+}</code></pre>
+  <p>GPU 在三角形内部对 <code>vTexCoord</code> 做插值，所以片元着色器在每个像素上拿到的，正好是这个像素对应的图像位置。片元着色器是整件事的核心：</p>
+<pre><code>varying vec2 vTexCoord;
+uniform sampler2D uTexY;
+uniform sampler2D uTexU;
+uniform sampler2D uTexV;
+uniform mat3 uYuvToRgb;
+uniform vec3 uOffset;
+void main() {
+  vec3 yuv = vec3(
+      texture2D(uTexY, vTexCoord).r,          // 三张纹理用同一个坐标采样
+      texture2D(uTexU, vTexCoord).r,
+      texture2D(uTexV, vTexCoord).r);
+  gl_FragColor = vec4(clamp(uYuvToRgb * (yuv - uOffset), 0.0, 1.0), 1.0);
+}</code></pre>
+  <p>最后一行就是 <a href="../yuv/yuv-pixel-format.html#matrix">YUV 换算公式</a> <code>rgb = matrix × (yuv − offset)</code>。纹理采样得到的值已经是 0–1，所以零点也按 0–1 给：有限范围时是 <code>(16/255, 128/255, 128/255)</code>。<code>clamp</code> 把超出范围的结果截断。</p>
+  <p>矩阵和零点不写死在着色器里，而是每次绘制前作为 uniform 传入：</p>
+<pre><code>GLES20.glUniformMatrix3fv(uYuvToRgb, 1, false, matrix.matrix, 0)
+GLES20.glUniform3fv(uOffset, 1, matrix.offset, 0)</code></pre>
+  <p>这样换一个视频、换一套标准或范围，只要换这两个数组，着色器不用重新编译。</p>
+  <div class="callout"><b>矩阵是列主序的。</b>GLSL 的 <code>mat3</code> 按列存放：数组的前三个数是第一列，不是第一行。<code>YuvColorMatrix</code> 里的数组就是按列排的，第一列是 Y 对 R、G、B 的贡献。按行填的话颜色完全错乱。</div>
+  <h3>精度</h3>
+  <p>着色器开头按设备能力选择浮点精度：支持就用 <code>highp</code>，否则退到 <code>mediump</code>。ES 2.0 不保证片元着色器支持 <code>highp</code>，直接写 <code>highp</code> 在个别老设备上会编译失败。</p>
+</section>
+
+<section id="rotate">
+  <h2><span class="n">08</span>旋转靠纹理坐标</h2>
+  <p>手机竖着拍的视频，文件里存的仍然是横向的画面，另外带一个"显示时请旋转"的标记。工程里的 <code>portrait_rotate90.mp4</code> 就是这样：存储尺寸是 1280×720，标记要求顺时针转 90° 后显示成 720×1280。</p>
+  <p>旋转不需要搬动任何像素。只要改四个顶点的纹理坐标，让屏幕的每个角去取画面的另一个角：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>顺时针旋转</th><th>① 左下</th><th>② 右下</th><th>③ 左上</th><th>④ 右上</th></tr></thead>
+    <tbody>
+      <tr><td>0°</td><td>(0, 1)</td><td>(1, 1)</td><td>(0, 0)</td><td>(1, 0)</td></tr>
+      <tr><td>90°</td><td>(1, 1)</td><td>(1, 0)</td><td>(0, 1)</td><td>(0, 0)</td></tr>
+      <tr><td>180°</td><td>(1, 0)</td><td>(0, 0)</td><td>(1, 1)</td><td>(0, 1)</td></tr>
+      <tr><td>270°</td><td>(0, 0)</td><td>(0, 1)</td><td>(1, 0)</td><td>(1, 1)</td></tr>
+    </tbody>
+  </table></div>
+  <p>以 90° 为例：屏幕左上角 ③ 取的是 <code>(0, 1)</code>，也就是原始画面的左下角。原来的左下角跑到了左上，正是顺时针转了 90°。</p>
+  <p>旋转角度来自视频流的显示矩阵。FFmpeg 给出的是逆时针角度，<code>portrait_rotate90.mp4</code> 里读到的是 −90，C 层取反并归一化成 0、90、180、270 之一再交给 Kotlin。转 90° 或 270° 后宽高互换，View 的宽高比也要跟着换。</p>
+</section>
+
+<section id="handoff">
+  <h2><span class="n">09</span>帧怎么交接</h2>
+  <p>解码线程和渲染线程之间只有一个位置 <code>pending</code>，用一把锁保护。规则很简单：只保留最新的一帧。</p>
+<pre><code>fun submit(frame: YuvFrame) {
+  val target = synchronized(lock) {
+    pending?.let {
+      it.release()            // 上一帧还没画：还回帧池
+      framesReplaced++        // 记一次"被替换"
+    }
+    pending = frame
+    view
+  }
+  target?.requestRender()     // 请渲染线程画一次
+}</code></pre>
+  <ul>
+    <li><strong>不排队。</strong>渲染跟不上时，旧帧直接作废。视频宁可丢一帧，也不能越积越多、画面越来越落后。</li>
+    <li><strong>上传完立刻归还。</strong>数据进了纹理，这块内存就没用了，马上还回帧池给解码线程复用。纹理本身留在显存里，所以没有新帧时重画（比如 View 尺寸变化）仍然能画出上一帧。</li>
+    <li><strong>帧池限制了内存。</strong>帧池里固定只有 3 个 <code>YuvFrame</code>（一帧在解、一帧等着画、一帧备用），解码线程拿不到空帧就等着，不会无限分配。</li>
+    <li><strong>配置也走同一把锁。</strong>换视频时 <code>configure</code> 更新矩阵和旋转角度，渲染线程在 <code>onDrawFrame</code> 开头一次性读走，保证一帧里用的是同一套设置。</li>
+  </ul>
+  <p>什么时候调用 <code>submit</code> 由播放调度决定：按帧的时间戳等到该显示的时刻再交；晚得太多的帧直接不交，接着解下一帧追进度。这部分在 <code>SoftwareVideoPlayback.kt</code>。</p>
+</section>
+
+<section id="project">
+  <h2><span class="n">10</span>落到 music_demo</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>文件</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>player/YuvGlRenderer.kt</code></td><td>本文的主角：建纹理和着色器、上传、绘制、帧交接、统计</td></tr>
+      <tr><td><code>player/YuvColorMatrix.kt</code></td><td>算出着色器用的矩阵和零点；<code>textureCoordinates(rotation)</code> 给出四种旋转的纹理坐标</td></tr>
+      <tr><td><code>player/YuvFrame.kt</code></td><td>三个平面的 direct ByteBuffer。必须是 direct 的，GL 才能直接读它的内存</td></tr>
+      <tr><td><code>player/SoftwareVideoPlayback.kt</code></td><td>解码循环、帧池、按时间戳决定显示或丢弃</td></tr>
+      <tr><td><code>ui/player/SoftwarePlayerScreen.kt</code></td><td>创建 GLSurfaceView、设置渲染模式和宽高比、转发生命周期</td></tr>
+      <tr><td><code>player/YuvColorMatrixTest.kt</code></td><td>单元测试，其中一条验证纹理坐标确实是顺时针旋转</td></tr>
+    </tbody>
+  </table></div>
+  <p>渲染器会统计画了多少帧、多少帧被替换、平均每帧上传加绘制花了多久。播放页上显示的是"解码 / 显示 / 丢弃"三个帧数（被替换的算进丢弃）和"平均上传纹理并绘制"的耗时。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">11</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>全黑</td><td>在渲染线程之外调用了 GL；或纹理不是 2 的幂却没设 <code>CLAMP_TO_EDGE</code>；或着色器编译失败没检查</td><td>GL 调用只放在三个回调里；检查编译和链接状态并打印日志</td></tr>
+      <tr><td>全绿</td><td>U、V 纹理没上传，采样得到 0</td><td>确认三个平面都上传了，三个 sampler 各绑到自己的纹理单元</td></tr>
+      <tr><td>画面斜纹</td><td>没设 <code>GL_UNPACK_ALIGNMENT</code> 为 1，或传进来的数据带行填充</td><td>设对齐为 1；数据先按 <code>linesize</code> 拷成紧密排列</td></tr>
+      <tr><td>上下颠倒</td><td>纹理坐标的纵向配反了</td><td>屏幕下边对应纹理的 t = 1</td></tr>
+      <tr><td>颜色完全错乱</td><td>矩阵按行填进了 <code>mat3</code></td><td>按列填，或在数学上先转置</td></tr>
+      <tr><td>切后台回来后黑屏或花屏</td><td>上下文丢失，旧的纹理和程序 ID 已经作废</td><td>在 <code>onSurfaceCreated</code> 里无条件重建所有 GL 对象，并把记录的纹理尺寸清零</td></tr>
+      <tr><td>竖屏视频被压扁</td><td>旋转 90° 后没有交换宽高比</td><td>布局用旋转后的显示尺寸</td></tr>
+      <tr><td>上传时崩溃</td><td>ByteBuffer 不是 direct 的，或 <code>position</code> 不在 0</td><td>用 <code>allocateDirect</code>；上传前 <code>position(0)</code></td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">代码片段取自 music_demo 工程当前的 <code>YuvGlRenderer.kt</code>、<code>YuvColorMatrix.kt</code> 和 <code>SoftwarePlayerScreen.kt</code>，个别地方为了排版做了换行和注释调整。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

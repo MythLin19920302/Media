@@ -1,0 +1,1441 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>一个请求是怎么送到的 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<style>
+/* 网络全流程，和首页、总览页同一套「晴空」配色。
+   全页用颜色区分层：紫 = 应用层，蓝 = 传输层，绿 = 网络层，橙 = 链路层。丢掉的包也用橙色虚线。
+   页面从上到下就是一个请求走过的路：九个站点。 */
+:root{--bg:#FBFAF6;--fg:#1D2330;--muted:#687083;--card:#FFFFFF;--chip:rgba(255,255,255,.75);--chip-b:rgba(29,35,48,.08);--line:rgba(29,35,48,.2);--shadow:rgba(29,35,48,.5);
+  --g1:#2F6BDE;--g2:#7B5CF0;--g3:#D9582B;--blob1:#BFD9FF;--blob2:#FFD3BD;--blob3:#BDEBD5;
+  --sky:#DCEBFF;--sky-d:#2F6BDE;--peach:#FFE4D6;--peach-d:#D9582B;--mint:#D8F3E6;--mint-d:#128A5B;--violet:#E9E2FF;--violet-d:#6B4FE0;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;--sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--chip:rgba(255,255,255,.06);--chip-b:rgba(255,255,255,.12);--line:rgba(255,255,255,.24);--shadow:rgba(0,0,0,.8);
+  --g1:#7FB0FF;--g2:#A995FF;--g3:#FF9A73;--blob1:#1B3A6B;--blob2:#5A2E1F;--blob3:#16483A;
+  --sky:#16233D;--sky-d:#7FB0FF;--peach:#37221A;--peach-d:#FF9A73;--mint:#14302A;--mint-d:#5FD4A4;--violet:#251F42;--violet-d:#A995FF;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#101319;--fg:#ECEEF4;--muted:#9AA3B5;--card:#1B2029;--chip:rgba(255,255,255,.06);--chip-b:rgba(255,255,255,.12);--line:rgba(255,255,255,.24);--shadow:rgba(0,0,0,.8);
+  --g1:#7FB0FF;--g2:#A995FF;--g3:#FF9A73;--blob1:#1B3A6B;--blob2:#5A2E1F;--blob3:#16483A;
+  --sky:#16233D;--sky-d:#7FB0FF;--peach:#37221A;--peach-d:#FF9A73;--mint:#14302A;--mint-d:#5FD4A4;--violet:#251F42;--violet-d:#A995FF;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:78px}
+body{margin:0;color:var(--fg);font-family:var(--sans);line-height:1.75;-webkit-font-smoothing:antialiased;background:var(--bg);overflow-x:hidden;position:relative;min-height:100vh}
+a{color:inherit;text-decoration:none}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--g1);outline-offset:3px;border-radius:8px}
+code{font-family:var(--mono);font-size:.86em;background:var(--bg);padding:1px 6px;border-radius:6px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit;cursor:pointer}
+
+/* 四种层的颜色 */
+.L7{--tint:var(--violet);--tone:var(--violet-d)}.L4{--tint:var(--sky);--tone:var(--sky-d)}.L3{--tint:var(--mint);--tone:var(--mint-d)}.L2{--tint:var(--peach);--tone:var(--peach-d)}.L1{--tint:var(--bg);--tone:var(--muted)}
+
+.blob{position:fixed;border-radius:50%;filter:blur(70px);z-index:0;pointer-events:none}
+.blob.b1{width:520px;height:520px;left:-200px;top:120px;background:radial-gradient(circle,var(--blob1),transparent 70%)}
+.blob.b2{width:600px;height:600px;right:-220px;top:-120px;background:radial-gradient(circle,var(--blob2),transparent 70%)}
+.blob.b3{width:520px;height:520px;right:-140px;bottom:-220px;background:radial-gradient(circle,var(--blob3),transparent 70%)}
+
+.page{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:22px 40px 64px}
+.crumb{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.crumb a{padding:6px 14px;border-radius:999px;background:var(--chip);border:1px solid var(--chip-b);color:var(--fg)}
+.crumb a:hover{border-color:var(--muted)}
+
+/* 首屏 */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px;align-items:end;padding:50px 0 30px}
+.eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--g1)}
+h1{font-size:clamp(38px,6.2vw,78px);line-height:1.1;font-weight:900;margin:10px 0 0;letter-spacing:-.02em;width:fit-content;view-transition-name:page-title}
+h1 span{background:linear-gradient(100deg,var(--g1),var(--g2) 30%,var(--g3) 55%,var(--g2) 80%,var(--g1));background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{max-width:46ch;color:var(--muted);font-size:17px;margin:18px 0 0}
+.stats{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.stat{background:var(--card);border-radius:20px;padding:14px 20px;min-width:104px;box-shadow:0 10px 30px -18px var(--shadow)}
+.stat b{display:block;font-size:30px;line-height:1.15;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat span{font-size:12.5px;color:var(--muted)}
+
+/* 总图：五层 × 五台设备 */
+.map{margin:0;background:var(--card);border-radius:30px;padding:18px 18px 16px;box-shadow:0 18px 40px -30px var(--shadow)}
+.map-scroll{overflow-x:auto}
+.map svg{display:block;width:100%;min-width:900px;height:auto;font-family:var(--sans)}
+.map figcaption{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin:10px 8px 0;font-size:13.5px;color:var(--muted)}
+.map figcaption i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+.band{opacity:.55}
+.bx{stroke-width:1.5}
+.r7{fill:var(--violet)}.r4{fill:var(--sky)}.r3{fill:var(--mint)}.r2{fill:var(--peach)}.r1{fill:var(--chip-b)}
+.bx.r7{stroke:var(--violet-d)}.bx.r4{stroke:var(--sky-d)}.bx.r3{stroke:var(--mint-d)}.bx.r2{stroke:var(--peach-d)}.bx.r1{stroke:var(--line);fill:var(--card)}
+.dev{font-size:15px;font-weight:700;fill:var(--fg)}
+.lay{font-size:14px;font-weight:700;fill:var(--fg)}
+.osi{font-size:11.5px;font-family:var(--mono);fill:var(--muted)}
+.in{font-size:12.5px;fill:var(--fg)}
+.sub{font-size:12.5px;fill:var(--muted)}
+.wire{fill:none;stroke:var(--fg);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;opacity:.75}
+.pkt{fill:var(--g3)}
+
+/* 进度条 */
+.rail{position:sticky;top:10px;z-index:5;display:flex;gap:4px;width:fit-content;max-width:100%;margin:22px auto 0;padding:6px;overflow-x:auto;border-radius:999px;background:color-mix(in srgb,var(--card) 80%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--chip-b);box-shadow:0 12px 30px -22px var(--shadow)}
+.rail a{display:flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;font-size:13.5px;white-space:nowrap;color:var(--muted);transition:background .25s,color .25s}
+.rail a b{font-family:var(--mono);font-weight:500;font-size:11.5px}
+.rail a:hover{color:var(--fg)}
+.rail a.on{background:linear-gradient(120deg,var(--g1),var(--g2));color:var(--bg)}
+
+/* 站点 */
+.st,.panel{background:var(--card);border-radius:30px;padding:30px 30px 28px;box-shadow:0 18px 40px -30px var(--shadow)}
+.st:first-of-type{margin-top:26px}
+.st-h{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 18px;align-items:center}
+.st-n{grid-row:1/3;font-size:62px;font-weight:900;line-height:1;font-variant-numeric:tabular-nums;background:linear-gradient(135deg,var(--g1),var(--g2));-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{margin:0;font-size:27px;font-weight:900;line-height:1.3}
+.one{margin:0;color:var(--muted);font-size:16px}
+.st p,.panel p{margin:14px 0 0;max-width:74ch}
+h3{margin:26px 0 0;font-size:16.5px;font-weight:700}
+.note{font-size:14px;color:var(--muted)}
+.st ul{margin:12px 0 0;padding-left:1.25em;max-width:74ch}
+.st li{margin:0 0 6px}
+.keybox{margin-top:16px;border-radius:18px;padding:14px 18px;background:var(--violet);font-size:15px;max-width:none!important}
+.keybox b{color:var(--violet-d)}
+
+.flow{position:relative;height:72px;display:flex;justify-content:center;gap:12px}
+.flow i{width:4px;border-radius:2px;opacity:.85;background:linear-gradient(to bottom,var(--c) 50%,transparent 50%) 0 0/100% 14px repeat-y;animation:flow .7s linear infinite}
+.flow i.n{--c:var(--muted)}.flow i.c7{--c:var(--violet-d)}.flow i.c4{--c:var(--sky-d)}.flow i.c3{--c:var(--mint-d)}.flow i.c2{--c:var(--peach-d)}
+.flow span{position:absolute;left:calc(50% + 34px);top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+@keyframes flow{to{background-position:0 14px}}
+
+.who{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:20px}
+.who>div{border:1px solid var(--line);border-radius:16px;padding:12px 14px;font-size:14px}
+.who .k{display:block;font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.who .me{border-color:transparent;background:var(--violet)}.who .me .k{color:var(--violet-d)}.who .me code{background:var(--card)}
+.more{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:20px;font-size:14px}
+.more .k{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-right:2px}
+.more a{padding:6px 14px;border-radius:999px;background:var(--bg);font-weight:500;border:1px solid transparent;transition:border-color .18s,transform .18s}
+.more a:hover{border-color:var(--g1);transform:translateY(-2px)}
+.more .todo{padding:6px 14px;border-radius:999px;border:1.5px dashed var(--line);color:var(--muted)}
+
+/* 小实验的外框和按钮 */
+.lab{margin-top:16px;border-radius:20px;padding:18px 20px;background:var(--bg)}
+.lab-h{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;font-size:14.5px}
+.lab-h .t{font-weight:700;margin-right:4px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button,.btn{border:1.5px solid var(--line);background:var(--card);border-radius:999px;padding:5px 14px;font-size:13.5px;transition:background .18s,color .18s,border-color .18s}
+.chips button:hover,.btn:hover{border-color:var(--fg)}
+.chips button[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.btn.go{background:linear-gradient(120deg,var(--g1),var(--g2));color:var(--bg);border-color:transparent;font-weight:700}
+.verdict{margin:14px 0 0!important;padding:10px 14px;border-radius:12px;font-size:15px;font-weight:500;max-width:none!important;background:var(--card)}
+.verdict.same{background:var(--mint)}.verdict.diff{background:var(--peach)}
+
+/* 2 域名 */
+.ask{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:16px;font-size:13.5px}
+.ask i{font-style:normal;padding:6px 13px;border-radius:999px;background:var(--bg);animation:hop 6.3s ease-in-out infinite;animation-delay:calc(var(--n) * .9s)}
+.ask b{color:var(--muted);font-weight:400}
+@keyframes hop{0%,13%,100%{background:var(--bg);color:inherit}5%{background:var(--violet-d);color:var(--bg)}}
+.ans{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px;font-family:var(--mono);font-size:13.5px}
+.ans span{padding:10px 12px;border-radius:14px;background:var(--mint);text-align:center}
+.qname{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px;font-family:var(--mono);font-size:12.5px}
+.qname span{padding:5px 9px;border-radius:9px;background:var(--bg)}
+.qname .len{background:var(--violet);color:var(--violet-d)}
+
+/* 3 子网掩码 */
+.bitrow{display:grid;grid-template-columns:86px minmax(0,1fr);gap:4px 12px;align-items:center;margin-top:10px}
+.bitrow .nm{font-size:13.5px;color:var(--muted)}
+.bitrow .dec{font-family:var(--mono);font-size:13.5px;grid-column:2}
+.bits{grid-column:2;display:grid;grid-template-columns:repeat(8,1fr) 8px repeat(8,1fr) 8px repeat(8,1fr) 8px repeat(8,1fr);gap:2px;font-family:var(--mono);font-size:11.5px;max-width:560px}
+.bits i{font-style:normal;display:grid;place-items:center;height:24px;border-radius:5px;background:var(--card);color:var(--muted)}
+.bits i.net{background:var(--mint);color:var(--fg)}
+.bits i.bad{background:var(--peach-d);color:var(--bg)}
+.bits u{text-decoration:none}
+.maskctl{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin-top:14px;font-size:14px}
+.maskctl input{flex:1;min-width:160px;max-width:360px;accent-color:var(--mint-d)}
+.maskctl output{font-family:var(--mono);font-size:14px}
+
+/* 4 ARP */
+.talk{display:grid;gap:10px;margin-top:16px;max-width:680px}
+.talk div{border-radius:18px;padding:12px 16px;font-size:14.5px;background:var(--peach)}
+.talk div.r{background:var(--mint);margin-left:60px}
+.talk .k{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+/* 5 装包 */
+.nest-scroll{overflow-x:auto;margin-top:16px}
+.nest{display:flex;min-width:620px;font-size:13px}
+.nest div{display:flex;align-items:stretch;gap:8px;padding:8px;border-radius:14px;background:var(--tint);flex:1}
+.nest span{display:grid;align-content:center;white-space:nowrap;padding:4px 8px;font-weight:700;color:var(--tone)}
+.nest span b{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--fg)}
+.nest .pay{flex:1;border-radius:10px;background:var(--card);justify-items:center}
+.hex{display:grid;grid-template-columns:repeat(16,minmax(0,1fr));gap:3px;max-width:600px;margin-top:14px;font-family:var(--mono);font-size:12px}
+.hex span{display:grid;place-items:center;height:26px;border-radius:6px;background:var(--tint);cursor:pointer;transition:background .15s,color .15s}
+.hex span.on{background:var(--tone);color:var(--bg)}
+.flds{display:grid;gap:8px;margin-top:14px}
+.flds div{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.flds .k{font-family:var(--mono);font-size:11.5px;color:var(--tone);width:74px}
+.flds button{border:0;background:var(--tint);border-radius:999px;padding:3px 11px;font-size:13px}
+.flds button[aria-pressed="true"]{background:var(--tone);color:var(--bg)}
+.fcard{margin-top:14px;border-radius:16px;padding:14px 16px;background:var(--card);border-left:5px solid var(--tone)}
+.fcard .k{font-family:var(--mono);font-size:11.5px;color:var(--tone)}
+.fcard .v{display:block;font-family:var(--mono);font-size:17px;font-weight:500;overflow-wrap:anywhere}
+.fcard p{margin:6px 0 0!important;font-size:14.5px}
+
+/* 6 逐跳 */
+.path{position:relative;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:16px;padding-bottom:26px}
+.path .node{border-radius:14px;padding:9px 6px;text-align:center;font-size:13px;line-height:1.35;background:var(--card);border:1.5px solid var(--line)}
+.path .node.at{border-color:var(--fg)}
+.path .node small{display:block;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.path .track{position:absolute;left:8.33%;right:8.33%;bottom:8px;height:3px;border-radius:2px;background:var(--line)}
+.path .dot{position:absolute;bottom:1px;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:var(--g3);box-shadow:0 4px 10px -3px var(--shadow);transition:left .5s cubic-bezier(.3,.7,.2,1)}
+.hdr{margin-top:14px;overflow-x:auto}
+.hdr table{min-width:520px}
+.hdr td{font-family:var(--mono);font-size:13.5px;transition:background .3s}
+.hdr td:first-child{font-family:var(--sans)}
+.hdr td.chg{background:var(--peach)}
+.hdr .lk{font-family:var(--mono);font-size:11px;font-weight:500;padding:1px 8px;border-radius:999px;background:var(--tint);color:var(--tone);margin-left:8px}
+
+/* 7 时间条和时序图 */
+.tl{display:flex;gap:3px;margin-top:16px;height:38px;border-radius:12px;overflow:hidden;font-family:var(--mono);font-size:12px}
+.tl i{font-style:normal;display:grid;place-items:center;background:var(--tint);color:var(--tone);min-width:0;white-space:nowrap}
+.tl-k{display:flex;gap:3px;margin-top:6px;font-size:12.5px;color:var(--muted);text-align:center;line-height:1.3}
+.tl-k span{min-width:0}
+.seq-scroll{overflow-x:auto;margin-top:12px;border-radius:16px;background:var(--card)}
+.seq{display:block;width:100%;min-width:680px;max-width:820px;height:auto;margin:0 auto;font-family:var(--sans)}
+.seq .life{stroke:var(--line);stroke-width:2}
+.seq .whoT{font-size:14px;font-weight:700;fill:var(--fg)}
+.seq .ar line{stroke:var(--c);stroke-width:2.2;stroke-linecap:round}
+.seq .ar .hd{fill:var(--c)}
+.seq .ar text{font-size:12.5px;fill:var(--c)}
+.seq .ar.data{--c:var(--sky-d)}.seq .ar.ack{--c:var(--mint-d)}.seq .ar.retx{--c:var(--violet-d)}.seq .ar.app{--c:var(--violet-d)}.seq .ar.lost{--c:var(--peach-d)}
+.seq .ar.lost line{stroke-dasharray:5 5}
+.seq .ar .x{stroke:var(--peach-d);stroke-width:2.6;fill:none;stroke-linecap:round}
+.seq .nt{font-size:12.5px;fill:var(--muted)}
+.seq .wait{fill:var(--peach-d);opacity:.35}
+
+/* 9 分段 */
+.segs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;margin-top:14px;font-family:var(--mono);font-size:11.5px;text-align:center}
+.segs span{padding:8px 2px;border-radius:10px;background:var(--sky);line-height:1.4}
+.segs b{display:block;font-family:var(--sans);font-size:13px}
+.grow{display:flex;align-items:flex-end;gap:8px;height:120px;margin-top:14px;font-family:var(--mono);font-size:11.5px;text-align:center;color:var(--muted)}
+.grow div{flex:1;display:grid;gap:4px;align-content:end;justify-items:stretch}
+.grow i{display:block;border-radius:8px 8px 3px 3px;background:var(--sky-d)}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
+.three div{border-radius:18px;padding:14px 16px;background:var(--sky);font-size:14px}
+.three b{display:block;font-size:17px}
+.three .k{font-family:var(--mono);font-size:11.5px;color:var(--sky-d)}
+
+/* 10 丢包模拟 */
+.meters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
+.meters div{border-radius:14px;padding:10px 14px;background:var(--card);font-size:12.5px;color:var(--muted)}
+.meters b{display:block;font-size:20px;font-weight:900;color:var(--fg);font-variant-numeric:tabular-nums}
+
+/* 11 拆包 */
+.peel{display:grid;gap:8px;margin-top:16px}
+.peel div{display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:12px;align-items:center;border-radius:16px;padding:10px 16px;background:var(--tint);font-size:14.5px}
+.peel .k{font-weight:700;color:var(--tone)}
+.peel .to{font-family:var(--mono);font-size:12px;color:var(--tone);white-space:nowrap}
+.peel a{font-weight:700;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:4px;white-space:nowrap}
+.peel a:hover{text-decoration-color:currentColor}
+a.btn{display:inline-block;padding:9px 20px;font-size:15px}
+
+/* 入门：设备卡片、领到的配置、代码块 */
+.devs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}
+.devs div{border:1px solid var(--line);border-radius:16px;padding:12px 14px;font-size:14px}
+.devs b{display:block;font-size:15.5px;margin-bottom:2px}
+.got{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+.got div{border-radius:16px;padding:12px 14px;background:var(--tint);font-size:13.5px;color:var(--muted)}
+.got .k{display:block;font-family:var(--mono);font-size:11.5px;color:var(--tone)}
+.got b{display:block;font-family:var(--mono);font-size:15px;font-weight:500;color:var(--fg);overflow-wrap:anywhere}
+pre{font-family:var(--mono);font-size:13px;line-height:1.7;background:var(--bg);border-radius:14px;padding:14px 16px;overflow-x:auto;margin:8px 0 0}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+.cap{font-family:var(--mono);font-size:11.5px;color:var(--tone)}
+/* ARP：一个小局域网 */
+.lan{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px 8px;margin-top:14px}
+.dv{position:relative;border:1.5px solid var(--line);border-radius:14px;padding:9px 6px;text-align:center;background:var(--card);font-size:13px;line-height:1.4;transition:border-color .3s,background .3s}
+.dv b{display:block;font-size:14.5px}
+.dv small{display:block;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.dv i{display:block;font-style:normal;margin-top:4px;min-height:2.8em;font-size:12.5px;color:var(--muted)}
+.dv::after{content:"";position:absolute;left:50%;bottom:-17px;width:3px;height:16px;margin-left:-1.5px;background:var(--line);transition:background .3s}
+.dv.tx{border-color:var(--peach-d);background:var(--peach)}.dv.tx i{color:var(--fg)}
+.dv.rx{border-color:var(--mint-d);background:var(--mint)}.dv.rx i{color:var(--fg)}
+.dv.tx::after,.dv.rx::after{background:var(--peach-d)}
+.sw{grid-column:1/-1;border-radius:12px;padding:8px 12px;text-align:center;background:var(--peach);font-size:13px}
+.hex span.L1,.flds .L1 button{background:var(--card)}
+.nest .enc{outline:2px dashed var(--line);outline-offset:-2px}
+
+/* 表格 */
+.panel{margin-top:26px}
+.tbl{overflow-x:auto;margin-top:14px}
+table{border-collapse:collapse;width:100%;min-width:680px;font-size:14.5px}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--chip-b);vertical-align:top}
+th{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--muted);border-bottom-color:var(--line)}
+td:first-child{font-weight:700;white-space:nowrap}
+table.fit{min-width:0}table.fit td:first-child{white-space:normal}
+td.c{background:var(--tint)}
+.foot{margin-top:36px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+@media (max-width:760px){
+  .page{padding:18px max(16px,env(safe-area-inset-right,0px)) 44px max(16px,env(safe-area-inset-left,0px))}
+  .hero{grid-template-columns:minmax(0,1fr);padding:34px 0 24px}
+  .stats{justify-content:flex-start}.stat{min-width:0;padding:10px 16px;border-radius:16px}.stat b{font-size:24px}
+  .map{border-radius:24px;padding:12px}
+  .rail{margin-left:0;margin-right:0}
+  .st,.panel{border-radius:24px;padding:22px 16px 20px}
+  .st-n{font-size:44px}h2{font-size:22px}
+  .who,.three,.devs,.two{grid-template-columns:minmax(0,1fr)}
+  .ans,.got{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .lan{gap:16px 4px}.dv{font-size:11px;padding:7px 3px}.dv b{font-size:12.5px}.dv small{font-size:9.5px}.dv i{font-size:11px}
+  .lab{padding:14px 12px}
+  .bitrow{grid-template-columns:minmax(0,1fr)}.bitrow .dec,.bits{grid-column:1}
+  .bits{grid-template-columns:repeat(8,1fr) 8px repeat(8,1fr);gap:3px 2px}.bits u:nth-of-type(2){display:none}
+  .hdr table{min-width:0}.hdr td,.hdr th{padding:8px 5px;font-size:11px;overflow-wrap:anywhere}.hdr .lk{display:none}
+  .hex{font-size:10px;gap:2px}.hex span{height:24px;border-radius:4px}
+  .talk div.r{margin-left:24px}
+  .path .node{font-size:11px;padding:7px 2px}.path .node small{display:none}
+  .peel div{grid-template-columns:minmax(0,1fr)}
+  .segs{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .meters div{padding:8px 10px}.meters b{font-size:17px}
+}
+
+@keyframes rise{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:translateY(14px) scale(.92)}60%{transform:translateY(-2px) scale(1.03)}to{opacity:1;transform:none}}
+@keyframes sheen{to{background-position:200% 50%}}
+@keyframes drift1{to{transform:translate(70px,50px) scale(1.12)}}
+@keyframes drift2{to{transform:translate(-80px,60px) scale(1.08)}}
+@keyframes drift3{to{transform:translate(-50px,-70px) scale(1.15)}}
+.blob.b1{animation:drift1 16s ease-in-out infinite alternate}
+.blob.b2{animation:drift2 20s ease-in-out infinite alternate}
+.blob.b3{animation:drift3 18s ease-in-out infinite alternate}
+.crumb,.eyebrow{animation:rise .6s cubic-bezier(.2,.7,.2,1) both}
+h1{animation:rise .8s cubic-bezier(.2,.7,.2,1) .05s both}
+h1 span{animation:sheen 7s linear infinite}
+.lede{animation:rise .8s cubic-bezier(.2,.7,.2,1) .18s both}
+.stat{animation:pop .7s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(.3s + var(--i,0) * .08s)}
+.map{animation:rise .9s cubic-bezier(.2,.7,.2,1) .4s both}
+.js .st,.js .flow,.js .panel{opacity:0;transform:translateY(26px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
+.js .in{opacity:1;transform:none}
+@view-transition{navigation:auto}
+@keyframes vt-out{to{opacity:0;transform:translateY(-12px)}}
+@keyframes vt-in{from{opacity:0;transform:translateY(18px)}}
+::view-transition-old(root){animation:vt-out .2s ease-in both}
+::view-transition-new(root){animation:vt-in .38s cubic-bezier(.2,.7,.2,1) .08s both}
+::view-transition-group(page-title){animation-duration:.45s;animation-timing-function:cubic-bezier(.2,.7,.2,1)}
+::view-transition-old(page-title),::view-transition-new(page-title){height:100%;object-fit:contain;object-position:left center}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}
+  .blob,.crumb,.eyebrow,h1,h1 span,.lede,.stat,.map,.flow i,.ask i{animation:none}
+  .rail a,.more a,.path .dot,.hdr td,.hex span,.dv,.dv::after{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="page">
+  <nav class="crumb" aria-label="位置"><a href="index.html">← 网络</a><span>/</span><span>全流程</span></nav>
+
+  <header class="hero">
+    <div>
+      <div class="eyebrow">网络 · 从域名到对方的进程</div>
+      <h1>一个请求是怎么<span>送到</span>的</h1>
+      <p class="lede">打开这个知识库的首页，从敲下网址到页面回来，实测 41 毫秒。这 41 毫秒里，数据被套了三层头，过了六台路由器，握了两次手。这一页从手机连上 Wi-Fi 开始，顺着它走十二步：每一步在解决什么问题，每一层加了什么，中间谁在转发，丢了怎么办。细节多的地方另有子页。</p>
+    </div>
+    <div class="stats" aria-label="这次访问的几个数字">
+      <div class="stat" style="--i:0"><b>41 ms</b><span>从网址到页面</span></div>
+      <div class="stat" style="--i:1"><b>74 字节</b><span>握手的第一帧</span></div>
+      <div class="stat" style="--i:2"><b>6 个包</b><span>运回整个首页</span></div>
+    </div>
+  </header>
+
+  <!-- 总图：行 = 层，列 = 设备。黑线是一个包走过的路：在两端走完五层，在交换机只到链路层，在路由器只到网络层 -->
+  <figure class="map">
+    <div class="map-scroll">
+    <svg viewBox="0 0 1180 322" role="img" aria-label="五层模型和五台设备：手机和服务器各有应用、传输、网络、链路、物理五层；交换机只处理到链路层；路由器处理到网络层。一个包从手机的应用层往下走到物理层，经过交换机和两类路由器，到服务器后再一层层往上交到应用层。">
+      <!-- 层的色带 -->
+      <rect class="band r7" x="100" y="52" width="1070" height="44" rx="12"/>
+      <rect class="band r4" x="100" y="100" width="1070" height="44" rx="12"/>
+      <rect class="band r3" x="100" y="148" width="1070" height="44" rx="12"/>
+      <rect class="band r2" x="100" y="196" width="1070" height="44" rx="12"/>
+      <rect class="band r1" x="100" y="244" width="1070" height="44" rx="12"/>
+      <text class="lay" x="8" y="72">应用层</text><text class="osi" x="8" y="88">OSI 5–7</text>
+      <text class="lay" x="8" y="120">传输层</text><text class="osi" x="8" y="136">OSI 4</text>
+      <text class="lay" x="8" y="168">网络层</text><text class="osi" x="8" y="184">OSI 3</text>
+      <text class="lay" x="8" y="216">链路层</text><text class="osi" x="8" y="232">OSI 2</text>
+      <text class="lay" x="8" y="264">物理层</text><text class="osi" x="8" y="280">OSI 1</text>
+
+      <!-- 设备名 -->
+      <text class="dev" x="200" y="34" text-anchor="middle">你的手机</text>
+      <text class="dev" x="415" y="34" text-anchor="middle">交换机 / 热点</text>
+      <text class="dev" x="615" y="34" text-anchor="middle">家里的路由器</text>
+      <text class="dev" x="815" y="34" text-anchor="middle">运营商的路由器 × 5</text>
+      <text class="dev" x="1075" y="34" text-anchor="middle">服务器</text>
+
+      <!-- 手机：五层 -->
+      <rect class="bx r7" x="116" y="56" width="168" height="36" rx="10"/><text class="in" x="130" y="79">HTTP · TLS</text>
+      <rect class="bx r4" x="116" y="104" width="168" height="36" rx="10"/><text class="in" x="130" y="127">TCP：端口</text>
+      <rect class="bx r3" x="116" y="152" width="168" height="36" rx="10"/><text class="in" x="130" y="175">IP：地址</text>
+      <rect class="bx r2" x="116" y="200" width="168" height="36" rx="10"/><text class="in" x="130" y="223">Wi-Fi：MAC</text>
+      <rect class="bx r1" x="116" y="248" width="168" height="36" rx="10"/><text class="in" x="130" y="271">无线电</text>
+      <!-- 交换机：两层 -->
+      <rect class="bx r2" x="350" y="200" width="130" height="36" rx="10"/><text class="in" x="362" y="223">看 MAC</text>
+      <rect class="bx r1" x="350" y="248" width="130" height="36" rx="10"/>
+      <!-- 路由器：三层 -->
+      <rect class="bx r3" x="550" y="152" width="130" height="36" rx="10"/><text class="in" x="562" y="175">看 IP</text>
+      <rect class="bx r2" x="550" y="200" width="130" height="36" rx="10"/><text class="in" x="562" y="223">换一帧</text>
+      <rect class="bx r1" x="550" y="248" width="130" height="36" rx="10"/>
+      <rect class="bx r3" x="750" y="152" width="130" height="36" rx="10"/><text class="in" x="762" y="175">看 IP</text>
+      <rect class="bx r2" x="750" y="200" width="130" height="36" rx="10"/><text class="in" x="762" y="223">换一帧</text>
+      <rect class="bx r1" x="750" y="248" width="130" height="36" rx="10"/>
+      <!-- 服务器：五层 -->
+      <rect class="bx r7" x="990" y="56" width="168" height="36" rx="10"/><text class="in" x="1144" y="79" text-anchor="end">HTTP · TLS</text>
+      <rect class="bx r4" x="990" y="104" width="168" height="36" rx="10"/><text class="in" x="1144" y="127" text-anchor="end">TCP：端口</text>
+      <rect class="bx r3" x="990" y="152" width="168" height="36" rx="10"/><text class="in" x="1144" y="175" text-anchor="end">IP：地址</text>
+      <rect class="bx r2" x="990" y="200" width="168" height="36" rx="10"/><text class="in" x="1144" y="223" text-anchor="end">以太网：MAC</text>
+      <rect class="bx r1" x="990" y="248" width="168" height="36" rx="10"/><text class="in" x="1144" y="271" text-anchor="end">光纤、网线</text>
+
+      <!-- 一个包走过的路 -->
+      <path id="route" class="wire" d="M256 74V266H440V218H462V266H640V170H662V266H840V170H862V266H1016V74"/>
+      <circle class="pkt" r="7"><animateMotion dur="9s" begin="0s" repeatCount="indefinite"><mpath href="#route"/></animateMotion></circle>
+      <circle class="pkt" r="7"><animateMotion dur="9s" begin="-3s" repeatCount="indefinite"><mpath href="#route"/></animateMotion></circle>
+      <circle class="pkt" r="7"><animateMotion dur="9s" begin="-6s" repeatCount="indefinite"><mpath href="#route"/></animateMotion></circle>
+
+      <text class="sub" x="200" y="310" text-anchor="middle">往下走：每层加一段头</text>
+      <text class="sub" x="415" y="310" text-anchor="middle">只拆到链路层</text>
+      <text class="sub" x="715" y="310" text-anchor="middle">拆到网络层，看完 IP 重新装帧</text>
+      <text class="sub" x="1075" y="310" text-anchor="middle">往上走：每层拆一段头</text>
+    </svg>
+    </div>
+    <figcaption>
+      <span><i style="background:var(--violet-d)"></i>应用层</span>
+      <span><i style="background:var(--sky-d)"></i>传输层</span>
+      <span><i style="background:var(--mint-d)"></i>网络层</span>
+      <span><i style="background:var(--peach-d)"></i>链路层</span>
+      <span>橙色圆点是一个包。只有两端会看到里面的内容，中间的设备各看各的那一层。</span>
+    </figcaption>
+  </figure>
+  <p class="note" style="margin:12px 8px 0">耗时、域名解析结果、TTL 和页面大小，是访问这个知识库（<code>mythlin19920302.github.io</code>）时实测的。手机、路由器的 IP 和 MAC 是示意值。示例帧按规范逐字节构造，校验和是真算出来的。</p>
+
+  <!-- ============ 从零开始：设备和地址 ============ -->
+  <section class="panel" id="basics" style="margin-top:22px">
+    <h2>先认识路上的设备和四种地址</h2>
+    <p class="one">后面每一步都在和这几样东西打交道。已经熟悉的可以直接跳到第 1 步。</p>
+    <div class="devs">
+      <div><b>网卡</b>每台设备联网用的那个部件，有线和 Wi-Fi 各是一块。它有一个 MAC 地址，负责把一帧数据变成电信号或无线电发出去，再把收到的信号变回数据。</div>
+      <div><b>交换机、Wi-Fi 热点</b>把同一个网里的设备连在一起。只看帧头里的 MAC 地址，决定从哪个口送出去。热点可以看成不用网线的交换机。</div>
+      <div><b>路由器</b>连接两个网，比如家里的网和运营商的网。看 IP 头里的目的地址，查表决定下一步交给谁。</div>
+      <div><b>光猫</b>把家里网线上的电信号和运营商光纤里的光信号互相转换。</div>
+      <div><b>运营商的网络</b>成千上万台路由器用光纤连成的网，负责把包从你家送到对方的机房。</div>
+      <div><b>服务器</b>也是一台电脑，只是一直开着、有固定的公网地址，上面运行着等别人来连的程序。</div>
+    </div>
+    <p class="keybox"><b>家里那个"路由器"其实是五样东西装在一个盒子里：</b>交换机、Wi-Fi 热点、路由器，加上给设备发地址的 DHCP 服务和替全家换地址的 NAT。很多家庭的光猫也一起做在里面。后面说的"网关"，指的就是它。</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>地址</th><th>长什么样</th><th>多长</th><th>谁给的</th><th>在多大范围内有效</th><th>哪一步用到</th></tr></thead>
+        <tbody>
+          <tr class="L7"><td class="c">域名</td><td><code>mythlin19920302.github.io</code></td><td>一段文字</td><td>网站的主人注册的</td><td>全世界</td><td>第 2 步</td></tr>
+          <tr class="L4"><td class="c">端口</td><td><code>443</code></td><td>16 位，0 到 65535</td><td>服务用约定好的号：网页 80 和 443，DNS 53。发起连接的一方由系统临时挑一个</td><td>一台机器之内</td><td>第 7 步</td></tr>
+          <tr class="L3"><td class="c">IP 地址</td><td><code>192.168.1.23</code></td><td>32 位，写成 4 个 0 到 255 的数。IPv6 是 128 位</td><td>家里的由路由器分配，公网的由运营商分配</td><td>公网地址全世界唯一，私有地址只在自己的网里</td><td>第 1、3、6 步</td></tr>
+          <tr class="L2"><td class="c">MAC 地址</td><td><code>DA:A1:19:5C:3E:07</code></td><td>48 位，写成 6 个十六进制字节</td><td>网卡出厂自带，手机也可以随机生成</td><td>同一个局域网之内</td><td>第 4 步</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="more"><span class="k">细看</span><a href="physical-layer.html">物理层：比特怎么变成电、光和无线电</a><a href="isp-access.html">宽带接入：你家怎么连进运营商</a><a href="isp-backbone.html">运营商内部：地址怎么分、包怎么跨网</a><a href="mobile-network.html">移动网络：用流量时怎么走</a></div>
+  </section>
+
+  <!-- ============ 七层和实际的分法 ============ -->
+  <section class="panel" id="layers" style="margin-top:22px">
+    <h2>七层是词汇表，实际只有四五层</h2>
+    <p class="one">OSI 七层模型是教科书上的分法。真正跑在网上的是 TCP/IP，它把上面三层合成了一层。</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>OSI 七层</th><th>实际的协议</th><th>这一层的数据叫</th><th>靠什么找对方</th><th>这趟旅程里是</th></tr></thead>
+        <tbody>
+          <tr class="L7"><td class="c">7 应用层</td><td>HTTP、DNS</td><td rowspan="3">报文</td><td rowspan="3">域名、网址</td><td><code>GET /Media/</code></td></tr>
+          <tr class="L7"><td class="c">6 表示层</td><td>TLS 加密、gzip 压缩</td><td>21 KB 的页面压成 7.7 KB，再加密</td></tr>
+          <tr class="L7"><td class="c">5 会话层</td><td>TLS 会话、HTTP/2 连接</td><td>一条连接上跑多个请求</td></tr>
+          <tr class="L4"><td class="c">4 传输层</td><td>TCP、UDP</td><td>段（segment）</td><td>端口</td><td>51234 → 443</td></tr>
+          <tr class="L3"><td class="c">3 网络层</td><td>IP、ICMP</td><td>包（packet）</td><td>IP 地址</td><td>192.168.1.23 → 185.199.108.153</td></tr>
+          <tr class="L2"><td class="c">2 数据链路层</td><td>以太网、Wi-Fi、ARP</td><td>帧（frame）</td><td>MAC 地址</td><td>手机 → 网关，每一跳都换</td></tr>
+          <tr class="L1"><td class="c">1 物理层</td><td>网线、光纤、无线电</td><td>比特</td><td>—</td><td>把 0 和 1 变成信号</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>记住右边三列就够用：<strong>每一层有自己的地址，也有自己的头。</strong>域名给人看，端口找程序，IP 找机器，MAC 找下一跳。下面十二步，就是这四种地址依次派上用场的过程。</p>
+  </section>
+
+  <nav class="rail" aria-label="十二个步骤">
+    <a href="#s1"><b>1</b>入网</a><a href="#s2"><b>2</b>域名</a><a href="#s3"><b>3</b>子网</a><a href="#s4"><b>4</b>MAC</a><a href="#s5"><b>5</b>装包</a><a href="#s6"><b>6</b>转发</a><a href="#s7"><b>7</b>握手</a><a href="#s8"><b>8</b>请求</a><a href="#s9"><b>9</b>传输</a><a href="#s10"><b>10</b>丢包</a><a href="#s11"><b>11</b>到站</a><a href="#s12"><b>12</b>挥手</a>
+  </nav>
+
+  <!-- ============ 1 入网 ============ -->
+  <section class="st" id="s1">
+    <div class="st-h"><div class="st-n">1</div><h2>入网：先领一个地址</h2><p class="one">手机刚连上 Wi-Fi 时只有一个 MAC 地址。自己的 IP 是多少、网关是谁、找谁查域名，全都不知道，要先问路由器。</p></div>
+    <p>输完密码、和热点互相认证之后，链路层就通了，相当于插上了网线。接着手机用 DHCP 协议向路由器要一套配置，来回一共四个包：</p>
+    <div class="lab">
+      <div class="lab-h"><span class="t">DHCP 的四个包</span><button type="button" class="btn go" id="dh-play">重放</button></div>
+      <div class="seq-scroll"><svg class="seq" id="dh" role="img" aria-label="时序图：手机广播 DISCOVER，问谁能给一个地址；路由器回 OFFER，给出 192.168.1.23；手机广播 REQUEST，确认要这个地址；路由器回 ACK，附上掩码、网关、DNS 和租期"></svg></div>
+    </div>
+    <p>这时手机还没有 IP，所以它发的两个包，源地址写的是 <code>0.0.0.0</code>，目的地址写的是 <code>255.255.255.255</code>，意思是"发给这个网里的所有人"。这种发法叫广播，第 4 步的 ARP 还会用到。</p>
+    <h3>领到了什么</h3>
+    <div class="got">
+      <div class="L3"><span class="k">IP 地址</span><b>192.168.1.23</b>我是谁</div>
+      <div class="L3"><span class="k">子网掩码</span><b>255.255.255.0</b>哪些地址算邻居，第 3 步用</div>
+      <div class="L3"><span class="k">网关</span><b>192.168.1.1</b>出门找谁，第 3、4 步用</div>
+      <div class="L7"><span class="k">DNS 服务器</span><b>192.168.1.1</b>域名找谁查，第 2 步用</div>
+    </div>
+    <ul>
+      <li><strong>地址是租的，不是送的。</strong>配置里还有一个租期，比如 24 小时。过了一半，手机会自动续租。离开这个 Wi-Fi 之后，地址到期就收回，可以再发给别的设备。</li>
+      <li><strong>同一台设备再连上来，通常还是拿到原来的地址。</strong>路由器记着哪个 MAC 上次用的是哪个地址。</li>
+      <li><strong>也可以不用 DHCP，手动把这四样填进去。</strong>这叫静态地址，服务器和打印机常这么做，好处是地址不会变。</li>
+    </ul>
+    <div class="who">
+      <div><span class="k">走什么</span>UDP，手机用 68 端口，路由器用 67 端口，靠广播送达</div>
+      <div><span class="k">ANDROID</span>系统自动完成。Wi-Fi 的详情页里能看到这四样，<code>adb shell ip addr</code> 也能看到地址和掩码</div>
+      <div><span class="k">领不到会怎样</span>一直停在"正在获取 IP 地址"，后面所有步骤都无从谈起</div>
+    </div>
+    <p>手机领到的是家里这个小网里的地址。路由器自己也要入网：它向运营商拨号，领一个外面用的地址，那一套流程在运营商那一侧。用流量上网时没有这一步，手机的地址由运营商的核心网直接分配。</p>
+    <div class="more"><span class="k">细看</span><a href="isp-access.html#pppoe">宽带接入：路由器怎么拨号领地址</a><a href="mobile-network.html#session">移动网络：手机怎么领地址</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c3"></i><span>有了 IP、掩码、网关、DNS</span></div>
+
+  <!-- ============ 2 域名 ============ -->
+  <section class="st" id="s2">
+    <div class="st-h"><div class="st-n">2</div><h2>域名：先问到 IP</h2><p class="one">网络只认数字地址。域名是给人看的，第一步是把它换成 IP。</p></div>
+    <div class="ask" aria-label="查询顺序：浏览器缓存、系统缓存、解析器、根服务器、io 的服务器、github.io 的服务器">
+      <i style="--n:0">浏览器缓存</i><b>→</b><i style="--n:1">系统缓存</i><b>→</b><i style="--n:2">解析器（路由器或运营商）</i><b>→</b><i style="--n:3">根</i><b>→</b><i style="--n:4">.io</i><b>→</b><i style="--n:5">github.io</i>
+    </div>
+    <p class="note">从左往右问，哪一级有答案就停。解析器的地址就是第 1 步领到的那个 DNS 服务器，后三级由它替你去问，手机只管等结果。</p>
+    <p>问到的答案是四个地址，任选一个都行，另外带一个有效期：3600 秒内不用再问。</p>
+    <div class="ans" aria-label="解析结果">
+      <span>185.199.108.153</span><span>185.199.109.153</span><span>185.199.110.153</span><span>185.199.111.153</span>
+    </div>
+    <h3>这个问题本身只有 43 个字节</h3>
+    <p>DNS 的查询是一个很小的包。域名在里面不是带点的字符串，而是一段一段存的，每段前面写着长度：</p>
+    <div class="qname" aria-label="域名在查询包里的写法">
+      <span class="len">15</span><span>mythlin19920302</span><span class="len">6</span><span>github</span><span class="len">2</span><span>io</span><span class="len">0</span>
+    </div>
+    <p class="note">12 字节的头 + 27 字节的域名 + 4 字节"我要 IPv4 地址"。答案也是一个包，一问一答就完事，所以 DNS 默认走 UDP，不用先建立连接。</p>
+    <div class="who">
+      <div><span class="k">走什么</span>UDP，对方端口 53。答案太长或者要加密时改走 TCP、TLS 或 HTTPS</div>
+      <div><span class="k">ANDROID</span><code>InetAddress.getByName()</code>，由系统统一解析和缓存。设置里的"私人 DNS"就是加密的那种</div>
+      <div><span class="k">自己看</span><code>nslookup 域名</code>，或者 <code>dig 域名</code></div>
+    </div>
+    <p>这次访问的解析只花了 2 毫秒，因为系统里有缓存。没有缓存时要问好几级，几十到上百毫秒，常常是打开页面时最慢的一步。</p>
+    <h3>答案不止一种</h3>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>记录类型</th><th>里面是什么</th><th>这个域名的</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td>IPv4 地址</td><td>上面那 4 个</td></tr>
+          <tr><td>AAAA</td><td>IPv6 地址</td><td><code>2606:50c0:8000::153</code> 等 4 个</td></tr>
+          <tr><td>CNAME</td><td>别名：这个域名其实是另一个域名，拿那个名字接着查</td><td>没有。自己买了域名再指到 GitHub Pages 的网站用的就是它</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">手机一般 A 和 AAAA 都问。两种地址都有时先试 IPv6，不通再换 IPv4。本页为了好读，后面一律用 IPv4 的地址。</p>
+    <div class="more"><span class="k">细看</span><a href="dns.html">DNS：域名是怎么查到 IP 的</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c3"></i><span>IP：185.199.108.153</span></div>
+
+  <!-- ============ 3 子网掩码 ============ -->
+  <section class="st" id="s3">
+    <div class="st-h"><div class="st-n">3</div><h2>子网掩码：对方是不是邻居</h2><p class="one">拿到 IP 之后，手机先判断一件事：对方在不在同一个网里。在，直接送；不在，交给网关。</p></div>
+    <p>一个 IP 地址有 32 位，前一段是网络号，后一段是这个网里的主机号。子网掩码说的是从哪一位切开。<code>255.255.255.0</code> 就是前 24 位是网络号，也写成 <code>/24</code>。</p>
+    <div class="lab">
+      <div class="lab-h"><span class="t">拖一下、点一下：</span><span>目标是</span>
+        <div class="chips" id="tg" role="group" aria-label="目标地址">
+          <button type="button" data-ip="185.199.108.153" aria-pressed="true">知识库的服务器</button>
+          <button type="button" data-ip="192.168.1.50" aria-pressed="false">同一个 Wi-Fi 下的电视</button>
+          <button type="button" data-ip="192.168.2.8" aria-pressed="false">隔壁网段的打印机</button>
+        </div>
+      </div>
+      <div class="bitrow"><span class="nm">手机</span><span class="dec" id="ip-a"></span><div class="bits" id="bits-a" aria-hidden="true"></div></div>
+      <div class="bitrow"><span class="nm">目标</span><span class="dec" id="ip-b"></span><div class="bits" id="bits-b" aria-hidden="true"></div></div>
+      <div class="maskctl"><label for="pl">掩码切在第</label><input type="range" id="pl" min="8" max="30" step="1" value="24"><output id="pl-o" for="pl"></output></div>
+      <p class="verdict" id="sn-v" aria-live="polite"></p>
+    </div>
+    <p class="note">绿色是网络号。手机把两个地址的绿色部分逐位比较，全部相同才算同一个网；标成橙色的是第一处不同。把掩码往左拖到 22，隔壁网段的打印机就变成邻居了。</p>
+    <ul>
+      <li><strong>网关</strong>是这个网通往外面的出口，一般就是路由器，地址常常是网络号加 1，这里是 <code>192.168.1.1</code>。</li>
+      <li><strong><code>192.168.x.x</code>、<code>10.x.x.x</code>、<code>172.16–31.x.x</code> 是私有地址</strong>，谁家都可以用，但出不了家门，公网上的路由器见到就丢。怎么出去见第 6 步。</li>
+      <li><strong>手机自己的 IP、掩码和网关</strong>，就是第 1 步从路由器领到的那一套。</li>
+    </ul>
+    <h3>一个网段里有两个地址不能分给设备</h3>
+    <div class="got">
+      <div class="L3"><span class="k">网络地址</span><b>192.168.1.0</b>主机号全是 0，代表这个网本身</div>
+      <div class="L3"><span class="k">可以分给设备</span><b>.1 到 .254</b>一共 254 个</div>
+      <div class="L3"><span class="k">广播地址</span><b>192.168.1.255</b>主机号全是 1，发给它等于发给网里所有人</div>
+      <div class="L1"><span class="k">怎么算的</span><b>2⁸ − 2 = 254</b>主机号 8 位，去掉头尾两个</div>
+    </div>
+    <h3>常见的几种掩码</h3>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>写法</th><th>掩码</th><th>主机号几位</th><th>能放多少台设备</th><th>常见在哪</th></tr></thead>
+        <tbody>
+          <tr><td>/8</td><td>255.0.0.0</td><td>24</td><td>16,777,214</td><td>大型内网，比如 10.x.x.x</td></tr>
+          <tr><td>/16</td><td>255.255.0.0</td><td>16</td><td>65,534</td><td>公司、学校</td></tr>
+          <tr><td>/24</td><td>255.255.255.0</td><td>8</td><td>254</td><td>家里、小办公室</td></tr>
+          <tr><td>/30</td><td>255.255.255.252</td><td>2</td><td>2</td><td>两台路由器之间的一条连线</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>手机里其实有一张路由表</h3>
+    <p>"是不是邻居"这个判断，在系统里是查一张表。手机上这张表只有两行：</p>
+<pre>去往哪个网段             怎么走
+192.168.1.0/24          直接从 Wi-Fi 网卡发出去（是邻居）
+0.0.0.0/0（其余所有）    交给 192.168.1.1（默认网关）</pre>
+    <p>拿目的地址一行行去比，网络号对得上、而且对上的位数最多的那一行说了算。<code>0.0.0.0/0</code> 的网络号长度是 0，什么地址都对得上，所以它是兜底的，叫默认路由。路由器里也是这样一张表，只是行数多得多，见第 6 步。</p>
+    <p class="note">IPv4 一共只有 2³² ≈ 43 亿个地址，早就不够每台设备分一个。私有地址加 NAT 是一种补救，IPv6 把地址加长到 128 位是另一种。</p>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c3"></i><span>不是邻居 → 交给网关 192.168.1.1</span></div>
+
+  <!-- ============ 4 MAC ============ -->
+  <section class="st" id="s4">
+    <div class="st-h"><div class="st-n">4</div><h2>MAC：这一步交给谁</h2><p class="one">IP 说的是最终去哪，MAC 说的是眼前这一步递给哪块网卡。</p></div>
+    <p>第 3 步的结论是"交给网关 <code>192.168.1.1</code>"。但网卡发一帧出去，帧头里要填的是对方网卡的 MAC 地址，而手机现在只知道网关的 IP。ARP（地址解析协议）就是用来问这个的：在这个网里喊一声，谁是这个 IP，把你的 MAC 告诉我。</p>
+    <div class="lab">
+      <div class="lab-h"><span class="t">一步一步看：</span>
+        <button type="button" class="btn" id="arp-prev">← 上一步</button>
+        <button type="button" class="btn go" id="arp-next">下一步 →</button>
+        <span class="note" id="arp-n"></span>
+      </div>
+      <div class="lan" id="lan">
+        <div class="dv" data-d="phone"><b>手机</b><small>192.168.1.23</small><i></i></div>
+        <div class="dv" data-d="tv"><b>电视</b><small>192.168.1.50</small><i></i></div>
+        <div class="dv" data-d="pc"><b>电脑</b><small>192.168.1.8</small><i></i></div>
+        <div class="dv" data-d="gw"><b>网关</b><small>192.168.1.1</small><i></i></div>
+        <div class="sw" id="arp-sw"></div>
+      </div>
+      <div class="hdr tbl" style="margin-top:10px">
+        <table>
+          <thead><tr><th>这一帧里写着</th><th>发送方</th><th>目标</th></tr></thead>
+          <tbody id="arp-t"></tbody>
+        </table>
+      </div>
+      <p class="verdict" id="arp-v" aria-live="polite"></p>
+      <p class="note" id="arp-c" style="margin-top:10px"></p>
+    </div>
+    <p class="keybox"><b>最容易弄反的一点：</b>发往服务器的包，目的 IP 写的是服务器，目的 MAC 写的却是网关。IP 地址从头到尾不变，MAC 地址每过一台路由器就换一次。</p>
+    <h3>ARP 包里写了什么</h3>
+    <p>ARP 不坐在 IP 上面，它直接装在以太网帧里，帧头的类型写 <code>0x0806</code>。内容固定 28 个字节：</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>字段</th><th>字节数</th><th>请求里</th><th>应答里</th></tr></thead>
+        <tbody>
+          <tr><td>硬件类型</td><td>2</td><td>1，以太网</td><td>1</td></tr>
+          <tr><td>协议类型</td><td>2</td><td><code>0x0800</code>，手里已知的是 IPv4 地址</td><td><code>0x0800</code></td></tr>
+          <tr><td>两种地址的长度</td><td>1 + 1</td><td>6 和 4</td><td>6 和 4</td></tr>
+          <tr><td>操作</td><td>2</td><td>1，请求</td><td>2，应答</td></tr>
+          <tr><td>发送方的 MAC</td><td>6</td><td>手机的</td><td>网关的，这就是答案</td></tr>
+          <tr><td>发送方的 IP</td><td>4</td><td>192.168.1.23</td><td>192.168.1.1</td></tr>
+          <tr><td>目标的 MAC</td><td>6</td><td>全 0，这正是要问的</td><td>手机的</td></tr>
+          <tr><td>目标的 IP</td><td>4</td><td>192.168.1.1</td><td>192.168.1.23</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">加上 14 字节的帧头是 42 字节，不够以太网一帧最少 60 字节的要求，网卡会在后面补 0。完整的字节在第 5 步里可以点开看。</p>
+    <h3>广播是怎么送到每台设备的</h3>
+    <p>靠交换机。交换机里有一张表，记着每个 MAC 地址在哪个口上。这张表没人替它填，是它自己看出来的：</p>
+    <ul>
+      <li><strong>学：</strong>每收到一帧，看一眼源 MAC，记下"这个 MAC 在这个口"。</li>
+      <li><strong>送：</strong>目的 MAC 在表里，只往那一个口送。不在表里，或者目的是广播地址 <code>FF:FF:FF:FF:FF:FF</code>，就往其余所有口各送一份。</li>
+    </ul>
+    <p>所以 ARP 请求全网都收得到，应答却只有手机收得到：请求经过时，交换机已经记下了手机在哪个口。交换机不看 IP，也不改帧里的任何东西。广播出不了这个网，路由器不转发它，这也是 ARP 只能问到邻居的原因。</p>
+    <h3>问到之后记在哪</h3>
+    <p>每台设备都有一张 ARP 缓存表，一行是"某个 IP 对应哪个 MAC"。记录过一阵子会过期，几十秒到几十分钟，各系统不同，到期后下次用到再问。所以发给一个新地址的第一个包会慢一点，后面的就不用等了。</p>
+    <ul>
+      <li><strong>对方是邻居，问的是对方本人；不是邻居，问的是网关。</strong>ARP 问的永远是"这一步交给谁"的那个 IP。</li>
+      <li><strong>没人应答，包就发不出去。</strong>这时 <code>ping</code> 报的是 <code>Destination Host Unreachable</code>：不是路上丢了，而是第一步就没迈出去。</li>
+      <li><strong>路上每台路由器都要做同样的事。</strong>它决定了下一跳是谁之后，也得用 ARP 问出下一跳的 MAC，才能装帧发出去。</li>
+      <li><strong>设备刚连进来时，会主动广播一次自己的 IP 和 MAC。</strong>这叫免费 ARP，让别人更新缓存，也用来发现有没有人和自己用了同一个 IP。</li>
+      <li><strong>ARP 不验证应答是谁发的。</strong>同一个网里的设备可以冒充网关来回答，让别人把包发给它，这叫 ARP 欺骗。公共 Wi-Fi 不安全，这是原因之一，也是上面还需要 TLS 的原因。</li>
+    </ul>
+    <h3>MAC 地址本身</h3>
+    <ul>
+      <li><strong>MAC 地址是网卡的编号</strong>，6 个字节，只在同一个网里有意义，出了这个网没人认识它。</li>
+      <li><strong>Android 10 起，每连一个 Wi-Fi 默认用一个随机的 MAC</strong>，不是出厂烧进去的那个，免得被人靠它跟踪。</li>
+    </ul>
+    <div class="who">
+      <div><span class="k">电脑上看</span><code>arp -a</code> 列出已经问到的邻居</div>
+      <div><span class="k">ANDROID</span><code>adb shell ip neigh</code></div>
+      <div><span class="k">IPV6</span>不用 ARP，改用 ICMPv6 的邻居发现，做的是同一件事</div>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c2"></i><span>下一跳的 MAC</span></div>
+
+  <!-- ============ 5 装包 ============ -->
+  <section class="st" id="s5">
+    <div class="st-h"><div class="st-n">5</div><h2>装包：一层套一层</h2><p class="one">数据每往下走一层，前面多一段头。真正发出去的，是最外面那一帧。</p></div>
+    <div class="nest-scroll">
+      <div class="nest" role="img" aria-label="一帧的结构：以太网头 14 字节，里面是 IP 头 20 字节，再里面是 TCP 头 20 到 60 字节，最里面是数据，最多 1460 字节；末尾是 4 字节帧校验">
+        <div class="L2"><span>以太网头<b>14 字节</b></span>
+          <div class="L3"><span>IP 头<b>20</b></span>
+            <div class="L4"><span>TCP 头<b>20–60</b></span>
+              <span class="pay L7">数据<b>最多 1460</b></span>
+            </div>
+          </div>
+          <span>校验<b>4</b></span>
+        </div>
+      </div>
+    </div>
+    <p class="note">从橙色算起叫帧，从绿色算起叫包，从蓝色算起叫段。说的是同一份数据的不同范围。</p>
+    <p>以太网一帧最多装 1500 字节（MTU）。减去 IP 头 20、TCP 头 20，一段最多带 1460 字节的数据，这个数叫 MSS。大文件就是这样被切成一千多字节一段，一段一帧地发出去的。</p>
+    <h3>拆开看一帧</h3>
+    <p>走到握手为止，手机已经发过好几种帧了。下面四种都可以拆开看，字节是按规范拼出来的，长度和校验和都是真的。点任何一个字节，或者点下面的字段名：</p>
+    <div class="lab">
+      <div class="lab-h"><span class="t">看哪一帧：</span>
+        <div class="chips" id="fr" role="group" aria-label="选择一帧">
+          <button type="button" data-k="arpq" aria-pressed="false">ARP 请求 · 60 字节</button>
+          <button type="button" data-k="arpr" aria-pressed="false">ARP 应答 · 60 字节</button>
+          <button type="button" data-k="dns" aria-pressed="false">DNS 查询 · 85 字节</button>
+          <button type="button" data-k="syn" aria-pressed="true">握手的第一帧 · 74 字节</button>
+        </div>
+      </div>
+      <p class="note" id="fr-n" style="margin-top:8px"></p>
+      <div class="hex" id="hex" aria-hidden="true"></div>
+      <div class="flds" id="flds"></div>
+      <div class="fcard L2" id="fcard" aria-live="polite"><span class="k" id="fc-k"></span><span class="v" id="fc-v"></span><p id="fc-p"></p></div>
+    </div>
+    <ul>
+      <li><strong>每层的头里都有一个"里面是什么"的号码</strong>：以太网头的类型、IP 头的协议、TCP 头的端口。收的一方就靠这三个号码一层层往上交，见第 11 步。</li>
+      <li><strong>三层各有各的校验。</strong>帧校验管整帧，IP 的校验和只管 IP 头，TCP 的校验和管 TCP 头和数据。任何一层验不过，都是直接丢掉，不通知发送方。</li>
+      <li><strong>UDP 的头只有 8 字节</strong>（看 DNS 那一帧）：两个端口、长度、校验和。没有序号，没有确认，发出去就不管了。TCP 的头至少 20 字节，多出来的就是为了可靠。</li>
+      <li><strong>包比路上某一段允许的大怎么办。</strong>IP 可以把一个包拆成几片，到终点再拼起来，但又慢又容易出问题。所以 TCP 的包都标着"不许分片"：过不去时路由器把它丢掉，回一条通知，发送方改小了再发。</li>
+      <li><strong>帧还不是线上的全部。</strong>网卡发送时，前面要加 8 字节的前导码让对方对准节拍，两帧之间还要空出 12 字节的间隔。再往下就是信号本身的事了。</li>
+    </ul>
+    <div class="more"><span class="k">细看</span><a href="physical-layer.html">物理层：一帧变成什么信号</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c2"></i><i class="c3"></i><i class="c4"></i><span>一帧，74 字节</span></div>
+
+  <!-- ============ 6 转发 ============ -->
+  <section class="st" id="s6">
+    <div class="st-h"><div class="st-n">6</div><h2>转发：一跳一跳地走</h2><p class="one">没有哪台设备知道完整的路线。每台路由器只决定一件事：下一步交给谁。</p></div>
+    <div class="lab">
+      <div class="lab-h"><span class="t">跟着这个包走：</span>
+        <button type="button" class="btn" id="hp-prev">← 上一跳</button>
+        <button type="button" class="btn go" id="hp-next">下一跳 →</button>
+      </div>
+      <div class="path" id="path">
+        <div class="node">手机<small>192.168.1.23</small></div>
+        <div class="node">家里的路由器<small>网关 · NAT</small></div>
+        <div class="node">运营商的路由器<small>第 2 台</small></div>
+        <div class="node">中间 3 台<small>骨干网</small></div>
+        <div class="node">机房的路由器<small>第 6 台</small></div>
+        <div class="node">服务器<small>185.199.108.153</small></div>
+        <div class="track"></div><div class="dot" id="hp-dot"></div>
+      </div>
+      <div class="hdr tbl" style="margin-top:8px">
+        <table>
+          <thead><tr><th>包头里的字段</th><th>源</th><th>目的</th></tr></thead>
+          <tbody id="hp-t"></tbody>
+        </table>
+      </div>
+      <p class="verdict" id="hp-v" aria-live="polite"></p>
+    </div>
+    <p class="note">橙色底的格子是这一跳改过的。服务器回来的包 TTL 实测是 58，按出发时 64 算，中间正好隔着 6 台路由器。</p>
+    <h3>路由器每一跳做的三件事</h3>
+    <ul>
+      <li><strong>查路由表。</strong>表里是一条条"去往某个网段，从哪个口出、交给谁"。拿目的 IP 去比，匹配得最长的那条说了算。</li>
+      <li><strong>TTL 减 1，重算 IP 头的校验和。</strong>减到 0 就丢掉这个包，并回一条 ICMP 通知。<code>traceroute</code> 就是故意发 TTL 为 1、2、3… 的包，靠这些通知把沿途的路由器一台台问出来。</li>
+      <li><strong>拆掉旧帧，装一个新帧。</strong>源 MAC 换成自己的，目的 MAC 换成下一跳的。链路的种类也可能变：家里是 Wi-Fi，出门是光纤，帧的格式跟着换，里面的 IP 包不动。</li>
+    </ul>
+    <h3>家里那台多做一件：换地址（NAT）</h3>
+    <p><code>192.168.1.23</code> 是私有地址，出不了门。家里的路由器把源 IP 换成自己的公网地址，源端口换成一个它自己挑的号，并记一笔："40001 这个端口对应 192.168.1.23 的 51234"。服务器的回信发到公网地址的 40001，路由器查到这一笔，再换回来交给手机。全家的设备就这样共用一个公网地址。</p>
+    <p>这里假设路由器领到的就是公网地址。很多家庭领到的是 <code>100.64</code> 开头的地址，运营商那边还要再换一次，几百户共用一个公网地址，这叫 CGNAT。</p>
+    <p class="note">副作用是外面的机器没法主动连进来，因为路由器的账本里没有对应的记录。视频通话、联机游戏要"打洞"，就是在想办法先让账本里出现这一笔。</p>
+    <h3>路由表是谁填的</h3>
+    <p>家里的路由器只有两三行，是它开机后和运营商商量出来的。运营商的路由器有几十万到上百万行，靠路由协议自动维护：相邻的路由器不停地互相通告"哪些网段从我这里走得通"，各自算出去往每个网段最好的下一跳。运营商之间用的协议叫 BGP。哪条线路断了，通告一变，表跟着变，包就自动绕路走。</p>
+    <h3>出了问题谁来通知：ICMP</h3>
+    <p>IP 自己不保证送达，但路由器丢包时可以回一条 ICMP 消息说明原因，比如"TTL 用完了""这个地址去不了""包太大又不许分片"。<code>ping</code> 用的也是 ICMP：发一个"回显请求"，对方回一个"回显应答"，量出来的就是一个来回的时间。</p>
+    <div class="more"><span class="k">细看</span><a href="isp-access.html">宽带接入：第 2 台路由器怎么认出你家</a><a href="isp-access.html#cgnat">CGNAT：运营商再换一次地址</a><a href="isp-backbone.html">运营商内部：中间几台怎么转</a><a href="physical-layer.html">物理层：每一段路上是什么信号</a><a href="vpn.html">VPN：这条路上再套一层</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c3"></i><span>10 毫秒后到达对方</span></div>
+
+  <!-- ============ 7 握手 ============ -->
+  <section class="st" id="s7">
+    <div class="st-h"><div class="st-n">7</div><h2>握手：先确认两边都通</h2><p class="one">IP 只管送，不管到没到。TCP 在发数据之前，先用三个包确认两个方向都是通的。</p></div>
+    <div class="tl" role="img" aria-label="41 毫秒的构成：域名解析 2 毫秒，TCP 握手 10 毫秒，TLS 握手 15 毫秒，等第一个字节 12 毫秒，收完 2 毫秒">
+      <i class="L7" style="flex:2"></i><i class="L4" style="flex:10">TCP 10</i><i class="L7" style="flex:15">TLS 15</i><i class="L3" style="flex:12">等回应 12</i><i class="L1" style="flex:2"></i>
+    </div>
+    <div class="tl-k" aria-hidden="true"><span style="flex:2"></span><span style="flex:10">一个来回</span><span style="flex:15">一个来回 + 加解密</span><span style="flex:12">一个来回</span><span style="flex:2"></span></div>
+    <p class="note">实测的 41 毫秒花在哪。最前面 2 毫秒是域名解析，最后 2 毫秒是把页面收完。到服务器的一个来回是 10 毫秒，每一段差不多都是它的整数倍。</p>
+    <div class="lab">
+      <div class="lab-h"><span class="t">这 41 毫秒里来回的包</span><button type="button" class="btn go" id="hs-play">重放</button></div>
+      <div class="seq-scroll"><svg class="seq" id="hs" role="img" aria-label="时序图：手机发 SYN；服务器回 SYN 加 ACK；手机回 ACK 并发出 TLS 的 ClientHello；服务器回 ServerHello、证书和 Finished；手机发 Finished 和加密的 HTTP 请求；服务器回响应"></svg></div>
+    </div>
+    <h3>三次握手在确认什么</h3>
+    <ul>
+      <li><strong>SYN</strong>：手机说"我要连你的 443 端口，我这边的字节从 x 开始编号"。</li>
+      <li><strong>SYN + ACK</strong>：服务器说"收到，下一个我要 x+1；我这边从 y 开始编号"。</li>
+      <li><strong>ACK</strong>：手机说"收到，下一个我要 y+1"。</li>
+    </ul>
+    <p>三个包走完，双方都确认了"我发的对方能收到"，也交换了各自的起始序号。少一个都不行：只有两个包的话，服务器没法知道自己的回复有没有送到。握手时顺便商量好几件事，就是第 5 步那一帧里的选项：一段最多多大、窗口放大多少倍、支不支持选择确认。</p>
+    <p>一条连接由四个数确定：<strong>源 IP、源端口、目的 IP、目的端口</strong>。服务器的 443 端口上同时有成千上万条连接，靠这四个数区分谁是谁。</p>
+    <h3>接着是 TLS 的握手</h3>
+    <p>网址是 <code>https</code>，所以 TCP 连上之后还要再握一次：商量加密算法、核对服务器的证书、算出只有两边知道的密钥。这次用的是 TLS 1.3，一个来回就够。之后 HTTP 的请求和响应都是加密的，中间的路由器只看得到 IP 和端口，看不到具体的网址和页面内容。只有域名在握手时还是明文的。</p>
+    <h3>连不上的两种样子</h3>
+    <ul>
+      <li><strong>对方机器在，但那个端口没有程序在听：</strong>对方的系统立刻回一个带 RST 标志的包，手机这边报 <code>Connection refused</code>。</li>
+      <li><strong>SYN 发出去没有任何回音：</strong>对方不在、中途被防火墙丢了，或者回来的路不通。手机隔 1 秒、2 秒、4 秒重发几次 SYN，最后报 <code>Connection timed out</code>。</li>
+    </ul>
+    <div class="more"><span class="k">细看</span><a href="tls.html">TLS 握手：加密的连接是怎么建起来的</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c4"></i><span>连接建好，加密就绪</span></div>
+
+  <!-- ============ 8 请求 ============ -->
+  <section class="st" id="s8">
+    <div class="st-h"><div class="st-n">8</div><h2>请求：现在才轮到正事</h2><p class="one">地址、路线、连接、加密都准备好了。应用层真正要说的话其实很短：我要哪个页面。</p></div>
+    <div class="two">
+      <div><span class="cap L7">手机发出的请求</span>
+<pre>GET /Media/ HTTP/2
+host: mythlin19920302.github.io
+accept-encoding: gzip
+user-agent: …</pre></div>
+      <div><span class="cap L7">服务器的响应</span>
+<pre>HTTP/2 200
+content-type: text/html; charset=utf-8
+content-encoding: gzip
+content-length: 7722
+cache-control: max-age=600
+
+（空一行之后是 7722 字节的页面）</pre></div>
+    </div>
+    <p class="note">响应头是实测的，只留了要讲的几行。HTTP/2 在线上传的是压缩过的二进制，这里写成容易读的文本。</p>
+    <div class="tbl">
+      <table class="fit">
+        <thead><tr><th>这一行</th><th>在说什么</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /Media/</code></td><td>动作和路径。GET 是"给我"，POST 是"我交给你"</td></tr>
+          <tr><td><code>host</code></td><td>要的是哪个网站。同一个 IP 上住着成千上万个网站，服务器靠这一行分辨</td></tr>
+          <tr><td><code>accept-encoding: gzip</code></td><td>我能解 gzip，可以压缩了再发给我</td></tr>
+          <tr><td><code>200</code></td><td>状态码，成功。301、302 是搬到别处了，304 是没变、用你手里的，404 是没有这个，5 开头是服务器自己出错</td></tr>
+          <tr><td><code>content-encoding</code>、<code>content-length</code></td><td>发回来的是 gzip 压过的，7722 字节。解开是 21,165 字节</td></tr>
+          <tr><td><code>cache-control: max-age=600</code></td><td>600 秒之内再要这个页面，直接用手里的，不用再问</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><strong>一个页面不止一个请求。</strong>HTML 回来后，浏览器读到里面引用的样式表和字体，再各发一个请求。HTTP/2 让它们在同一条连接上同时进行，不用排队，也不用重新握手。</li>
+      <li><strong>可以只要文件的一段。</strong>请求里加一行 <code>range: bytes=0-99</code>，服务器回 <code>206</code> 和那 100 个字节。播放器拖进度条、先去读 MP4 的索引，靠的都是它。</li>
+      <li><strong>缓存也在这一层。</strong>刚推送了新版本，浏览器里看到的还是旧的，多半是 <code>max-age</code> 还没过。强制刷新就是告诉浏览器别用手里的。</li>
+    </ul>
+    <div class="who">
+      <div><span class="k">ANDROID</span>OkHttp 或 <code>HttpURLConnection</code> 替你拼出这段请求、解析响应</div>
+      <div><span class="k">播放器</span>Media3 的 <code>DataSource</code> 发的也是这种请求，通常带着 <code>range</code></div>
+      <div><span class="k">自己看</span><code>curl -v 网址</code>，以 <code>&gt;</code> 开头的是请求，以 <code>&lt;</code> 开头的是响应</div>
+    </div>
+    <div class="more"><span class="k">细看</span><a href="http2-http3.html">HTTP/2 与 HTTP/3</a><a href="../av/container/mp4-format.html#faststart">MP4：播放器为什么要先读索引</a><a href="streaming-protocols.html">流媒体协议：HLS、RTMP、WebRTC</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c7"></i><span>请求发出，响应开始往回传</span></div>
+
+  <!-- ============ 9 传输 ============ -->
+  <section class="st" id="s9">
+    <div class="st-h"><div class="st-n">9</div><h2>传输：编号、确认、窗口</h2><p class="one">TCP 把数据看成一串编了号的字节。对方每收到一段，就回一句"下一个我要第几号"。</p></div>
+    <p>首页压缩后是 7722 字节，加上响应头和加密的开销，服务器把它切成 6 段发回来：</p>
+    <div class="segs" aria-label="6 段数据的字节范围">
+      <span><b>第 1 段</b>1–1448</span><span><b>第 2 段</b>1449–2896</span><span><b>第 3 段</b>2897–4344</span><span><b>第 4 段</b>4345–5792</span><span><b>第 5 段</b>5793–7240</span><span><b>第 6 段</b>7241–8406</span>
+    </div>
+    <p class="note">每段 1448 字节而不是 1460，因为握手时商量了时间戳选项，每个包的 TCP 头多占 12 字节。总字节数是按页面 7722 字节加响应头 684 字节估的，没算加密多出来的那一点。</p>
+    <ul>
+      <li><strong>序号是字节的编号，不是包的编号。</strong>第 3 段的序号是 2897，意思是"这一段的第一个字节是第 2897 个"。</li>
+      <li><strong>确认号是"下一个我要第几号"。</strong>收到前 3 段后回 4345，意思是 4345 之前的全都到齐了。所以确认是累计的，后一个确认包含了前面所有的。</li>
+      <li><strong>收到的顺序可以是乱的。</strong>每个包各走各的路，后发的可能先到。接收方按序号排好，再交给上面的程序。</li>
+    </ul>
+    <h3>三个限制发送量的数</h3>
+    <div class="three">
+      <div><span class="k">MSS · 握手时定</span><b>一段最多装多少</b>商量的是 1460 字节，扣掉时间戳后每段实际装 1448</div>
+      <div><span class="k">接收窗口 · 对方每次告诉你</span><b>对方还能收多少</b>程序处理得慢，窗口就变小，发送方跟着慢下来</div>
+      <div><span class="k">拥塞窗口 · 发送方自己估</span><b>网络还能扛多少</b>没人告诉它，只能边发边试，见下面</div>
+    </div>
+    <h3>慢启动：先少发，没丢就翻倍</h3>
+    <p>发送方一开始不知道这条路有多宽，所以先只发 10 段。这 10 段的确认都回来了，下一轮发 20 段，再下一轮 40 段，直到发现丢包。</p>
+    <div class="grow" role="img" aria-label="每一轮能发的段数：10、20、40、80、160">
+      <div><i style="height:6px"></i>第 1 轮<br>10 段</div><div><i style="height:12px"></i>第 2 轮<br>20 段</div><div><i style="height:24px"></i>第 3 轮<br>40 段</div><div><i style="height:48px"></i>第 4 轮<br>80 段</div><div><i style="height:96px"></i>第 5 轮<br>160 段</div>
+    </div>
+    <p>这个首页只有 6 段，第一轮就发完了，所以从发请求到收完只用了一个来回。10 段大约是 14 KB，网页的首屏内容尽量压在这个数以内，就是这个道理。反过来，1 MB 的文件即使一个包都不丢，也要 7 个来回才能传完。</p>
+    <div class="more"><span class="k">细看</span><a href="tcp-congestion.html">拥塞控制：TCP 怎么决定发多快</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c4"></i><i class="c2" style="opacity:.35"></i><span>路上会丢</span></div>
+
+  <!-- ============ 10 丢包 ============ -->
+  <section class="st" id="s10">
+    <div class="st-h"><div class="st-n">10</div><h2>丢包：少了一段怎么办</h2><p class="one">路上的设备丢包时不通知任何人。发现少了、再补上，全是两端的 TCP 自己的事。</p></div>
+    <div class="lab">
+      <div class="lab-h"><span class="t">选一种情况：</span>
+        <div class="chips" id="sc" role="group" aria-label="丢包情况">
+          <button type="button" data-s="none" aria-pressed="false">一个都不丢</button>
+          <button type="button" data-s="mid" aria-pressed="true">丢了第 3 段</button>
+          <button type="button" data-s="last" aria-pressed="false">丢了最后一段</button>
+          <button type="button" data-s="ack" aria-pressed="false">丢了一个确认</button>
+        </div>
+        <button type="button" class="btn go" id="sim-play">重放</button>
+      </div>
+      <div class="meters">
+        <div>手机已经收齐到<b id="m-got">–</b></div>
+        <div>服务器收到的重复确认<b id="m-dup">–</b></div>
+        <div>服务器的拥塞窗口<b id="m-cw">–</b></div>
+      </div>
+      <div class="seq-scroll"><svg class="seq" id="sim" role="img" aria-label="时序图：服务器向手机发 6 段数据，手机回确认。内容随所选情况变化，下面的文字说明了经过"></svg></div>
+      <p class="verdict" id="sim-v" aria-live="polite"></p>
+    </div>
+    <p class="note">为了看清楚，图上每段数据都回了一个确认。真实的 TCP 通常每两段回一次。</p>
+    <h3>发现丢包的两种办法</h3>
+    <ul>
+      <li><strong>重复确认，快。</strong>接收方每收到一段不是自己想要的，就把"我要的还是那一号"再说一遍。发送方连着听到三次同样的话，不等超时，立刻把那一段补发。一般只耽误一个来回。</li>
+      <li><strong>超时，慢。</strong>如果丢的是最后一段，后面没有别的包去触发重复确认，发送方只能干等。等多久是按来回时间算出来的，Linux 上最少 200 毫秒，连接刚建立时是 1 秒。对一条来回只要 10 毫秒的线路，这相当于停了二十个来回。新一些的系统会在超时之前先试探着重发最后一段，能救回一部分这种情况。</li>
+    </ul>
+    <p><strong>选择确认（SACK）</strong>让重复确认带上更多信息："我要的还是 3，但 4 到 6 我已经有了"。发送方就只补第 3 段，不会把后面的也重发一遍。</p>
+    <h3>丢包之后发得更慢</h3>
+    <p>TCP 把丢包当成"路上堵了"的信号。靠重复确认发现的，拥塞窗口降到原来的七成左右；靠超时发现的，直接降回 1 段，从头慢启动。所以丢包的代价不只是补发那一段，后面一段时间的速度都受影响。Wi-Fi 信号差时网速掉得厉害，多半是这个原因。</p>
+    <h3>包是在哪丢的</h3>
+    <ul>
+      <li><strong>路由器的队列满了。</strong>进来的比送出去的快，排不下的直接丢。这是最常见的，也是 TCP 设想的那种情况。</li>
+      <li><strong>无线信号干扰。</strong>Wi-Fi 在链路层自己会重发几次，实在送不过去才丢。</li>
+      <li><strong>校验不过。</strong>线路上某一位翻了，帧校验对不上，网卡直接扔掉。</li>
+    </ul>
+    <p class="keybox"><b>和播放器的关系：</b>TCP 保证不丢、不乱，代价是少了一段就得停下来等，后面已经到了的数据也不能往上交。点播的视频可以等，直播和通话等不起，所以它们常常改用 UDP：晚到的包就不要了。这和播放器里"晚了太多的画面直接丢掉"是同一个取舍。</p>
+    <div class="more"><span class="k">细看</span><a href="tcp-congestion.html">拥塞控制：丢包之后怎么调速</a><a href="streaming-protocols.html">流媒体协议：直播为什么不等</a><a href="../av/playback.html#s4">播放器里的同步和丢帧</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c4"></i><span>6 段都到齐了</span></div>
+
+  <!-- ============ 11 到站 ============ -->
+  <section class="st" id="s11">
+    <div class="st-h"><div class="st-n">11</div><h2>到站：一层一层拆开</h2><p class="one">收的一方按来时相反的顺序拆头。每拆一层，查一个号码，决定交给上面的谁。</p></div>
+    <div class="peel">
+      <div class="L2"><span class="k">网卡</span><span>帧校验对不对？目的 MAC 是不是我？拆掉以太网头</span><span class="to">类型 0x0800 → 交给 IP</span></div>
+      <div class="L3"><span class="k">IP</span><span>头校验和对不对？目的 IP 是不是我？拆掉 IP 头</span><span class="to">协议 6 → 交给 TCP</span></div>
+      <div class="L4"><span class="k">TCP</span><span>校验和对不对？按四个数找到是哪条连接，按序号排好，回确认</span><span class="to">端口 443 → 交给那个程序</span></div>
+      <div class="L7"><span class="k">TLS、HTTP</span><span>解密，解压，读出请求或者响应</span><span class="to">交给浏览器或服务程序</span></div>
+    </div>
+    <p>手机收到那 6 段也是走这四步。到最上面一层时，拿到的又是开头那个 21 KB 的页面，路上发生过的事它一概不知道：包被切成几段、走了哪条路、有没有重发过。每一层只和对面的同一层说话，下面的事交给下面。这就是分层的意义。</p>
+    <ul>
+      <li><strong>这个 IP 后面不是一台机器。</strong>大网站的同一个地址在全世界很多机房同时存在，路由器把你送到最近的那个。所以同一个网址，不同地方的人连上的不是同一台机器。</li>
+      <li><strong>回程走的是同一套流程，方向反过来。</strong>服务器发回的包，目的地址是你家路由器的公网地址和它挑的那个端口。路由器查到第 6 步记的那一笔，把地址和端口换回手机的，再用手机的 MAC 装帧发过去。</li>
+      <li><strong>回到你家之前，运营商那边也查了一路的表。</strong>骨干网按目的地址找到你家所在城市的那台接入服务器，接入服务器按地址查到你家的拨号会话和线路标签，光纤那头的设备再按标签找到你家的光猫。每一台都是"拿一个号码，查出下一个号码"。</li>
+    </ul>
+    <div class="more"><span class="k">细看</span><a href="isp-access.html#return">回程：一路查表找回你家</a><a href="mobile-network.html#gtp">用流量时：隧道和隧道号</a></div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><i class="c4"></i><span>页面收完了</span></div>
+
+  <!-- ============ 12 挥手 ============ -->
+  <section class="st" id="s12">
+    <div class="st-h"><div class="st-n">12</div><h2>挥手：用完说再见</h2><p class="one">连接的两头都存着状态：序号、窗口、定时器。不用了要互相说一声，才能把这些都释放掉。</p></div>
+    <div class="lab">
+      <div class="lab-h"><span class="t">关闭连接的四个包</span><button type="button" class="btn go" id="fin-play">重放</button></div>
+      <div class="seq-scroll"><svg class="seq" id="fin" role="img" aria-label="时序图：手机发 FIN，表示自己发完了；服务器回确认；服务器发完自己的数据后也发 FIN；手机回确认"></svg></div>
+    </div>
+    <ul>
+      <li><strong>为什么是四个包，不是三个。</strong>连接是双向的，两个方向各关各的。手机说"我没有要发的了"，服务器可能还有数据没发完，所以它先回一个确认，等自己发完了再发 FIN。两边恰好同时没话说时，中间两个包可以并成一个。</li>
+      <li><strong>最后还要再等一会儿。</strong>发出最后一个确认的一方不会马上忘掉这条连接，而是再留一小段时间。万一这个确认丢了，对方会重发 FIN，得有人认得它。</li>
+      <li><strong>不是每次都好好说再见。</strong>程序崩溃了，或者一方认为这条连接早就不存在了，会直接发一个 RST。另一边看到的就是 <code>Connection reset</code>。</li>
+      <li><strong>也不是每次用完都关。</strong>浏览器和 OkHttp 会把连接留着，同一个网站的下一个请求接着用，省掉两次握手。闲置久了才关。路由器里那条 NAT 记录也一样，闲置一阵子就删。</li>
+    </ul>
+  </section>
+
+  <!-- ============ VPN ============ -->
+  <section class="panel" id="vpn">
+    <h2>如果开了 VPN</h2>
+    <p class="one">十二步一步不少，只是在第 5 步多套了一层：整个包加密之后，装进另一个发往 VPN 服务器的包里。</p>
+    <div class="nest-scroll">
+      <div class="nest" style="min-width:860px" role="img" aria-label="开了 VPN 之后的一帧：以太网头，外层 IP 头写的是去 VPN 服务器，UDP 头，然后是加密的部分；加密部分里面才是内层 IP 头，写着真正的目的地，以及 TCP 头和数据">
+        <div class="L2"><span>以太网头</span>
+          <div class="L3"><span>外层 IP 头<b>去 VPN 服务器</b></span>
+            <div class="L4"><span>UDP 头</span>
+              <div class="L1 enc"><span>加密<b>路上看不见</b></span>
+                <div class="L3"><span>内层 IP 头<b>去真正的目的地</b></span>
+                  <div class="L4"><span>TCP 头</span><span class="pay L7">数据</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul>
+      <li><strong>家里的路由器和运营商</strong>只看得到外层：你在和 VPN 服务器通信。真正的目的地和内容都在加密的那一段里。</li>
+      <li><strong>网站那一头</strong>看到的来源是 VPN 服务器的地址，不是你家的。</li>
+      <li><strong>代价</strong>是每个包多出几十字节的头，一帧能装的数据变少；路也绕远了，一个来回的时间变长。</li>
+    </ul>
+    <div class="more"><span class="k">细看</span><a href="vpn.html">VPN：在公网上再套一层</a></div>
+  </section>
+
+  <!-- ============ TCP UDP QUIC ============ -->
+  <section class="panel" id="choose">
+    <h2>TCP、UDP、QUIC 怎么选</h2>
+    <p class="one">传输层只有两种基本选择：要可靠，还是要及时。QUIC 是在 UDP 上重新做了一遍 TCP 的事。</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th></th><th>TCP</th><th>UDP</th><th>QUIC（HTTP/3）</th></tr></thead>
+        <tbody>
+          <tr><td>发数据之前</td><td>握手，一个来回；加密再一个</td><td>不握手，直接发</td><td>握手和加密合成一个来回，重连可以不等</td></tr>
+          <tr><td>丢了</td><td>自动重发</td><td>不管，由程序自己决定</td><td>自动重发</td></tr>
+          <tr><td>少一段时</td><td>后面的全部等着</td><td>不等</td><td>只有那一个请求等，别的请求照常</td></tr>
+          <tr><td>头的大小</td><td>20 字节起</td><td>8 字节</td><td>UDP 的 8 字节，加上自己的头</td></tr>
+          <tr><td>谁在用</td><td>网页、下载、点播（HLS、DASH）</td><td>DNS、通话、低延迟直播（RTP、WebRTC）</td><td>新的网页和视频网站</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 报错对应哪一步 ============ -->
+  <section class="panel" id="errors">
+    <h2>报错对应哪一步</h2>
+    <p class="one">知道了完整的流程，错误信息就是在告诉你卡在了第几步。</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>看到的报错</th><th>卡在</th><th>意思</th></tr></thead>
+        <tbody>
+          <tr><td style="white-space:normal">一直"正在获取 IP 地址"</td><td>第 1 步 入网</td><td>DHCP 没有回音：路由器没开这个服务，或者地址发完了</td></tr>
+          <tr><td style="white-space:normal"><code>UnknownHostException</code>、<code>ERR_NAME_NOT_RESOLVED</code></td><td>第 2 步 域名</td><td>域名查不到：没联网、DNS 服务器不通，或者域名写错了</td></tr>
+          <tr><td style="white-space:normal"><code>Network is unreachable</code></td><td>第 3 步 子网</td><td>路由表里没有能走的路，通常是根本没连上网</td></tr>
+          <tr><td style="white-space:normal"><code>Destination Host Unreachable</code></td><td>第 4 步 MAC</td><td>邻居或者网关不回答 ARP</td></tr>
+          <tr><td style="white-space:normal"><code>Connection timed out</code></td><td>第 6、7 步</td><td>SYN 发出去没有回音：对方不在，或者路上被防火墙丢了</td></tr>
+          <tr><td style="white-space:normal"><code>Connection refused</code></td><td>第 7 步 握手</td><td>对方机器在，但那个端口没有程序在听</td></tr>
+          <tr><td style="white-space:normal"><code>SSLHandshakeException</code>、证书错误</td><td>第 7 步 握手</td><td>证书过期、域名对不上，或者手机的时间不对</td></tr>
+          <tr><td style="white-space:normal">404、500 这类状态码</td><td>第 8 步 请求</td><td>网络是通的，问题在服务端：没有这个页面，或者程序出错</td></tr>
+          <tr><td style="white-space:normal"><code>Connection reset</code>、<code>Broken pipe</code></td><td>第 9 步 传输</td><td>传到一半，对方发来 RST 强行断开了</td></tr>
+          <tr><td style="white-space:normal"><code>SocketTimeoutException</code>（读超时）</td><td>第 9、10 步</td><td>连上了，但迟迟等不到数据：丢包严重，或者对方处理得慢</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 自己看 ============ -->
+  <section class="panel" id="tools">
+    <h2>在自己的机器上看</h2>
+    <p class="one">上面每一步都有现成的命令能看到。Android 上先 <code>adb shell</code> 进去。</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>想看什么</th><th>电脑（macOS、Linux）</th><th>Android</th></tr></thead>
+        <tbody>
+          <tr><td>本机的 IP、掩码、MAC</td><td><code>ifconfig</code></td><td><code>ip addr</code></td></tr>
+          <tr><td>网关和路由表</td><td><code>netstat -rn</code></td><td><code>ip route</code></td></tr>
+          <tr><td>已经问到的邻居 MAC</td><td><code>arp -a</code></td><td><code>ip neigh</code></td></tr>
+          <tr><td>域名解析成什么</td><td><code>nslookup 域名</code></td><td><code>ping -c 1 域名</code>，看第一行</td></tr>
+          <tr><td>通不通、来回多久、TTL</td><td><code>ping 地址</code></td><td><code>ping 地址</code></td></tr>
+          <tr><td>沿途有哪些路由器</td><td><code>traceroute 地址</code></td><td>不一定自带</td></tr>
+          <tr><td>各阶段耗时</td><td><code>curl -w</code> 加上 <code>time_namelookup</code>、<code>time_connect</code> 等变量</td><td>Chrome 开发者工具的 Network 面板</td></tr>
+          <tr><td>每一帧的每个字节</td><td>Wireshark，或者 <code>tcpdump</code></td><td>要 root，或者在电脑上抓经过热点的流量</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 接着读 ============ -->
+  <section class="panel" id="next">
+    <h2>接着读：按这个顺序</h2>
+    <p class="one">这一页是地图。下面十篇分三段，每一篇都接着上一篇往下讲，前面讲过的后面直接拿来用。</p>
+    <div class="peel">
+      <div class="L3"><span class="k">第一段</span><span>包怎么送到对方：<a href="physical-layer.html">1 物理层</a> → <a href="isp-access.html">2 宽带接入</a> → <a href="mobile-network.html">3 移动网络</a> → <a href="isp-backbone.html">4 运营商内部</a></span><span class="to">由近及远</span></div>
+      <div class="L4"><span class="k">第二段</span><span>两端怎么对话：<a href="dns.html">5 DNS</a> → <a href="tcp-congestion.html">6 拥塞控制</a> → <a href="tls.html">7 TLS 握手</a> → <a href="http2-http3.html">8 HTTP/2 与 HTTP/3</a></span><span class="to">从下往上</span></div>
+      <div class="L7"><span class="k">第三段</span><span>拼起来用：<a href="vpn.html">9 VPN</a> → <a href="streaming-protocols.html">10 流媒体协议</a></span><span class="to">综合</span></div>
+    </div>
+    <p><a class="btn go" href="physical-layer.html">从第 1 篇读起：物理层 →</a></p>
+    <p class="note">每篇末尾都有上一篇和下一篇。各篇讲什么、为什么排在这个位置，见<a href="index.html" style="text-decoration:underline;text-underline-offset:3px">网络目录页</a>。</p>
+  </section>
+
+  <div class="foot"><span>docs/network/journey.html</span><span>耗时实测 · 地址为示意值 · 示例帧按规范构造</span></div>
+</div>
+
+<script>
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(still)document.querySelector('.map svg').pauseAnimations();
+const $=id=>document.getElementById(id);
+// 全页共用的示意地址。MAC 用的是随机地址和文档专用地址，不是真设备的。
+const PH_MAC='DA:A1:19:5C:3E:07',GW_MAC='00:00:5E:00:53:01',PH_IP='192.168.1.23',GW_IP='192.168.1.1';
+
+// 进度条：哪个站点在屏幕中间，哪一格亮
+const links=[...document.querySelectorAll('.rail a')];
+const spy=new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting)links.forEach(a=>a.classList.toggle('on',a.hash==='#'+e.target.id));
+}),{rootMargin:'-40% 0px -55% 0px'});
+document.querySelectorAll('.st').forEach(s=>spy.observe(s));
+
+// 入场：站点滚进屏幕时浮现
+if(!still){
+  document.documentElement.classList.add('js');
+  const io=new IntersectionObserver(es=>es.forEach(e=>{
+    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}
+  }),{rootMargin:'0px 0px -6% 0px'});
+  document.querySelectorAll('.st,.flow,.panel').forEach(el=>io.observe(el));
+}
+
+// 一组互斥的按钮：点哪个，哪个 aria-pressed=true
+function pick(group,fn){
+  group.addEventListener('click',e=>{
+    const b=e.target.closest('button');if(!b)return;
+    group.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));
+    fn(b);
+  });
+}
+
+/* ---------- 3 子网掩码 ---------- */
+const MY_IP='192.168.1.23',GATEWAY='192.168.1.1';
+const toInt=ip=>ip.split('.').reduce((n,o)=>n*256+ +o,0);
+const toIp=n=>[24,16,8,0].map(s=>Math.floor(n/2**s)%256).join('.');
+const maskOf=n=>(2**32-2**(32-n));
+const netOf=(ip,n)=>Math.floor(toInt(ip)/2**(32-n))*2**(32-n);
+let target='185.199.108.153';
+function bitsRow(box,ip,n,other){
+  const a=toInt(ip).toString(2).padStart(32,'0'),b=toInt(other).toString(2).padStart(32,'0');
+  let firstBad=-1;for(let i=0;i<n;i++)if(a[i]!==b[i]){firstBad=i;break;}
+  box.innerHTML=[...a].map((c,i)=>`${i&&i%8===0?'<u></u>':''}<i class="${i<n?'net':''}${i===firstBad?' bad':''}">${c}</i>`).join('');
+}
+function subnet(){
+  const n=+$('pl').value,mine=netOf(MY_IP,n),theirs=netOf(target,n),same=mine===theirs;
+  $('pl-o').textContent=`${n} 位之后 · 掩码 ${toIp(maskOf(n))}`;
+  $('ip-a').textContent=`${MY_IP}，网络号 ${toIp(mine)}`;
+  $('ip-b').textContent=`${target}，网络号 ${toIp(theirs)}`;
+  bitsRow($('bits-a'),MY_IP,n,target);bitsRow($('bits-b'),target,n,MY_IP);
+  const v=$('sn-v');v.className='verdict '+(same?'same':'diff');
+  v.textContent=same
+    ?`网络号相同：对方就在这个网里。用 ARP 问出它的 MAC，直接发给它。这个网最多能放 ${2**(32-n)-2} 台设备。`
+    :`网络号不同：对方不在这个网里。把包交给网关 ${GATEWAY}，由它往外送。`;
+}
+pick($('tg'),b=>{target=b.dataset.ip;subnet();});
+$('pl').addEventListener('input',subnet);subnet();
+
+/* ---------- ARP：一步一步 ---------- */
+const ARP=[
+  {tx:'',rx:[],tag:{phone:'要发给 192.168.1.1，缓存里没有'},sw:'交换机：还没有帧经过',cache:'（空）',
+   say:'手机要把包交给网关，先查自己的 ARP 缓存。里面没有 192.168.1.1 这一条，所以包先放着，发一个 ARP 请求。'},
+  {tx:'phone',rx:['tv','pc','gw'],tag:{phone:'广播：谁是 192.168.1.1？',tv:'不是问我，丢掉',pc:'不是问我，丢掉',gw:'问的是我'},
+   sw:'交换机：目的是广播地址，往其余所有口各送一份；顺便记下手机在哪个口',cache:'（空）',
+   eth:[PH_MAC,'FF:FF:FF:FF:FF:FF（广播）'],op:'1，请求',mac:[PH_MAC,'全 0：不知道，要问的就是它'],ip:[PH_IP,GW_IP],
+   say:'请求是广播出去的，电视、电脑、网关都收到了。每台设备拿"目标 IP"和自己的比，只有网关对得上。'},
+  {tx:'gw',rx:['phone'],tag:{gw:'应答：是我，MAC 在这',phone:'收到答案',tv:'收不到这一帧',pc:'收不到这一帧'},
+   sw:'交换机：目的 MAC 是手机的，表里有，只送手机那个口',cache:'（空）',
+   eth:[GW_MAC,PH_MAC],op:'2，应答',mac:[GW_MAC,PH_MAC],ip:[GW_IP,PH_IP],
+   say:'应答不再广播，直接发给手机。网关不用反过来问手机的 MAC：请求里已经写着了，它顺手记了下来。'},
+  {tx:'phone',rx:['gw'],tag:{phone:'缓存里有了，发真正的包',gw:'收到，准备往外转发'},
+   sw:'交换机：目的 MAC 是网关的，只送网关那个口',cache:`${GW_IP} → ${GW_MAC}`,
+   eth:[PH_MAC,GW_MAC],ip:[PH_IP,'185.199.108.153（服务器）'],
+   say:'手机把答案记进缓存，刚才放着的包可以装帧了：目的 MAC 填网关的，目的 IP 还是服务器的。之后一段时间里，发往外网的包都直接用这条记录，不再问。'},
+];
+let arpStep=0;
+function showArp(){
+  const a=ARP[arpStep],row=(k,v)=>`<tr><td>${k}</td><td>${v[0]}</td><td>${v[1]}</td></tr>`;
+  document.querySelectorAll('#lan .dv').forEach(d=>{
+    const id=d.dataset.d;
+    d.className='dv'+(a.tx===id?' tx':a.rx.includes(id)?' rx':'');
+    d.querySelector('i').textContent=a.tag[id]||'';
+  });
+  $('arp-sw').textContent=a.sw;
+  $('arp-t').innerHTML=!a.eth?'<tr><td colspan="3" style="font-family:var(--sans);font-weight:400">还没有发出任何东西</td></tr>'
+    :row('帧头里的 MAC',a.eth)+(a.op
+      ?`<tr><td>ARP：操作</td><td colspan="2">${a.op}</td></tr>`+row('ARP 里的 MAC',a.mac)+row('ARP 里的 IP',a.ip)
+      :`<tr><td>帧里装的</td><td colspan="2">一个 IP 包（类型 0x0800）</td></tr>`+row('IP 头里的地址',a.ip));
+  $('arp-v').textContent=a.say;
+  $('arp-c').textContent='手机的 ARP 缓存：'+a.cache;
+  $('arp-n').textContent=`第 ${arpStep+1} / ${ARP.length} 步`;
+  $('arp-prev').disabled=arpStep===0;$('arp-next').disabled=arpStep===ARP.length-1;
+  $('arp-prev').style.opacity=arpStep===0?.4:1;$('arp-next').style.opacity=arpStep===ARP.length-1?.4:1;
+}
+$('arp-prev').addEventListener('click',()=>{if(arpStep>0){arpStep--;showArp();}});
+$('arp-next').addEventListener('click',()=>{if(arpStep<ARP.length-1){arpStep++;showArp();}});
+showArp();
+
+/* ---------- 拆开看一帧 ---------- */
+// 四种帧。地址是示意值，长度、校验和都按规范算过；每帧最后 4 个字节是帧校验。
+// 字段：[起始字节, 长度, 属于第几段, 字段名, 读出来的值, 说明]
+const FCS_NOTE='整帧算出来的 CRC。网卡收到后先验它，不对就直接扔掉。抓包软件一般不显示这 4 个字节。';
+function arpFields(reply){
+  const sM=reply?GW_MAC:PH_MAC,sI=reply?GW_IP:PH_IP,tI=reply?PH_IP:GW_IP;
+  return [
+    [0,6,0,'目的 MAC',reply?PH_MAC:'FF:FF:FF:FF:FF:FF',reply?'应答只发给提问的那一台，别的设备收不到。':'全是 F 的地址是广播：这个网里的每块网卡都要收下来看一眼。'],
+    [6,6,0,'源 MAC',sM,reply?'网关的网卡。':'手机的网卡。交换机也是看这一项，记下手机在哪个口。'],
+    [12,2,0,'类型','0x0806，即 ARP','里面装的是 ARP，不是 IP 包。所以这一帧没有 IP 头，也过不了路由器。'],
+    [14,2,1,'硬件类型','1，即以太网','问的是哪种网络上的硬件地址。'],
+    [16,2,1,'协议类型','0x0800，即 IPv4','手里已知的是哪种地址。'],
+    [18,2,1,'地址长度','6 和 4','MAC 地址 6 字节，IPv4 地址 4 字节。'],
+    [20,2,1,'操作',reply?'2，即应答':'1，即请求','1 是问，2 是答。请求和应答的格式完全一样，只靠这一项区分。'],
+    [22,6,1,'发送方 MAC',sM,reply?'这就是手机要的答案。':'提问的人把自己的 MAC 也带上，对方顺手就能记下来，回答时不用再反过来问。'],
+    [28,4,1,'发送方 IP',sI,reply?'回答的是谁。':'提问的是谁。'],
+    [32,6,1,'目标 MAC',reply?PH_MAC:'00:00:00:00:00:00',reply?'原来提问的那一台。':'全是 0：这正是要问的东西，现在还不知道。'],
+    [38,4,1,'目标 IP',tI,reply?'原来提问的那一台。':'要找的是谁。收到广播的每台设备都拿它和自己的 IP 比，一样才回答。'],
+    [42,18,2,'填充','18 个 0','以太网规定一帧至少 60 字节。ARP 只有 42 字节，后面补 0 凑够。'],
+    [60,4,3,'帧校验',reply?'0x910B7955':'0x9B2B45A8',FCS_NOTE],
+  ];
+}
+const DNS_F=[
+  [0,6,0,'目的 MAC',GW_MAC,'DNS 服务器就是网关，是邻居，所以这一帧直接发给它。'],
+  [6,6,0,'源 MAC',PH_MAC,'手机的网卡。'],
+  [12,2,0,'类型','0x0800，即 IPv4','里面是一个 IP 包。'],
+  [14,2,1,'版本、头长、服务类型','IPv4，头长 20 字节','IP 头的格式和握手那一帧完全一样，可以对照着看。'],
+  [16,2,1,'总长度','71 字节','IP 头 20 + UDP 头 8 + DNS 报文 43。'],
+  [18,4,1,'标识、标志、片偏移','0x8D31，没有分片','这个包很小，不涉及分片。'],
+  [22,1,1,'TTL','64','去网关只有一步，用不着减。'],
+  [23,1,1,'协议','17，即 UDP','和握手那一帧的区别在这里：17 是 UDP，6 是 TCP。'],
+  [24,2,1,'头校验和','0x6A0C','只校验 IP 头这 20 字节。'],
+  [26,4,1,'源 IP',PH_IP,'手机的地址。答案会发回这里。'],
+  [30,4,1,'目的 IP',GW_IP,'第 1 步领到的 DNS 服务器地址。'],
+  [34,2,2,'源端口','53124','系统临时挑的。答案会发回这个端口。'],
+  [36,2,2,'目的端口','53','DNS 服务约定的端口。'],
+  [38,2,2,'长度','51 字节','UDP 头 8 + 数据 43。'],
+  [40,2,2,'校验和','0xC5E9','UDP 的头到此为止，一共就这四项。没有序号，没有确认，没有窗口。'],
+  [42,2,3,'标识','0x1A2B','随便挑的一个数。答案里会带着同一个数，用来对上是哪个问题的答案。'],
+  [44,2,3,'标志','0x0100，请替我查到底','让解析器代劳：把根、.io、github.io 都问完，再把最终结果告诉我。'],
+  [46,2,3,'问题数','1','这个包里有一个问题。'],
+  [48,6,3,'回答、授权、附加的条数','都是 0','这是提问，所以后面三个区都是空的。答案包里这几项才有数。'],
+  [54,27,3,'域名','mythlin19920302.github.io','分三段存，每段前面一个字节是长度：15、6、2，最后一个 0 表示结束。'],
+  [81,2,3,'查询类型','1，即 A 记录','要的是 IPv4 地址。28 是 AAAA，要 IPv6 地址。'],
+  [83,2,3,'查询类','1，即互联网','几乎永远是 1。'],
+  [85,4,4,'帧校验','0x11AD6B07',FCS_NOTE],
+];
+// 握手第一帧的字段沿用下面这张表，第三列是层号（2 链路、3 网络、4 传输），用的时候换成段号
+const SYN_F=[
+  [0,6,2,'目的 MAC','00:00:5E:00:53:01','这一步交给谁。写的是网关，不是服务器：服务器不在同一个网里，帧只能先送到网关。'],
+  [6,6,2,'源 MAC','DA:A1:19:5C:3E:07','手机网卡的地址。对方回信时拿它当目的 MAC。'],
+  [12,2,2,'类型','0x0800，即 IPv4','里面装的是什么。0800 是 IPv4，0806 是 ARP，86DD 是 IPv6。'],
+  [14,1,3,'版本和头长','IPv4，头长 5 × 4 = 20 字节','高 4 位是版本，低 4 位是头的长度，单位是 4 字节。'],
+  [15,1,3,'服务类型','0','给包标优先级用的，普通流量是 0。'],
+  [16,2,3,'总长度','60 字节','IP 头加上后面所有内容：20 + 40。'],
+  [18,2,3,'标识','0x1C46','一个包被拆成几片时，靠它认出哪几片原本是一个。'],
+  [20,2,3,'标志和片偏移','不许分片','TCP 的包都带着"不许分片"。太大过不去时，路由器丢掉它并回一条通知，发送方改小了再发。'],
+  [22,1,3,'TTL','64','还能过几台路由器。每过一台减 1，减到 0 就丢掉，防止包在环路里永远转下去。'],
+  [23,1,3,'协议','6，即 TCP','里面装的是什么。6 是 TCP，17 是 UDP，1 是 ICMP。'],
+  [24,2,3,'头校验和','0x3656','只校验 IP 头这 20 字节。路由器改了 TTL 之后要重算。'],
+  [26,4,3,'源 IP','192.168.1.23','手机在家里这个网里的地址。出门时会被路由器换掉。'],
+  [30,4,3,'目的 IP','185.199.108.153','最终要去的地方。一路上不变。'],
+  [34,2,4,'源端口','51234','系统临时挑的一个号，用来区分这台手机上的各条连接。'],
+  [36,2,4,'目的端口','443','找对方机器上的哪个服务。443 是 HTTPS，80 是 HTTP。'],
+  [38,4,4,'序号','0x7A3C91E0','这个方向上起始的编号，随机挑的。之后每发一个字节加 1。'],
+  [42,4,4,'确认号','0','"下一个我要第几号"。第一个包还没收到过对方的东西，所以是 0。'],
+  [46,1,4,'头长','10 × 4 = 40 字节','TCP 头的长度。基本的头是 20 字节，这里另带了 20 字节选项。'],
+  [47,1,4,'标志位','0x02，即 SYN','SYN 是"我要建立连接"。别的常见标志：ACK 确认，FIN 关闭，RST 强行断开。'],
+  [48,2,4,'窗口','65535','我这边还能收多少字节，对方发的量不能超过它。'],
+  [50,2,4,'校验和','0xE7CD','校验 TCP 头和数据，另外把源 IP、目的 IP 也算进去。所以路由器换了地址之后，这个也得重算。'],
+  [52,2,4,'紧急指针','0','现在基本没人用。'],
+  [54,4,4,'选项：MSS','1460','我一段最多能收 1460 字节的数据。'],
+  [58,2,4,'选项：选择确认','允许','允许对方在确认里说"后面哪几段我已经有了"，丢包时只补缺的。'],
+  [60,10,4,'选项：时间戳','发送时刻 0x0052A1C4','每个包带上发送的时刻，对方原样带回来，用来量一个来回要多久。'],
+  [70,1,4,'选项：占位','空操作','把选项凑成 4 字节的整数倍。'],
+  [71,3,4,'选项：窗口放大','8，即乘以 256','窗口字段只有 16 位，最大 65535，对现在的网速太小。两边约定把它乘上 2 的 8 次方。'],
+  [74,4,2,'帧校验','0x2D7688C4','整帧算出来的 CRC。网卡收到后先验它，不对就直接扔掉。抓包软件一般不显示这 4 个字节。'],
+];
+// 每种帧：一句说明、全部字节、分成哪几段（段名和颜色）、字段表、默认选中的字段
+const ARP_SECS=[['以太网头','L2'],['ARP 内容','L3'],['填充','L1'],['帧尾','L2']];
+const FRAMES={
+  arpq:{note:'第 4 步里手机喊出去的那一声。ARP 直接装在以太网帧里，没有 IP 头。',secs:ARP_SECS,fields:arpFields(false),first:6,
+    hex:'ff ff ff ff ff ff da a1 19 5c 3e 07 08 06 00 01 08 00 06 04 00 01 da a1 19 5c 3e 07 c0 a8 01 17 00 00 00 00 00 00 c0 a8 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 9b 2b 45 a8'},
+  arpr:{note:'网关的回答。和请求比，变的只有操作码，以及"谁是发送方、谁是目标"。',secs:ARP_SECS,fields:arpFields(true),first:7,
+    hex:'da a1 19 5c 3e 07 00 00 5e 00 53 01 08 06 00 01 08 00 06 04 00 02 00 00 5e 00 53 01 c0 a8 01 01 da a1 19 5c 3e 07 c0 a8 01 17 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 91 0b 79 55'},
+  dns:{note:'第 2 步里的提问。走的是 UDP：头只有 8 字节，一问一答，不用握手。',secs:[['以太网头','L2'],['IP 头','L3'],['UDP 头','L4'],['DNS 报文','L7'],['帧尾','L2']],fields:DNS_F,first:19,
+    hex:'00 00 5e 00 53 01 da a1 19 5c 3e 07 08 00 45 00 00 47 8d 31 00 00 40 11 6a 0c c0 a8 01 17 c0 a8 01 01 cf 84 00 35 00 33 c5 e9 1a 2b 01 00 00 01 00 00 00 00 00 00 0f 6d 79 74 68 6c 69 6e 31 39 39 32 30 33 30 32 06 67 69 74 68 75 62 02 69 6f 00 00 01 00 01 11 ad 6b 07'},
+  syn:{note:'第 7 步握手的第一个包。里面没有数据，全是头。',secs:[['以太网头','L2'],['IP 头','L3'],['TCP 头','L4'],['帧尾','L2']],first:18,
+    fields:SYN_F.map((f,i)=>[f[0],f[1],i===SYN_F.length-1?3:f[2]-2,f[3],f[4],f[5]]),
+    hex:'00 00 5e 00 53 01 da a1 19 5c 3e 07 08 00 45 00 00 3c 1c 46 40 00 40 06 36 56 c0 a8 01 17 b9 c7 6c 99 c8 22 01 bb 7a 3c 91 e0 00 00 00 00 a0 02 ff ff e7 cd 00 00 02 04 05 b4 04 02 08 0a 00 52 a1 c4 00 00 00 00 01 03 03 08 2d 76 88 c4'},
+};
+const hex=$('hex'),flds=$('flds');
+let frame;
+function showFrame(key){
+  frame=FRAMES[key];frame.bytes=frame.hex.split(' ');
+  const owner=[];frame.fields.forEach((f,i)=>{for(let k=f[0];k<f[0]+f[1];k++)owner[k]=i;});
+  hex.innerHTML=frame.bytes.map((b,k)=>`<span class="${frame.secs[frame.fields[owner[k]][2]][1]}" data-f="${owner[k]}">${b}</span>`).join('');
+  flds.innerHTML=frame.secs.map((s,si)=>`<div class="${s[1]}"><span class="k">${s[0]}</span>${frame.fields.map((f,i)=>f[2]===si?`<button type="button" data-f="${i}" aria-pressed="false">${f[3].replace('选项：','')}</button>`:'').join('')}</div>`).join('');
+  $('fr-n').textContent=frame.note;
+  showField(frame.first);
+}
+function showField(i){
+  const f=frame.fields[i],s=frame.secs[f[2]],raw=frame.bytes.slice(f[0],f[0]+f[1]);
+  hex.querySelectorAll('span').forEach(x=>x.classList.toggle('on',+x.dataset.f===i));
+  flds.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.f===i));
+  $('fcard').className='fcard '+s[1];
+  $('fc-k').textContent=`${s[0]} · ${f[3]} · ${raw.length>12?raw.slice(0,12).join(' ')+' …':raw.join(' ')}`;
+  $('fc-v').textContent=f[4];$('fc-p').textContent=f[5];
+}
+hex.addEventListener('click',e=>{const s=e.target.closest('span');if(s)showField(+s.dataset.f);});
+flds.addEventListener('click',e=>{const b=e.target.closest('button');if(b)showField(+b.dataset.f);});
+pick($('fr'),b=>showFrame(b.dataset.k));
+showFrame('syn');
+
+/* ---------- 6 逐跳 ---------- */
+// 第 k 项是包离开第 k 台设备时头里的值。MAC 用的是文档专用的示例地址。
+const HOPS=[
+  {mac:['DA:A1:19:5C:3E:07','00:00:5E:00:53:01'],ip:['192.168.1.23','185.199.108.153'],port:[51234,443],ttl:64,
+   say:'手机发出：对方不是邻居，所以目的 MAC 填网关的，目的 IP 填服务器的。路上的交换机只看 MAC，原样送到网关。'},
+  {mac:['00:00:5E:00:53:02','00:00:5E:00:53:10'],ip:['203.0.113.7','185.199.108.153'],port:[40001,443],ttl:63,
+   say:'家里的路由器：TTL 减 1；源 IP 和源端口换成自己的公网地址和一个新端口，并记下对应关系（NAT）；拆掉旧帧，换上新的 MAC 再发。'},
+  {mac:['00:00:5E:00:53:11','00:00:5E:00:53:20'],ip:['203.0.113.7','185.199.108.153'],port:[40001,443],ttl:62,
+   say:'运营商的路由器：查路由表，决定从哪个口送出去。IP 头里只改 TTL 和校验和，外面的帧整个换掉。'},
+  {mac:['00:00:5E:00:53:2F','00:00:5E:00:53:40'],ip:['203.0.113.7','185.199.108.153'],port:[40001,443],ttl:59,
+   say:'中间又过了 3 台，每台做的事一模一样：查表、TTL 减 1、换帧。它们都不看端口，更不看内容。'},
+  {mac:['00:00:5E:00:53:41','00:00:5E:00:53:99'],ip:['203.0.113.7','185.199.108.153'],port:[40001,443],ttl:58,
+   say:'机房的路由器：服务器就在它直连的网里了。用 ARP 问出服务器的 MAC，填进目的 MAC，直接交付。服务器收到时 TTL 是 58。'},
+];
+let hop=0;
+const cell=(v,chg)=>`<td class="${chg?'chg':''}">${v}</td>`;
+function showHop(){
+  const h=HOPS[hop],p=HOPS[hop-1];
+  const d=(a,b)=>!!p&&a!==b;
+  $('hp-t').innerHTML=
+    `<tr><td>MAC<span class="lk L2">链路层</span></td>${cell(h.mac[0],d(h.mac[0],p&&p.mac[0]))}${cell(h.mac[1],d(h.mac[1],p&&p.mac[1]))}</tr>`+
+    `<tr><td>IP<span class="lk L3">网络层</span></td>${cell(h.ip[0],d(h.ip[0],p&&p.ip[0]))}${cell(h.ip[1],false)}</tr>`+
+    `<tr><td>端口<span class="lk L4">传输层</span></td>${cell(h.port[0],d(h.port[0],p&&p.port[0]))}${cell(h.port[1],false)}</tr>`+
+    `<tr><td>TTL<span class="lk L3">网络层</span></td><td class="${p?'chg':''}" colspan="2">${h.ttl}</td></tr>`;
+  $('hp-v').textContent=h.say;
+  $('hp-dot').style.left=`${8.33+(hop+.5)*16.67}%`;
+  document.querySelectorAll('#path .node').forEach((n,i)=>n.classList.toggle('at',i===hop));
+  $('hp-prev').disabled=hop===0;$('hp-next').disabled=hop===HOPS.length-1;
+  $('hp-prev').style.opacity=hop===0?.4:1;$('hp-next').style.opacity=hop===HOPS.length-1?.4:1;
+}
+$('hp-prev').addEventListener('click',()=>{if(hop>0){hop--;showHop();}});
+$('hp-next').addEventListener('click',()=>{if(hop<HOPS.length-1){hop++;showHop();}});
+showHop();
+
+/* ---------- 时序图：握手和丢包共用 ---------- */
+// 一个场景 = 若干支箭头。dir 'r' 是手机 → 服务器，'l' 是服务器 → 手机；t0 发出、t1 到达；lost 的箭头飞到一半消失。
+const NS='http://www.w3.org/2000/svg';
+const el=(tag,attrs,parent)=>{const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);parent.append(e);return e;};
+function makeSeq(svg,{W=820,xl=250,xr=550,top=44,onTick}={}){
+  let sc,items=[],notes=[],raf=0,unit=9;
+  const y=t=>top+t*unit;
+  function load(s){
+    cancelAnimationFrame(raf);sc=s;unit=s.unit||9;svg.replaceChildren();
+    const H=y(s.dur)+22;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+    const who=s.who||['你的手机','服务器'];
+    el('text',{class:'whoT',x:xl,y:22,'text-anchor':'middle'},svg).textContent=who[0];
+    el('text',{class:'whoT',x:xr,y:22,'text-anchor':'middle'},svg).textContent=who[1];
+    el('line',{class:'life',x1:xl,y1:top-12,x2:xl,y2:H-8},svg);
+    el('line',{class:'life',x1:xr,y1:top-12,x2:xr,y2:H-8},svg);
+    (s.waits||[]).forEach(w=>el('rect',{class:'wait',x:xr-5,y:y(w[0]),width:10,height:y(w[1])-y(w[0]),rx:5},svg));
+    items=s.arrows.map(a=>{
+      const from=a.dir==='r'?xl:xr,to=a.dir==='r'?xr:xl,cut=a.lost?.55:1;
+      const g=el('g',{class:`ar ${a.kind}${a.lost?' lost':''}`},svg);
+      const line=el('line',{x1:from,y1:y(a.t0),x2:from,y2:y(a.t0)},g);
+      const head=el('path',{class:'hd',d:'M0 0-10-5-10 5z'},g);
+      const cross=a.lost?el('path',{class:'x',d:'M-6-6 6 6M6-6-6 6'},g):null;
+      const lab=el('text',{x:a.dir==='r'?xl-12:xr+12,y:y(a.t0)+4,'text-anchor':a.dir==='r'?'end':'start'},g);
+      lab.textContent=a.label;
+      const ang=Math.atan2(y(a.t1)-y(a.t0),to-from)*180/Math.PI;
+      return {a,from,to,cut,g,line,head,cross,ang};
+    });
+    notes=(s.notes||[]).map(n=>{
+      const t=el('text',{class:'nt',x:n.side==='r'?xr+12:xl-12,y:y(n.t)+4,'text-anchor':n.side==='r'?'start':'end'},svg);
+      t.textContent=n.text;return {n,t};
+    });
+  }
+  function draw(t){
+    for(const o of items){
+      const {a}=o,tEnd=a.t0+(a.t1-a.t0)*o.cut;
+      const p=Math.max(0,Math.min(1,(t-a.t0)/(tEnd-a.t0)))*o.cut;
+      const x=o.from+(o.to-o.from)*p,yy=y(a.t0)+(y(a.t1)-y(a.t0))*p;
+      o.g.style.opacity=t>=a.t0?1:0;
+      o.line.setAttribute('x2',x);o.line.setAttribute('y2',yy);
+      o.head.setAttribute('transform',`translate(${x} ${yy}) rotate(${o.ang})`);
+      const gone=a.lost&&t>=tEnd;
+      o.head.style.opacity=gone?0:1;
+      if(o.cross){o.cross.setAttribute('transform',`translate(${x} ${yy})`);o.cross.style.opacity=gone?1:0;}
+    }
+    for(const o of notes)o.t.style.opacity=t>=o.n.t?1:0;
+    if(onTick)onTick(t,sc);
+  }
+  function play(){
+    cancelAnimationFrame(raf);
+    if(still){draw(sc.dur);return;}
+    const t0=performance.now(),speed=sc.dur/(sc.secs||7);
+    const step=now=>{const t=Math.min(sc.dur,(now-t0)/1000*speed);draw(t);if(t<sc.dur)raf=requestAnimationFrame(step);};
+    draw(0);raf=requestAnimationFrame(step);
+  }
+  return {load,draw,play,end:()=>{cancelAnimationFrame(raf);draw(sc.dur);}};
+}
+// 滚到屏幕里时自动放一遍
+function playOnSight(svg,seq){
+  if(still){seq.end();return;}
+  seq.draw(0);
+  const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){seq.play();io.disconnect();}}),{threshold:.35});
+  io.observe(svg);
+}
+
+/* ---------- 7 握手：时间单位是毫秒，取自实测 ---------- */
+const HS={dur:42,unit:9,secs:6,arrows:[
+  {dir:'r',t0:2,t1:7,kind:'data',label:'2 ms · SYN，序号 x'},
+  {dir:'l',t0:7,t1:12,kind:'data',label:'SYN + ACK，序号 y，确认 x+1'},
+  {dir:'r',t0:12,t1:17,kind:'app',label:'12 ms · ACK + TLS ClientHello'},
+  {dir:'l',t0:22,t1:27,kind:'app',label:'ServerHello、证书、Finished'},
+  {dir:'r',t0:27,t1:32,kind:'app',label:'27 ms · 加密的 GET /Media/'},
+  {dir:'l',t0:34,t1:39,kind:'data',label:'响应：6 段数据'},
+],notes:[{t:39,side:'l',text:'39 ms · 第一个字节到了'}]};
+const hs=makeSeq($('hs'));hs.load(HS);playOnSight($('hs'),hs);
+$('hs-play').addEventListener('click',()=>hs.play());
+
+/* ---------- 1 入网：DHCP 的四个包；12 挥手：关闭连接的四个包。时间只为画图 ---------- */
+const DH={dur:26,unit:9,secs:6,who:['你的手机','路由器'],arrows:[
+  {dir:'r',t0:1,t1:5,kind:'data',label:'DISCOVER（广播）：谁能给我地址'},
+  {dir:'l',t0:7,t1:11,kind:'ack',label:'OFFER：192.168.1.23 给你，要吗'},
+  {dir:'r',t0:13,t1:17,kind:'data',label:'REQUEST（广播）：我要 192.168.1.23'},
+  {dir:'l',t0:19,t1:23,kind:'ack',label:'ACK：确认，附掩码、网关、DNS、租期'},
+]};
+const dh=makeSeq($('dh'));dh.load(DH);playOnSight($('dh'),dh);
+$('dh-play').addEventListener('click',()=>dh.play());
+const FIN={dur:27,unit:9,secs:6,arrows:[
+  {dir:'r',t0:1,t1:6,kind:'data',label:'FIN：我发完了'},
+  {dir:'l',t0:6,t1:11,kind:'ack',label:'ACK：知道了'},
+  {dir:'l',t0:14,t1:19,kind:'data',label:'FIN：我也发完了'},
+  {dir:'r',t0:19,t1:24,kind:'ack',label:'ACK：知道了，再等一会儿就释放'},
+]};
+const fin=makeSeq($('fin'));fin.load(FIN);playOnSight($('fin'),fin);
+$('fin-play').addEventListener('click',()=>fin.play());
+
+/* ---------- 10 丢包：时间单位是半个来回的十分之一，只为画图 ---------- */
+const D=10,GAP=2;                         // 单程 10，相邻两段间隔 2
+const WANT=n=>`下一个要第 ${n} 段`;
+function scenario(kind){
+  const arrows=[],notes=[],waits=[],cw=[[0,'10 段']];
+  const lostSeg=kind==='mid'?3:kind==='last'?6:0;
+  let next=1;const got=new Set();
+  for(let n=1;n<=6;n++){
+    const t0=(n-1)*GAP,lost=n===lostSeg;
+    arrows.push({dir:'l',t0,t1:t0+D,kind:'data',lost,label:`第 ${n} 段`,seg:lost?0:n});
+    if(lost)continue;
+    got.add(n);while(got.has(next))next++;
+    const dup=next<=n,held=[...got].filter(x=>x>next);
+    const label=dup?`还是要第 ${next} 段（已有 ${held.length>1?held[0]+'–'+held[held.length-1]:held[0]}）`:WANT(next);
+    arrows.push({dir:'r',t0:t0+D,t1:t0+2*D,kind:'ack',label,dup,lost:kind==='ack'&&n===2});
+  }
+  let dur,text;
+  const tail=5*GAP+2*D+1.5;               // 最后一个确认回到服务器之后留一点空
+  if(kind==='none'){dur=tail;text='6 段依次到达，每到一段回一个确认。确认号一路涨到 7，表示前 6 段都齐了。';}
+  if(kind==='ack'){
+    notes.push({t:GAP+2*D,side:'r',text:'"要第 3 段"没收到'},{t:2*GAP+2*D,side:'r',text:'收到"要第 4 段"：前 3 段都到了'});
+    dur=tail;text='丢的是手机发回去的一个确认。没关系：确认是累计的，后一个"要第 4 段"到了，就说明前 3 段都收到了，什么都不用重发。';
+  }
+  if(kind==='mid'){
+    const t3=(6-1)*GAP+2*D;               // 第三个重复确认到达服务器的时刻
+    notes.push({t:t3-2*GAP,side:'r',text:'重复确认 1 次'},{t:t3-GAP,side:'r',text:'重复确认 2 次'});
+    arrows.push({dir:'l',t0:t3,t1:t3+D,kind:'retx',label:'第 3 次重复 → 马上重发第 3 段',seg:3});
+    arrows.push({dir:'r',t0:t3+D,t1:t3+2*D,kind:'ack',label:WANT(7)});
+    cw.push([t3,'10 → 7 段']);dur=t3+2*D+1.5;
+    text='第 3 段丢了。后面的 4、5、6 段到达时，手机每次都回"还是要第 3 段"。服务器听到第三遍，立刻重发，不等超时。只多花了一个来回。';
+  }
+  if(kind==='last'){
+    const tr=42;waits.push([5*GAP,tr]);
+    notes.push({t:34,side:'r',text:'一直等不到第 6 段的确认…'});
+    arrows.push({dir:'l',t0:tr,t1:tr+D,kind:'retx',label:'超时 → 重发第 6 段',seg:6});
+    arrows.push({dir:'r',t0:tr+D,t1:tr+2*D,kind:'ack',label:WANT(7)});
+    cw.push([tr,'10 → 1 段']);dur=tr+2*D+1.5;
+    text='丢的是最后一段。后面没有别的包，手机不知道还有一段没到，也就不会发重复确认。服务器只能等定时器超时再重发。图上把等待压短了，实际至少 200 毫秒，是一个来回的二十倍。';
+  }
+  return {dur,unit:kind==='last'?8:9,secs:kind==='last'?9:kind==='mid'?8:5,arrows,notes,waits,cw,text};
+}
+const sim=makeSeq($('sim'),{onTick(t,s){
+  const got=new Set(s.arrows.filter(a=>a.seg&&t>=a.t1).map(a=>a.seg));
+  let n=0;while(got.has(n+1))n++;
+  $('m-got').textContent=n?`第 ${n} 段`:'还没有';
+  $('m-dup').textContent=s.arrows.filter(a=>a.dup&&!a.lost&&t>=a.t1).length+' 次';
+  $('m-cw').textContent=s.cw.filter(c=>t>=c[0]).pop()[1];
+}});
+function runSim(kind,auto){
+  const s=scenario(kind);sim.load(s);$('sim-v').textContent=s.text;
+  auto?sim.play():sim.end();
+}
+let simKind='mid';
+pick($('sc'),b=>{simKind=b.dataset.s;runSim(simKind,true);});
+$('sim-play').addEventListener('click',()=>runSim(simKind,true));
+runSim(simKind,false);playOnSight($('sim'),sim);
+</script>
+</body>
+</html>

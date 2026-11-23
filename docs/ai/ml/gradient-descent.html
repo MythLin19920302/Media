@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>损失和梯度下降：模型是怎么学的</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：表格里的数字等宽；图里的几种线和区域 */
+.tbl td,.tbl th{font-variant-numeric:tabular-nums}
+.fig text.w{fill:var(--warn)}
+.fig .zone{fill:var(--accent-soft)}
+.fig .alt{fill:none;stroke:currentColor;stroke-opacity:.7;stroke-width:2;stroke-dasharray:6 4}
+.fig .iso{fill:none;stroke:currentColor;stroke-opacity:.32;stroke-width:1}
+.fig .s1{fill:none;stroke:currentColor;stroke-opacity:.6;stroke-width:2;stroke-dasharray:2 3}
+.fig .s3{fill:none;stroke:currentColor;stroke-width:2;stroke-dasharray:7 4}
+.fig .s4{fill:none;stroke:var(--warn);stroke-width:2}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw,th.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#model">模型：加权求和，再压成概率</a></li>
+    <li><a href="#loss">损失：一条样本错了多少</a></li>
+    <li><a href="#why">为什么不用准确率和平方误差</a></li>
+    <li><a href="#gradient">梯度：每个参数该往哪边挪</a></li>
+    <li><a href="#descent">梯度下降：沿着坡往下走</a></li>
+    <li><a href="#batch">全量、随机和小批量</a></li>
+    <li><a href="#lr">学习率：一步迈多大</a></li>
+    <li><a href="#run">参考模型的 600 轮</a></li>
+    <li><a href="#weights">学到的 16 个数</a></li>
+    <li><a href="#reg">正则化：L2 和 L1</a></li>
+    <li><a href="#convex">凸：为什么只有一个谷底</a></li>
+    <li><a href="#optim">动量和 Adam</a></li>
+    <li><a href="#prod">真实系统里在哪跑</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>损失和梯度下降：模型是怎么学的</h1>
+  <p class="lede">逻辑回归有 16 个参数，训练开始时全是 0。训练就是反复做一件事：用现在的参数给每条样本算一个概率，和真实结果比一比差多少，再把每个参数往"差得少"的方向挪一小步。这一页在 2000 条训练样本上把它从头算一遍：差多少怎么量（损失），往哪挪（梯度），一步挪多大（学习率），600 轮后参数变成了什么。</p>
+  <div class="journey" aria-label="训练集损失从 0.6931 降到 0.5233 再到 0.4999，测试集 AUC 0.7175">
+    <div class="step"><span class="k">参数全是 0 时的损失</span><span class="v hex">0.6931</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">第 10 轮</span><span class="v">0.5233</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">第 600 轮</span><span class="v">0.4999</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">测试集 AUC</span><span class="v">0.7175</span></div>
+  </div>
+  <p class="caption">前三个数是训练集上的平均对数损失，越小越好（第 02 节）；AUC 见第 08 节。数据是固定随机种子的脚本生成的示意数据：音乐 App 首页推荐的 3000 次曝光，一次曝光是给一位用户展示一首歌，点开并播放超过 30 秒算正样本，没点、划走或不到 30 秒算负样本。第 1–20 天的 2000 条训练，第 21–24 天的 400 条验证，第 25–30 天的 600 条测试。参考模型的数字来自共用的参考脚本，其余是本页在同一份数据上追加的实验，配方见各节和页尾。这一页是<a href="prediction.html#s4">学习</a>那一站的展开。</p>
+</header>
+
+<section id="model">
+  <h2><span class="n">01</span>模型：加权求和，再压成概率</h2>
+  <p>逻辑回归（logistic regression）是预测点击最简单的模型之一。名字里有"回归"，做的却是二分类：算出一次曝光"会被播放"的概率。它只有两步：</p>
+<pre><code>z = w₁·x₁ + w₂·x₂ + … + w₁₅·x₁₅ + b
+p = sigmoid(z) = 1 ÷ (1 + e^(−z))</code></pre>
+  <ul>
+    <li><strong>x<sub>1</sub> 到 x<sub>15</sub> 是一条样本的 15 个特征</strong>：偏好次数（用户最近 7 天听这个曲风的次数）、歌曲热度、是否关注了歌手、曝光时间、歌长、网络类型、曲风等，都已<a href="features-samples.html#scale">标准化</a>：减去训练集的平均值，再除以标准差。原始记录怎么变成这 15 个数，见<a href="features-samples.html">特征和样本</a>。</li>
+    <li><strong>w<sub>1</sub> 到 w<sub>15</sub> 是权重，b 是偏置</strong>（bias）。这 16 个数就是模型的全部，训练要找的就是它们。</li>
+    <li><strong>z 可以是任何实数</strong>，sigmoid 把它压进 0 到 1，当作概率 p（<a href="prediction.html#s3">加权求和</a>那一站）。</li>
+  </ul>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 268" role="img" aria-label="sigmoid 曲线：横轴是 z，从 −6 到 6；纵轴是 p，从 0 到 1。z 等于 0 时 p 等于 0.5，曲线在这里最陡；往两边越来越平，左边贴近 0，右边贴近 1。训练集 2000 条样本的 z 落在 −2.84 到 1.74 之间。偏置 −1.32 对应 p 0.21，第 975 条样本的 z 1.25 对应 p 0.78。">
+      <rect class="zone" x="188.3" y="36" width="206" height="190"/>
+      <line class="grid" x1="46" y1="36" x2="586" y2="36"/><line class="grid" x1="46" y1="83.5" x2="586" y2="83.5"/><line class="grid" x1="46" y1="131" x2="586" y2="131"/><line class="grid" x1="46" y1="178.5" x2="586" y2="178.5"/><line class="grid" x1="316" y1="36" x2="316" y2="226"/>
+      <line class="axis" x1="46" y1="226" x2="586" y2="226"/><line class="axis" x1="46" y1="30" x2="46" y2="226"/>
+      <polyline class="out" points="46,225.5 106.7,224.2 129.2,223.1 149.5,221.4 167.5,219.2 183.2,216.6 199,212.9 212.5,208.7 226,203.4 239.5,196.7 253,188.4 264.2,180.3 275.5,171.1 289,158.7 336.2,110 356.5,90.9 367.7,81.7 379,73.6 390.2,66.6 403.7,59.7 419.5,53.3 435.2,48.5 453.2,44.6 471.2,41.8 493.7,39.6 518.5,38.1 586,36.5"/>
+      <circle class="dot" cx="256.5" cy="186" r="4"/><circle class="dot" cx="316" cy="131" r="4"/><circle class="dot" cx="372.1" cy="78.5" r="4"/>
+      <text x="46" y="20" class="m">p：预测的播放概率</text>
+      <text x="40" y="40" text-anchor="end" class="t">1</text><text x="40" y="87.5" text-anchor="end" class="t">0.75</text><text x="40" y="135" text-anchor="end" class="t">0.5</text><text x="40" y="182.5" text-anchor="end" class="t">0.25</text><text x="40" y="230" text-anchor="end" class="t">0</text>
+      <text x="46" y="244" class="t">−6</text><text x="136" y="244" text-anchor="middle" class="t">−4</text><text x="226" y="244" text-anchor="middle" class="t">−2</text><text x="316" y="244" text-anchor="middle" class="t">0</text><text x="406" y="244" text-anchor="middle" class="t">2</text><text x="496" y="244" text-anchor="middle" class="t">4</text><text x="586" y="244" text-anchor="end" class="t">6</text>
+      <text x="586" y="262" text-anchor="end" class="m">z = w·x + b</text>
+      <text x="196.3" y="56" class="m">训练集样本的 z 都在这段</text>
+      <text x="244" y="156" text-anchor="end">z = b = −1.32 → p = 0.21</text>
+      <text x="244" y="172" text-anchor="end" class="m">所有特征都取平均值</text>
+      <text x="326" y="152">z = 0 → p = 0.5，这里最陡</text>
+      <text x="386" y="106">第 975 条：z = 1.25 → p = 0.78</text>
+    </svg>
+    </div>
+    <figcaption>sigmoid 中间陡、两头平：z 从 0 加到 1，p 从 0.5 涨到 0.73；z 从 4 加到 5，p 只从 0.982 涨到 0.993。浅色区域是参考模型给训练集 2000 条样本算出的 z 的范围，对应的 p 从 0.055 到 0.851。</figcaption>
+  </figure>
+  <p>拿训练集里的第 975 条看 z 怎么加出来。这位用户最近 7 天听了 14 次民谣，这次推给他一首热度 0.723 的民谣，他关注了这位歌手；早上 8 点，歌长 5.7 分钟，Wi-Fi，老用户。他播放了，标签 y = 1。用参考模型学到的权重：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>特征</th><th>原始值</th><th>标准化后 x</th><th>权重 w</th><th>w·x</th></tr></thead>
+    <tbody>
+      <tr><td>偏好次数 <code>aff_n</code></td><td>14 ÷ 30 = 0.467</td><td>3.62</td><td>0.3434</td><td>1.24</td></tr>
+      <tr><td>关注了歌手 <code>follow</code></td><td>1</td><td>2.73</td><td>0.2477</td><td>0.68</td></tr>
+      <tr><td>热度 <code>heat</code></td><td>0.723</td><td>1.14</td><td>0.3299</td><td>0.38</td></tr>
+      <tr><td>曲风是民谣 <code>g_民谣</code></td><td>1</td><td>2.13</td><td>0.1236</td><td>0.26</td></tr>
+      <tr><td>歌长 <code>len_n</code></td><td>5.7 分钟，缩放后 0.925</td><td>1.46</td><td>−0.1642</td><td>−0.24</td></tr>
+      <tr><td>其余 10 个特征</td><td></td><td></td><td></td><td>0.25</td></tr>
+      <tr><td>偏置 b</td><td></td><td></td><td></td><td>−1.32</td></tr>
+      <tr><td><strong>z</strong></td><td></td><td></td><td></td><td><strong>1.25</strong></td></tr>
+    </tbody>
+  </table></div>
+  <p>p = sigmoid(1.25) = 0.78。偏好次数比平均高出 3.6 个标准差，一项就贡献了 1.24。其余 10 项多数是正的：标准化后 0 代表平均，"不是新用户""不是 4G"这种低于平均的取值，乘上负的权重也加一点分。</p>
+  <h3>一个权重是什么意思</h3>
+  <p>标准化之后 x 的单位是"标准差"，所以权重的意思是：这个特征高一个标准差，z 加 w。z 也可以读成对数几率。几率（odds）是 p ÷ (1 − p)，即播放和不播放的概率之比，p = 0.2 时是 0.25。把 sigmoid 倒过来就是 z = ln(p ÷ (1 − p))，所以 z 加 w，几率就乘以 e<sup>w</sup>：</p>
+  <ul>
+    <li><strong>热度的权重是 0.3299</strong>，标准差是 0.30。热度高 0.30，几率乘以 e<sup>0.3299</sup> = 1.39：原来 p = 0.2 的曝光，几率从 0.25 变成 0.348，p 变成 0.258。</li>
+    <li><strong>0/1 特征从 0 变成 1</strong>，跨过"1 ÷ 标准差"个标准差。关注歌手的标准差是 0.32，从 0 到 1 是 3.1 个标准差，z 加 0.766，几率乘以 2.15。</li>
+    <li><strong>所有特征都取平均值时</strong>，z 就是偏置，p = sigmoid(−1.3232) = 0.21。16 个数逐个怎么读，见第 09 节。</li>
+  </ul>
+</section>
+
+<section id="loss">
+  <h2><span class="n">02</span>损失：一条样本错了多少</h2>
+  <p>要让模型变好，先得有个数说明它错得多厉害。这个数叫损失（loss），越小越好。逻辑回归用对数损失（log loss，也叫交叉熵）：</p>
+<pre><code>真实是 1（播放了）   L = −ln p
+真实是 0（没播放）   L = −ln(1 − p)
+写成一行             L = −y·ln p − (1 − y)·ln(1 − p)</code></pre>
+  <p>意思是看模型给"实际发生的结果"分了多少概率，取对数再取负。分得越接近 1，损失越接近 0；越接近 0，损失越大，没有上限。参考模型训完后，训练集里的五条：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="nw">图中</th><th>样本</th><th>实际</th><th>模型给的 p</th><th>分给实际结果的概率</th><th>损失</th></tr></thead>
+    <tbody>
+      <tr><td>①</td><td>第 332 条：新用户，4G，最近 7 天没听过这个曲风，热度 0.019</td><td class="nw">没播</td><td>0.055</td><td>0.945</td><td>0.057</td></tr>
+      <tr><td>⑤</td><td>第 1289 条：偏好 16 次，关注了歌手，民谣</td><td class="nw">播了</td><td>0.851</td><td>0.851</td><td>0.162</td></tr>
+      <tr><td>③</td><td>第 936 条：偏好 7 次，关注了歌手，热度 0.215</td><td class="nw">播了</td><td>0.501</td><td>0.501</td><td>0.691</td></tr>
+      <tr><td>④</td><td>第 1449 条：偏好 16 次，热度 0.663，没关注</td><td class="nw">没播</td><td>0.692</td><td>0.308</td><td>1.176</td></tr>
+      <tr><td>②</td><td>第 534 条：新用户，最近 7 天没听过这个曲风，热度 0.128</td><td class="nw">播了</td><td>0.070</td><td>0.070</td><td>2.655</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 284" role="img" aria-label="对数损失曲线：横轴是模型给的 p，纵轴是损失。实线是真实为 1 的样本，损失是 −ln p，p 越接近 0 越大；虚线是真实为 0 的样本，损失是 −ln(1 − p)，p 越接近 1 越大。两条线在 p = 0.5 相交，都是 0.693。图上标了训练集里的 5 条样本：① 没播放、p 0.055、损失 0.057；② 播放了、p 0.070、损失 2.655；③ 播放了、p 0.501、损失 0.691；④ 没播放、p 0.692、损失 1.176；⑤ 播放了、p 0.851、损失 0.162。">
+      <line class="grid" x1="46" y1="26" x2="586" y2="26"/><line class="grid" x1="46" y1="96" x2="586" y2="96"/><line class="grid" x1="46" y1="166" x2="586" y2="166"/>
+      <line class="axis" x1="46" y1="236" x2="586" y2="236"/><line class="axis" x1="46" y1="20" x2="46" y2="236"/>
+      <polyline class="alt" points="46,236 108.1,227.4 164.8,218.6 216.1,209.5 264.7,199.7 307.9,189.5 348.4,178.5 383.5,167.3 415.9,155.1 442.9,143 456.3,136.1 468.8,129.1 490.2,115 507.7,100.8 516.6,92.4 524.5,83.9 531.5,75.4 537.7,66.9 544.1,57.1 549.6,47.2 554.4,37.3 559.1,26"/>
+      <polyline class="out" points="72.9,26 77.6,37.3 82.4,47.2 87.9,57.1 94.3,66.9 100.5,75.4 107.5,83.9 115.4,92.4 124.3,100.8 141.8,115 163.2,129.1 175.7,136.1 189.1,143 216.1,155.1 248.5,167.3 283.6,178.5 324.1,189.5 367.3,199.7 415.9,209.5 467.2,218.6 523.9,227.4 586,236"/>
+      <circle class="dot" cx="75.9" cy="232" r="4"/><circle class="dot" cx="84" cy="50.2" r="4"/><circle class="dot" cx="316.7" cy="187.7" r="4"/><circle class="dot" cx="419.4" cy="153.7" r="4"/><circle class="dot" cx="505.4" cy="224.7" r="4"/>
+      <text x="83.9" y="226" class="a">①</text><text x="92" y="48.2" class="a">②</text><text x="310.7" y="209.7" class="a">③</text><text x="428.4" y="179.7" class="a">④</text><text x="499.4" y="211.7" class="a">⑤</text>
+      <text x="46" y="12" class="m">损失 L</text>
+      <text x="40" y="30" text-anchor="end" class="t">3</text><text x="40" y="100" text-anchor="end" class="t">2</text><text x="40" y="170" text-anchor="end" class="t">1</text><text x="40" y="240" text-anchor="end" class="t">0</text>
+      <text x="46" y="254" class="t">0</text><text x="181" y="254" text-anchor="middle" class="t">0.25</text><text x="316" y="254" text-anchor="middle" class="t">0.5</text><text x="451" y="254" text-anchor="middle" class="t">0.75</text><text x="586" y="254" text-anchor="end" class="t">1</text>
+      <text x="586" y="276" text-anchor="end" class="m">模型给的 p（会播放的概率）</text>
+      <text x="160" y="120">真实是 1（播了）：L = −ln p</text>
+      <text x="513" y="86" text-anchor="end">真实是 0（没播）：L = −ln(1 − p)</text>
+    </svg>
+    </div>
+    <figcaption>两条线在 p = 0.5 相交，损失都是 ln 2 = 0.693。猜对的一侧，再多几分把握，损失也只少一点；猜错的一侧，越有把握罚得越重，p 趋近 0 时 −ln p 趋向无穷。</figcaption>
+  </figure>
+  <p>第 534 条按生成规则算的真实概率是 0.106，模型给 0.070 并不离谱，只是这次真的播了。单条样本的损失带着运气，训练看的是平均：2000 条的平均损失就是训练时盯着的那个数。损失大于 1 的 356 条不到两成，却占了总损失的 55%。</p>
+  <p>几个参照。参数全是 0 时每条都猜 0.5，平均损失是 ln 2 = 0.6931；谁都猜训练集的播放率 0.227，是 0.5356；参考模型训完是 0.4999。就算直接用生成数据时的真实概率，训练集上也还有 0.4611：播不播放本身带着随机性，损失降不到 0。模型能做的，是从 0.6931 往这个底靠。对数损失作为评估指标怎么读，见<a href="evaluation.html#logloss">对数损失：给概率本身打分</a>。</p>
+</section>
+
+<section id="why">
+  <h2><span class="n">03</span>为什么不用准确率和平方误差</h2>
+  <p>准确率（猜对的比例）最直观，平方误差 (p − y)² 在预测数值的问题里最常用，但都不适合拿来训练逻辑回归。</p>
+  <h3>准确率</h3>
+  <ul>
+    <li><strong>不看把握。</strong>p = 0.51 和 0.99 都判成"会播"，猜对了得分一样。</li>
+    <li><strong>正负样本不平衡时会骗人。</strong>以 0.5 为界，参考模型在测试集上的准确率是 0.7583；永远说"不会播"的模型是 0.7633，还高一点。参考模型在 600 条测试样本里只给 19 条打了 0.5 以上。</li>
+    <li><strong>没有坡度。</strong>权重挪一点点，几乎所有样本的判断都不变，准确率纹丝不动，挪到某处又突然跳一格。下一节的梯度靠坡度找方向，准确率的坡度几乎处处是 0。</li>
+  </ul>
+  <p>准确率留着评估用，它的问题见<a href="evaluation.html#accuracy">准确率为什么会骗人</a>。</p>
+  <h3>平方误差</h3>
+  <p>以一条正样本（y = 1）为例，比较两种损失和它们对 z 的导数。导数是 z 加一点点时损失变多少（下一节推导），绝对值越大，推着参数走的力越大。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>p</th><th>对数损失</th><th>平方误差</th><th>对数损失对 z 的导数</th><th>平方误差对 z 的导数</th></tr></thead>
+    <tbody>
+      <tr><td>0.01</td><td>4.605</td><td>0.980</td><td>−0.990</td><td>−0.020</td></tr>
+      <tr><td>0.1</td><td>2.303</td><td>0.810</td><td>−0.900</td><td>−0.162</td></tr>
+      <tr><td>0.5</td><td>0.693</td><td>0.250</td><td>−0.500</td><td>−0.250</td></tr>
+      <tr><td>0.9</td><td>0.105</td><td>0.010</td><td>−0.100</td><td>−0.018</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>错得越离谱，平方误差推得越轻。</strong>它对 z 的导数是 2(p − y)·p(1 − p)，比对数损失的 p − y 多乘了 p(1 − p)。p 接近 0 或 1 时这个因子接近 0，正是 sigmoid 两头的平地。p = 0.01 时，推力只有对数损失的五十分之一。</li>
+    <li><strong>不是一个碗。</strong>还是 y = 1，平方误差在 p &lt; 1/3 的那段往下弯（对 z 的二阶导数为负），有平台和拐点；对数损失处处往上弯。为什么这很重要，见第 11 节。</li>
+  </ul>
+  <p>实验：两种损失各训一次，其他配方同参考模型（全量梯度下降，学习率 0.5），看训练集的对数损失第一次降到 0.51 以下要几轮：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>起点</th><th>用对数损失训</th><th>用平方误差训</th></tr></thead>
+    <tbody>
+      <tr><td>参数全为 0，所有样本猜 0.5</td><td>15 轮</td><td>38 轮</td></tr>
+      <tr><td>偏置设成 −6，所有样本猜 0.25%</td><td>63 轮</td><td>1908 轮</td></tr>
+    </tbody>
+  </table></div>
+  <p>从正常起点出发，两种损失最后学到的模型差不多（训 2000 轮，测试集 AUC 0.7175 和 0.7172），平方误差只是慢；起点错得越离谱，差得越多。</p>
+</section>
+
+<section id="gradient">
+  <h2><span class="n">04</span>梯度：每个参数该往哪边挪</h2>
+  <p>知道错多少，下一步是知道怎么改。梯度（gradient）回答：某个参数增加一点点，损失变多少。它就是损失对这个参数的导数。为正，说明调大会更糟；为负，说明调大会更好。</p>
+  <p>一条样本的损失经过三步才和权重连上：w → z → p → L。链式法则（chain rule）说，几个函数套起来，总的导数等于每一段的导数相乘：</p>
+<pre><code>① L 对 p：   dL/dp  = −y/p + (1 − y)/(1 − p) = (p − y) ÷ (p·(1 − p))
+② p 对 z：   dp/dz  = p·(1 − p)                  sigmoid 的导数
+③ z 对 wⱼ：  dz/dwⱼ = xⱼ                          z 是加权求和，wⱼ 乘的就是 xⱼ
+
+三段相乘：   dL/dwⱼ = (p − y) ÷ (p(1 − p)) × p(1 − p) × xⱼ = (p − y)·xⱼ
+偏置：       dL/db  = p − y                      b 相当于乘了一个恒为 1 的 x</code></pre>
+  <p>① 的分母和 ② 正好约掉，只剩误差 p − y。这是对数损失配 sigmoid 的好处：误差多大推力就多大，不被 sigmoid 两头的平地削弱。第 03 节平方误差多出来的 p(1 − p)，就是这里约不掉的那一项。</p>
+  <h3>每条样本推一把</h3>
+  <p>把 (p − y)·x<sub>j</sub> 读成一句话：每条样本对每个权重的推力，等于它的误差乘它在这个特征上的取值。梯度下降朝梯度的反方向走，所以真正的推力是 −(p − y)·x<sub>j</sub>：</p>
+  <ul>
+    <li><strong>正样本的误差是负的</strong>，它把自己身上高于平均的特征的权重往上推，低于平均的往下推。负样本反过来。</li>
+    <li><strong>猜得越错推得越狠</strong>，已经猜准的样本几乎不推。</li>
+    <li><strong>特征正好是平均值（x<sub>j</sub> = 0）</strong>，这条样本对这个权重没有意见。</li>
+  </ul>
+  <p>还是第 975 条。训练刚开始时所有样本都猜 0.5，它的误差是 −0.5，推力就是 0.5 × 第 01 节表里的 x：偏好次数 +1.81，关注 +1.36，民谣 +1.07，歌长 +0.73，热度 +0.57；早上 8 点比平均的曝光时间早，那一项是 −0.58；偏置 +0.50。它推的偏好次数、关注、民谣，和最后学到的方向一致；它也把歌长的权重往上推，最后学出来的却是 −0.1642。一条样本只是一票，2000 票加起来，它在这一项上被压过去了。</p>
+  <p>整个训练集的梯度是每条样本梯度的平均：</p>
+<pre><code>∂L/∂wⱼ = (1/n)·Σ (pᵢ − yᵢ)·xᵢⱼ        n = 2000，i 是第几条样本
+∂L/∂b  = (1/n)·Σ (pᵢ − yᵢ)</code></pre>
+  <p>偏置的梯度就是平均误差。训练到底时它等于 0，意思是模型给训练集的平均概率正好等于播放率，参考模型两个都是 0.227。</p>
+  <p>神经网络有很多层，用的是同一个链式法则，从输出往回一层层乘，这叫<a href="prediction.html#s7">反向传播</a>，见<a href="neural-network.html#chain">链式法则：多少层都一样</a>。GBDT 的每棵新树也照着这个 p − y 来长，见<a href="trees-gbdt.html#boosting">梯度提升：下一棵修前面的错</a>。</p>
+</section>
+
+<section id="descent">
+  <h2><span class="n">05</span>梯度下降：沿着坡往下走</h2>
+  <p>有了梯度，每一步按同一条规则更新全部 16 个参数：</p>
+<pre><code>wⱼ ← wⱼ − η · ∂L/∂wⱼ
+b  ← b  − η · ∂L/∂b</code></pre>
+  <p>η（读作 eta）是学习率，决定一步迈多大（第 07 节）。减号是因为梯度指向损失增加最快的方向，要反着走。这就是梯度下降（gradient descent）。参考模型每一步都用全部 2000 条样本算梯度，η = 0.5，从全 0 走了 600 步。</p>
+  <p>第 1 步：所有样本都猜 0.5，平均误差是 0.5 − 0.227 = 0.273，这就是偏置的梯度，b = 0 − 0.5 × 0.273 = −0.1365。偏好次数那个权重的梯度是 −0.0742（播放了的样本，偏好次数平均比整体高 0.33 个标准差），w = 0 − 0.5 × (−0.0742) = 0.0371。往后每一步都这样算：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>轮</th><th>训练集损失</th><th>偏好次数的权重</th><th>偏置</th><th>平均预测</th><th>梯度大小</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>0.6931</td><td>0</td><td>0</td><td>0.500</td><td>0.2991</td></tr>
+      <tr><td>1</td><td>0.6513</td><td>0.0371</td><td>−0.1365</td><td>0.466</td><td>0.2607</td></tr>
+      <tr><td>2</td><td>0.6195</td><td>0.0688</td><td>−0.2560</td><td>0.437</td><td>0.2279</td></tr>
+      <tr><td>5</td><td>0.5617</td><td>0.1394</td><td>−0.5342</td><td>0.371</td><td>0.1559</td></tr>
+      <tr><td>10</td><td>0.5233</td><td>0.2099</td><td>−0.8246</td><td>0.310</td><td>0.0898</td></tr>
+      <tr><td>20</td><td>0.5044</td><td>0.2785</td><td>−1.1021</td><td>0.260</td><td>0.0364</td></tr>
+      <tr><td>50</td><td>0.5000</td><td>0.3343</td><td>−1.2960</td><td>0.231</td><td>0.0044</td></tr>
+      <tr><td>100</td><td>0.4999</td><td>0.3431</td><td>−1.3220</td><td>0.227</td><td>0.0002</td></tr>
+      <tr><td>600</td><td>0.4999</td><td>0.3434</td><td>−1.3232</td><td>0.227</td><td>3 × 10<sup>−10</sup></td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">梯度大小：16 个梯度各自平方、相加再开方，表示坡有多陡。平均预测是训练集 2000 条的 p 的平均。</p>
+  <ul>
+    <li><strong>学习率没变，步子越来越小。</strong>每一步挪动学习率乘梯度那么多，越近谷底坡越平，梯度越小。第 600 轮的梯度只剩 10<sup>−10</sup> 量级，参数不再动。</li>
+    <li><strong>偏置一开始跑得最快。</strong>大家都猜 0.5，实际播放率只有 0.227，偏置的梯度最大，平均预测前 20 轮就从 0.5 降到 0.26。</li>
+    <li><strong>50 轮之后，损失只在第 4 位小数上变</strong>，后面 550 轮几乎白跑。</li>
+  </ul>
+  <h3>画成地形图</h3>
+  <p>16 个参数的损失是 16 维空间里的曲面，画不出来。把其余 14 个参数固定在参考模型最后的值，只让偏好次数和热度两个权重变，每一对取值都用 2000 条样本算一次平均损失，就得到一张地形图：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 430" role="img" aria-label="损失的等高线图：横轴是偏好次数的权重，纵轴是热度的权重，范围都是 −0.2 到 0.8，其余 14 个参数固定在参考模型的值。等高线是一圈圈接近圆形的环，越往里损失越低，谷底在 (0.343, 0.330)，损失 0.4999。从 (0, 0) 出发、学习率 0.5 的梯度下降沿一条接近直线的路走向谷底，前几步大，越靠近谷底步子越小；从另外两个起点出发的路径也走到同一个谷底。">
+      <line class="grid" x1="134" y1="30" x2="134" y2="390"/><line class="grid" x1="62" y1="318" x2="422" y2="318"/>
+      <path class="iso" d="M229 206L229 196L232 185L240 176L249 170L260 169L271 172L280 179L285 190L286 203L283 214L276 223L265 228L255 230L244 226L235 218L229 206M204 204L204 194L206 183L211 172L217 163L224 156L233 150L242 146L253 144L264 144L273 145L282 149L291 154L298 161L304 170L308 179L311 190L311 203L309 214L305 224L300 233L292 242L283 248L274 253L264 255L253 255L242 253L233 249L224 243L216 235L211 226L206 215L204 204M175 214L174 197L176 181L181 166L188 152L198 140L210 129L224 121L240 115L256 113L273 114L287 117L301 124L314 134L325 146L333 160L338 176L341 192L340 210L336 228L328 244L318 259L305 271L291 280L274 285L258 287L242 285L226 280L211 272L199 261L188 247L180 232L175 214M141 218L140 196L143 172L150 151L161 131L176 113L193 98L213 88L237 80L260 77L282 79L303 85L323 96L341 110L355 127L366 147L372 169L375 194L373 219L366 244L355 266L341 286L322 302L301 314L280 321L256 323L233 320L211 313L190 300L173 284L158 264L148 242L141 218M422 223L416 248L408 271L397 293L383 313L366 331L349 345L330 357L309 366L287 372L265 375L242 374L220 370L199 362L179 352L159 339L141 323L125 304L112 284L102 262L95 239L91 215L90 192L93 169L98 147L107 125L118 106L132 87L150 70L170 55L190 44L213 35L236 30M422 163L416 138L406 115L394 93L379 75L360 59L339 46L316 36L292 30"/>
+      <line class="axis" x1="62" y1="390" x2="422" y2="390"/><line class="axis" x1="62" y1="30" x2="62" y2="390"/>
+      <polyline class="ghostline" points="404,372 356.2,322.1 330.4,293.7 311.3,271.6 293.2,249.8 276.8,228.5 264.5,211 257.6,199.4"/>
+      <polyline class="ghostline" points="80,58.8 135.8,103.1 230.3,175.9 248.7,190.9 257.6,199.2"/>
+      <circle class="ghost" cx="404" cy="372" r="2.5"/><circle class="ghost" cx="390.4" cy="358.1" r="2.5"/><circle class="ghost" cx="377.9" cy="345.2" r="2.5"/><circle class="ghost" cx="366.6" cy="333.2" r="2.5"/><circle class="ghost" cx="356.2" cy="322.1" r="2.5"/><circle class="ghost" cx="346.8" cy="311.9" r="2.5"/><circle class="ghost" cx="338.2" cy="302.4" r="2.5"/><circle class="ghost" cx="80" cy="58.8" r="2.5"/><circle class="ghost" cx="95.7" cy="71.5" r="2.5"/><circle class="ghost" cx="110.2" cy="83" r="2.5"/><circle class="ghost" cx="123.5" cy="93.5" r="2.5"/><circle class="ghost" cx="135.8" cy="103.1" r="2.5"/><circle class="ghost" cx="147" cy="111.8" r="2.5"/><circle class="ghost" cx="157.3" cy="119.7" r="2.5"/>
+      <polyline class="out" points="134,318 182.4,274.8 216.5,243.1 242.6,216.9 252.1,206.4 257.6,199.3"/>
+      <circle class="dot" cx="134" cy="318" r="3"/><circle class="dot" cx="145.6" cy="307.8" r="3"/><circle class="dot" cx="156.2" cy="298.4" r="3"/><circle class="dot" cx="165.8" cy="289.8" r="3"/><circle class="dot" cx="174.5" cy="282" r="3"/><circle class="dot" cx="182.4" cy="274.8" r="3"/><circle class="dot" cx="189.6" cy="268.2" r="3"/><circle class="dot" cx="196.1" cy="262.3" r="3"/><circle class="dot" cx="202" cy="256.8" r="3"/><circle class="dot" cx="207.3" cy="251.8" r="3"/><circle class="dot" cx="212.2" cy="247.2" r="3"/>
+      <circle class="hot" cx="257.6" cy="199.2" r="6"/>
+      <rect class="bg" x="250" y="163.7" width="42" height="15" rx="3"/><text x="271" y="175.7" text-anchor="middle" class="t">0.5005</text><rect class="bg" x="261.2" y="140.8" width="42" height="15" rx="3"/><text x="282.2" y="152.8" text-anchor="middle" class="t">0.502</text><rect class="bg" x="274.8" y="112.9" width="42" height="15" rx="3"/><text x="295.8" y="124.9" text-anchor="middle" class="t">0.505</text><rect class="bg" x="290.4" y="80.9" width="42" height="15" rx="3"/><text x="311.4" y="92.9" text-anchor="middle" class="t">0.51</text><rect class="bg" x="312.8" y="35" width="42" height="15" rx="3"/><text x="333.8" y="47" text-anchor="middle" class="t">0.52</text>
+      <text x="62" y="18" class="m">热度的权重</text>
+      <text x="56" y="394" text-anchor="end" class="t">−0.2</text><text x="56" y="322" text-anchor="end" class="t">0</text><text x="56" y="250" text-anchor="end" class="t">0.2</text><text x="56" y="178" text-anchor="end" class="t">0.4</text><text x="56" y="106" text-anchor="end" class="t">0.6</text><text x="56" y="34" text-anchor="end" class="t">0.8</text>
+      <text x="62" y="408" text-anchor="middle" class="t">−0.2</text><text x="134" y="408" text-anchor="middle" class="t">0</text><text x="206" y="408" text-anchor="middle" class="t">0.2</text><text x="278" y="408" text-anchor="middle" class="t">0.4</text><text x="350" y="408" text-anchor="middle" class="t">0.6</text><text x="422" y="408" text-anchor="middle" class="t">0.8</text>
+      <text x="422" y="426" text-anchor="end" class="m">偏好次数的权重</text>
+      <text x="440" y="60">起点 (0, 0)</text><text x="440" y="78" class="m">损失 0.5205</text>
+      <text x="440" y="112">谷底 (0.3434, 0.3299)</text><text x="440" y="130" class="m">损失 0.4999</text>
+      <text x="440" y="164" class="m">蓝线：学习率 0.5，</text><text x="440" y="182" class="m">每个点是一步</text>
+      <text x="440" y="216" class="m">灰线：换两个起点，</text><text x="440" y="234" class="m">走到同一个谷底</text>
+      <text x="440" y="268" class="m">数字：这一圈上的</text><text x="440" y="286" class="m">训练集平均损失</text>
+    </svg>
+    </div>
+    <figcaption>每条线上的损失相等，叫等高线，越往里越低。图里的梯度下降只让这两个权重动（学习率 0.5），其余 14 个参数不动；完整训练时 16 个参数一起动，路线不同，终点相同。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>谷底在 (0.3434, 0.3299)</strong>，正是参考模型学到的两个权重；起点 (0, 0) 的损失是 0.5205。</li>
+    <li><strong>每一步都垂直于脚下的等高线</strong>，朝最陡的下坡走（图里两个方向刻度相同，看得出直角）。第 1 步走了 0.043，第 10 步 0.018，第 20 步 0.007。</li>
+    <li><strong>碗接近圆形</strong>，因为两个特征都标准化过，又几乎不相关（相关系数 0.014），从哪出发都几乎是直线走到底。碗被压扁时见第 07 节最后。</li>
+  </ul>
+</section>
+
+<section id="batch">
+  <h2><span class="n">06</span>全量、随机和小批量</h2>
+  <p>上面每一步都用全部样本算梯度，叫全量梯度下降（batch gradient descent）。样本一多就不现实：几亿条全算一遍才挪一步。另外两种做法：</p>
+  <ul>
+    <li><strong>随机梯度下降</strong>（SGD，stochastic gradient descent）：每次只拿一条样本算梯度，马上更新。</li>
+    <li><strong>小批量</strong>（mini-batch）：每次拿一小批，比如 32 条，梯度取平均再更新。现在说 SGD，多数时候指的是这种。</li>
+  </ul>
+  <p>所有训练样本都用过一遍叫一轮（epoch）。一轮里全量更新 1 次，小批量 32 更新 63 次，逐条更新 2000 次；后两种每轮开始前打乱样本顺序。各训 100 轮：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>做法</th><th>每次用几条</th><th>每轮更新几次</th><th>学习率</th><th>第 1 轮后</th><th>第 10 轮后</th><th>第 81–100 轮</th></tr></thead>
+    <tbody>
+      <tr><td>全量</td><td>2000</td><td>1</td><td>0.5</td><td>0.6513</td><td>0.5233</td><td>0.4999</td></tr>
+      <tr><td>小批量</td><td>32</td><td>63</td><td>0.05</td><td>0.5509</td><td>0.4999</td><td>0.4999–0.5000</td></tr>
+      <tr><td>逐条</td><td>1</td><td>2000</td><td>0.005</td><td>0.5070</td><td>0.5005</td><td>0.5004–0.5021</td></tr>
+      <tr><td>小批量，学习率照搬 0.5</td><td>32</td><td>63</td><td>0.5</td><td>0.5168</td><td>0.5091</td><td>0.5040–0.5217</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">数字是训练集损失。打乱顺序用随机种子 1；换成 2 和 3，规律不变。</p>
+  <ul>
+    <li><strong>按轮算，更新次数多的走得快。</strong>逐条更新第 1 轮就到了 0.507，全量要到第 30 轮才到 0.501。</li>
+    <li><strong>代价是抖。</strong>一条样本的梯度只代表它自己，方向和全体的平均有偏差。学习率固定时，参数到了谷底附近也停不下来：逐条更新最后 20 轮的损失在 0.5004 和 0.5021 之间跳；换三个种子，偏好次数的权重停在 0.3245、0.3369、0.3365，全量是 0.3434。</li>
+    <li><strong>批越小，学习率要越小。</strong>小批量照搬全量的 0.5，一直在 0.504 到 0.522 之间晃。实际训练常让学习率随轮数逐渐变小：先大步走近，再小步停稳。</li>
+    <li><strong>小批量是现在的标准做法</strong>：一批样本可以并行算，GPU 和 CPU 的向量指令都擅长这个，噪声又比逐条小。</li>
+  </ul>
+</section>
+
+<section id="lr">
+  <h2><span class="n">07</span>学习率：一步迈多大</h2>
+  <p>学习率乘在梯度前面。太小，一步只挪一点，要走很多轮；太大，一步跨过谷底，落到对面更高的地方，来回震荡，甚至越来越高。在参考模型的配方里只换学习率：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 284" role="img" aria-label="四种学习率下训练集损失随轮数的变化，前 40 轮。学习率 0.05 的线下降得很慢，第 40 轮还在 0.58；0.5 是参考模型，第 40 轮降到 0.5002；5 第 1 轮就降到 0.5016，第 2 轮到底；8 第 4 轮降到 0.5000，第 12 轮起回升，第 28 轮后停在 0.565 上下来回跳。">
+      <line class="grid" x1="46" y1="26" x2="586" y2="26"/><line class="grid" x1="46" y1="76" x2="586" y2="76"/><line class="grid" x1="46" y1="126" x2="586" y2="126"/><line class="grid" x1="46" y1="176" x2="586" y2="176"/><line class="grid" x1="46" y1="226" x2="586" y2="226"/>
+      <line class="axis" x1="46" y1="236" x2="586" y2="236"/><line class="axis" x1="46" y1="20" x2="46" y2="236"/>
+      <polyline class="s1" points="46,32.9 73,41.6 100,50 127,57.9 167.5,69 221.5,82.6 248.5,88.8 289,97.7 356.5,111 424,122.8 464.5,129.2 505,135.1 586,145.8"/>
+      <polyline class="out" points="46,32.9 59.5,74.7 73,106.5 86.5,130.9 100,149.7 113.5,164.3 127,175.8 140.5,184.9 154,192.1 167.5,197.9 181,202.7 194.5,206.5 208,209.6 221.5,212.2 248.5,216.1 262,217.6 289,219.9 316,221.6 343,222.7 397,224.2 478,225.3 586,225.8"/>
+      <polyline class="s3" points="46,32.9 59.5,224.4 73,226 86.5,226.1 586,226.1"/>
+      <polyline class="s4" points="46,32.9 59.5,175.5 73,221.4 86.5,225.8 140.5,226 221.5,225.7 262,224.6 289,222.7 302.5,220.9 316,218.3 329.5,214.2 343,209 370,192.5 383.5,180.9 397,172.4 410.5,163.4 424,160.7 437.5,158.7 451,160.5 464.5,160.9 478,162.3 491.5,161.8 505,162.1 518.5,161.2 532,161.5 545.5,160.9 559,161.2 572.5,160.9 586,161.2"/>
+      <circle class="dot" cx="59.5" cy="224.4" r="3"/>
+      <text x="46" y="12" class="m">训练集损失</text>
+      <text x="40" y="30" text-anchor="end" class="t">0.70</text><text x="40" y="80" text-anchor="end" class="t">0.65</text><text x="40" y="130" text-anchor="end" class="t">0.60</text><text x="40" y="180" text-anchor="end" class="t">0.55</text><text x="40" y="230" text-anchor="end" class="t">0.50</text>
+      <text x="46" y="254" text-anchor="start" class="t">0</text><text x="181" y="254" text-anchor="middle" class="t">10</text><text x="316" y="254" text-anchor="middle" class="t">20</text><text x="451" y="254" text-anchor="middle" class="t">30</text><text x="586" y="254" text-anchor="end" class="t">40</text>
+      <text x="586" y="276" text-anchor="end" class="m">轮数</text>
+      <g transform="translate(262 6)"><line class="s1" x1="0" y1="2" x2="22" y2="2"/><text x="28" y="6" class="t">0.05</text><line class="out" x1="72" y1="2" x2="94" y2="2"/><text x="100" y="6" class="t">0.5</text><line class="s3" x1="136" y1="2" x2="158" y2="2"/><text x="164" y="6" class="t">5</text><line class="s4" x1="190" y1="2" x2="212" y2="2"/><text x="218" y="6" class="t">8</text><text x="240" y="6" class="m">学习率</text></g>
+      <text x="275.5" y="70">0.05：太小，一直在慢慢降</text>
+      <text x="580" y="196" text-anchor="end">8：到底后又弹回来</text>
+      <text x="580" y="217" text-anchor="end">0.5 和 5：0.4999</text>
+      <text x="78" y="214">5：1 轮就到底</text>
+    </svg>
+    </div>
+    <figcaption>前 40 轮的训练集损失。5 第 1 轮就降到 0.5016；8 第 4 轮降到 0.5000，第 12 轮起往回升，第 28 轮以后停在 0.565 上下来回跳。更大的学习率画不进这个范围，见下表。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>学习率</th><th>第 1 轮</th><th>第 10 轮</th><th>第 100 轮</th><th>第 600 轮</th><th>第几轮到 0.5000</th></tr></thead>
+    <tbody>
+      <tr><td>0.05</td><td>0.6887</td><td>0.6535</td><td>0.5257</td><td>0.4999</td><td>456</td></tr>
+      <tr><td>0.5（参考）</td><td>0.6513</td><td>0.5233</td><td>0.4999</td><td>0.4999</td><td>44</td></tr>
+      <tr><td>2</td><td>0.5593</td><td>0.5000</td><td>0.4999</td><td>0.4999</td><td>10</td></tr>
+      <tr><td>5</td><td>0.5016</td><td>0.4999</td><td>0.4999</td><td>0.4999</td><td>2</td></tr>
+      <tr><td>7</td><td>0.5264</td><td>0.4999</td><td>0.4999</td><td>0.4999</td><td>3</td></tr>
+      <tr><td>8</td><td>0.5505</td><td>0.5001</td><td>0.5650</td><td>0.5650</td><td>4，之后又升上去</td></tr>
+      <tr><td>10</td><td>0.6142</td><td>0.7066</td><td>0.7139</td><td>0.6573</td><td>到不了，在 0.64 和 0.76 之间跳</td></tr>
+      <tr><td>20</td><td>1.0565</td><td>1.8357</td><td>1.5154</td><td>0.7168</td><td>到不了，最高 2.57</td></tr>
+      <tr><td>50</td><td>2.5584</td><td>3.8977</td><td>3.6295</td><td>1.2944</td><td>到不了，最高 9.02</td></tr>
+    </tbody>
+  </table></div>
+  <h3>界线在哪</h3>
+  <p>谷底附近的损失可以近似看成一个碗，碗在不同方向上弯得不一样，弯的程度用二阶导数衡量，即坡度变化得多快。设某个方向的弯曲程度是 λ，沿这个方向每走一步，离谷底的距离就乘以 (1 − η·λ)。η·λ 在 0 到 2 之间时，这个数的绝对值小于 1，越走越近，正好是 1 时一步到底；大于 2 时，每一步都跨到对面而且离得更远，越震越大。</p>
+  <p>参考模型谷底处的二阶导数矩阵，最陡方向的 λ 是 0.2838，2 ÷ 0.2838 = 7.05。实验正好对上：学习率 7 收敛，8 先降到底，再被越来越大的震荡推开，最后在两点之间来回跳。最平的方向 λ 是 0.0517（不算第 11 节说的两个完全平的方向），只差 5.5 倍。碗很圆，所以 5 这样的大步子在哪个方向都跨不远，第 2 轮就到底。</p>
+  <p>这些数只对这份数据和这个配方成立，换了数据、模型或批大小都要重新试。常见做法是按 10 倍一档试几个（0.001、0.01、0.1、1……），看损失曲线是太慢、正好还是在抖。</p>
+  <h3>碗被压扁时</h3>
+  <p>同样 15 个特征不做标准化，只用原始的 0 到 1 缩放（偏好次数 ÷ 30、热度、0/1 特征等）。最低的损失还是 0.4999，碗却变了形。几种尺度各训 600 轮的对比在<a href="features-samples.html#scale">标准化</a>那一节，这里看碗的形状：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>标准化</th><th>只缩放到 0–1</th></tr></thead>
+    <tbody>
+      <tr><td>最陡和最平的方向差几倍</td><td>5.5</td><td>452</td></tr>
+      <tr><td>学习率的上限 2 ÷ λ</td><td>7.05</td><td>4.05</td></tr>
+      <tr><td>学习率 0.5，第几轮到 0.5000</td><td>44</td><td>2123</td></tr>
+      <tr><td>挑最快的学习率，第几轮到 0.5000</td><td>2（η = 5）</td><td>265（η = 4）</td></tr>
+    </tbody>
+  </table></div>
+  <p>最陡的方向把学习率限在 4 左右，最平的方向又要很多步才走完，梯度下降只能在窄沟里慢慢挪。标准化不只为了权重好比较，也为了让梯度下降走得动。第 12 节的动量和 Adam 是另一种补救。</p>
+</section>
+
+<section id="run">
+  <h2><span class="n">08</span>参考模型的 600 轮</h2>
+  <p>配方：15 个特征标准化，参数从 0 开始，全量梯度下降，学习率 0.5，600 轮。每一轮都用当时的参数在三个集合上各算一次损失：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>轮</th><th>训练集（2000 条）</th><th>验证集（400 条）</th><th>测试集（600 条）</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>0.6931</td><td>0.6931</td><td>0.6931</td></tr>
+      <tr><td>1</td><td>0.6513</td><td>0.6510</td><td>0.6514</td></tr>
+      <tr><td>5</td><td>0.5617</td><td>0.5597</td><td>0.5617</td></tr>
+      <tr><td>10</td><td>0.5233</td><td>0.5198</td><td>0.5231</td></tr>
+      <tr><td>20</td><td>0.5044</td><td>0.4999</td><td>0.5037</td></tr>
+      <tr><td>40</td><td>0.5002</td><td>0.4961</td><td>0.4988</td></tr>
+      <tr><td>50</td><td>0.5000</td><td>0.4961</td><td>0.4985</td></tr>
+      <tr><td>600</td><td>0.4999</td><td>0.4965</td><td>0.4985</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>三列一起降，50 轮后都不动了。</strong>只有训练集参与算梯度，另外两列也跟着降，说明学到的规律能用到新的日子上。</li>
+    <li><strong>验证集</strong>（validation set）不参与训练，用来判断练得怎样、什么时候停、学习率这类设置怎么选。它在第 40 到 50 轮最低（0.4961），之后回升了 0.0004。回升是过拟合的苗头：模型开始贴合训练集里碰巧的部分。16 个参数对 2000 条样本来说很少，所以只升了这么一点。</li>
+    <li><strong>测试集</strong>（test set）只在最后用一次，代表上线后没见过的数据。三列高低不同，主要因为三段日子的播放率不同：训练集 0.227，验证集 0.205，测试集 0.2367；谁都猜 0.227 时，三列分别是 0.5356、0.5087、0.5475。</li>
+  </ul>
+  <p>测试集上的成绩和别的做法放在一起。AUC 的意思是：随便挑一个正样本和一个负样本，模型给正样本的 p 更高的概率；0.5 等于瞎猜，1 是完全排对（<a href="evaluation.html#auc">AUC：随便挑一对，谁排在前面</a>）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>测试集对数损失</th><th>测试集 AUC</th></tr></thead>
+    <tbody>
+      <tr><td>谁都猜 0.227</td><td>0.5475</td><td>0.5000</td></tr>
+      <tr><td>参考逻辑回归</td><td>0.4985</td><td>0.7175</td></tr>
+      <tr><td>神经网络，15 → 16 → 8 → 1</td><td>0.4851</td><td>0.7310</td></tr>
+      <tr><td>GBDT，103 棵树</td><td>0.4847</td><td>0.7499</td></tr>
+      <tr><td>逻辑回归加交叉特征</td><td>0.4592</td><td>0.7715</td></tr>
+      <tr><td>用真实概率</td><td>0.4492</td><td>0.7834</td></tr>
+    </tbody>
+  </table></div>
+  <p>最后一行是这份数据的天花板（<a href="evaluation.html#baseline">基线和上限</a>）。参考模型和它之间差的那一截，大半来自下一节的"晚上 × 长歌"。另外两种模型见<a href="neural-network.html#compare">和逻辑回归、GBDT 比</a>与<a href="trees-gbdt.html#compare">和逻辑回归、神经网络比</a>。</p>
+</section>
+
+<section id="weights">
+  <h2><span class="n">09</span>学到的 16 个数</h2>
+  <p>训练完，模型就是下面这 16 个数，外加标准化用的 15 个平均值和 15 个标准差。线上预测一条新样本，就是用同样的平均值和标准差把特征标准化，再做第 01 节的加权求和，见<a href="prediction.html#s8">学完的模型就是一堆数</a>那一站。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>特征</th><th>权重 w</th><th>e<sup>w</sup></th><th>读法</th></tr></thead>
+    <tbody>
+      <tr><td><code>aff_n</code> 偏好次数 ÷ 30</td><td>0.3434</td><td>1.41</td><td>多听 3.1 次（一个标准差），几率乘 1.41，折合每次乘 1.12。正向最强</td></tr>
+      <tr><td><code>heat</code> 热度</td><td>0.3299</td><td>1.39</td><td>热度高 0.30，几率乘 1.39；从 0 到 1 乘 2.97</td></tr>
+      <tr><td><code>follow</code> 关注了歌手</td><td>0.2477</td><td>1.28</td><td>关注了，几率乘 2.15</td></tr>
+      <tr><td><code>new_user</code> 新用户</td><td>−0.1309</td><td>0.88</td><td>新用户，几率乘 0.70</td></tr>
+      <tr><td><code>len_n</code> 歌长</td><td>−0.1642</td><td>0.85</td><td>歌每长 1 分钟，几率乘 0.87。负向最强</td></tr>
+      <tr><td><code>hour_n</code> 曝光时间 ÷ 23</td><td>0.0092</td><td>1.01</td><td>几乎为 0：播放率不随钟点直线变化</td></tr>
+      <tr><td><code>night</code> 18 点到次日 2 点</td><td>−0.0631</td><td>0.94</td><td>是晚上，几率乘 0.88。真实的影响要看歌长，见下面</td></tr>
+      <tr><td><code>net_wifi</code></td><td>0.0445</td><td>1.05</td><td rowspan="3">三列要一起看（第 11 节）：4G 比 Wi-Fi 几率乘 0.77，5G 和 Wi-Fi 差不多（1.03）。生成规则里是 4G 下放 4.5 分钟以上的歌才减分</td></tr>
+      <tr><td><code>net_4g</code></td><td>−0.0812</td><td>0.92</td></tr>
+      <tr><td><code>net_5g</code></td><td>0.0424</td><td>1.04</td></tr>
+      <tr><td><code>g_民谣</code></td><td>0.1236</td><td>1.13</td><td rowspan="5">五列一起看：和流行比，民谣几率乘 1.55，电子乘 1.12，古典和摇滚差不多。生成规则里只有晚上的民谣加分，模型只能把它摊到所有时段</td></tr>
+      <tr><td><code>g_电子</code></td><td>0.0006</td><td>1.00</td></tr>
+      <tr><td><code>g_古典</code></td><td>−0.0243</td><td>0.98</td></tr>
+      <tr><td><code>g_摇滚</code></td><td>−0.0356</td><td>0.97</td></tr>
+      <tr><td><code>g_流行</code></td><td>−0.0569</td><td>0.94</td></tr>
+      <tr><td>偏置 b</td><td>−1.3232</td><td></td><td>所有特征都取平均值时，p = 0.21</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">e<sup>w</sup> 是特征高一个标准差时几率乘的倍数。0/1 特征从 0 变成 1，几率乘 e<sup>w ÷ 标准差</sup>，读法一栏用的是这个。</p>
+  <h3>它学不到的：晚上 × 长歌</h3>
+  <p>生成规则里有一项：晚上和长歌（4 分钟及以上）要么都是、要么都不是时，z 加 0.8；一个是一个不是时，减 0.6。前后差 1.4，比任何单独一个特征的影响都大。训练集按这两项分成四组：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>晚上</th><th>长歌</th><th>样本数</th><th>实际播放率</th><th>模型给的平均 p</th></tr></thead>
+    <tbody>
+      <tr><td>否</td><td>否</td><td>542</td><td>0.362</td><td>0.259</td></tr>
+      <tr><td>否</td><td>是</td><td>536</td><td>0.119</td><td>0.224</td></tr>
+      <tr><td>是</td><td>否</td><td>471</td><td>0.119</td><td>0.226</td></tr>
+      <tr><td>是</td><td>是</td><td>451</td><td>0.306</td><td>0.194</td></tr>
+    </tbody>
+  </table></div>
+  <p>实际是对角线高，模型却把四组都压在 0.19 到 0.26 之间，实际不低的"晚上听长歌"，模型反而给得最低。原因在 z 的形状：每个特征乘自己的权重再相加，<code>night</code> 只有一个权重，做不到"歌短时为正、歌长时为负"。单独看，晚上和白天的播放率是 0.210 和 0.241，长歌和短歌是 0.205 和 0.249，差得不多，所以这两个权重都很小。两个特征单看没什么用、合起来才有用，这种关系叫交互；这里的形状接近异或（XOR），地图上的<a href="prediction.html#s5">一条线不够</a>那一站用全部 3000 条画了同样的四格。各页一路跟着的第 2462 条就落在"晚上听长歌"里：晚上 8 点、一首 5.4 分钟的民谣，真实概率 0.52，参考模型只给 0.29。</p>
+  <p>补救有两条路。一是人工加一个交叉特征 <code>night_long_match</code>（两者相同时为 1），逻辑回归给它的权重是 0.7208，测试集 AUC 从 0.7175 升到 0.7715，第 2462 条升到 0.46，见<a href="features-samples.html#cross">交叉特征</a>。二是换能自己学组合的模型，见<a href="neural-network.html#why">一个加权和画不出的规律</a>和<a href="trees-gbdt.html#interaction">组合条件不用手写</a>。</p>
+</section>
+
+<section id="reg">
+  <h2><span class="n">10</span>正则化：L2 和 L1</h2>
+  <p>正则化（regularization）是在损失后面加一项，惩罚太大的权重。λ 控制罚多重，偏置不罚：</p>
+<pre><code>L2：总损失 = 平均对数损失 + (λ/2)·Σ wⱼ²    梯度多一项 λ·wⱼ：每步把权重按比例往 0 拉
+L1：总损失 = 平均对数损失 + λ·Σ |wⱼ|       每步把权重往 0 挪固定的一截，挪过 0 就停在 0</code></pre>
+  <p>|w| 在 0 点没有导数，这里的 L1 用近端梯度（proximal gradient）来做：先按对数损失的梯度走一步，再把每个权重的绝对值减去 η·λ，不够减的设成 0。在参考模型的配方上加正则，训 3000 轮：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>不加</th><th>L2，λ = 0.1</th><th>L1，λ = 0.01</th><th>L1，λ = 0.03</th></tr></thead>
+    <tbody>
+      <tr><td><code>aff_n</code></td><td>0.3434</td><td>0.2315</td><td>0.2958</td><td>0.2082</td></tr>
+      <tr><td><code>heat</code></td><td>0.3299</td><td>0.2003</td><td>0.2574</td><td>0.1289</td></tr>
+      <tr><td><code>follow</code></td><td>0.2477</td><td>0.1782</td><td>0.2061</td><td>0.1270</td></tr>
+      <tr><td><code>len_n</code></td><td>−0.1642</td><td>−0.0939</td><td>−0.0950</td><td>0</td></tr>
+      <tr><td><code>new_user</code></td><td>−0.1309</td><td>−0.0762</td><td>−0.0586</td><td>0</td></tr>
+      <tr><td><code>g_民谣</code></td><td>0.1236</td><td>0.0816</td><td>0.0982</td><td>0</td></tr>
+      <tr><td><code>net_4g</code></td><td>−0.0812</td><td>−0.0534</td><td>−0.0568</td><td>0</td></tr>
+      <tr><td><code>night</code></td><td>−0.0631</td><td>−0.0388</td><td>−0.0016</td><td>0</td></tr>
+      <tr><td>其余 7 个</td><td>−0.06 到 0.04</td><td>−0.04 到 0.03</td><td>全是 0</td><td>全是 0</td></tr>
+      <tr><td>不为 0 的权重</td><td>15</td><td>15</td><td>8</td><td>3</td></tr>
+      <tr><td>训练集损失</td><td>0.4999</td><td>0.5039</td><td>0.5024</td><td>0.5134</td></tr>
+      <tr><td>验证集损失</td><td>0.4965</td><td>0.4932</td><td>0.4900</td><td>0.4907</td></tr>
+      <tr><td>测试集 AUC</td><td>0.7175</td><td>0.7209</td><td>0.7293</td><td>0.7223</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>L2 让所有权重一起变小</strong>，大的缩得多，但一个都不会正好是 0。</li>
+    <li><strong>L1 让不重要的权重整个变成 0。</strong>λ = 0.01 时剩 8 个，λ = 0.03 只剩偏好次数、热度、关注三个；λ = 0.1 时 15 个全是 0，模型退回"谁都猜 0.227"。这叫稀疏（sparse）：特征多时省存储、省计算，顺便筛了一遍特征。</li>
+    <li><strong>在这里正则化对效果影响不大。</strong>2000 条样本、15 个特征，训练集损失本来就和验证集差不多，没什么过拟合可压，四列的测试集 AUC 都在 0.72 上下。</li>
+  </ul>
+  <h3>什么时候它才要紧：过拟合</h3>
+  <p>给每位用户、每首歌各加一列 0/1 特征（用户 300 列，歌 400 列），和原来 15 列一起标准化，共 715 个特征，其他配方不变。这份数据是按 15 个特征的规则生成的，用户和歌的编号本身不带额外信息；平均每位用户在训练集里只出现 6.7 次，每首歌 5 次。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>配方</th><th>不为 0 的权重</th><th>训练集</th><th>验证集</th><th>测试集</th><th>测试集 AUC</th></tr></thead>
+    <tbody>
+      <tr><td>15 个特征，不加正则</td><td>15</td><td>0.4999</td><td>0.4965</td><td>0.4985</td><td>0.7175</td></tr>
+      <tr><td>715 个特征，不加正则</td><td>713</td><td>0.2456</td><td>1.4002</td><td>1.3583</td><td>0.5613</td></tr>
+      <tr><td>715 个，L2，λ = 1</td><td>713</td><td>0.4730</td><td>0.5068</td><td>0.5373</td><td>0.5991</td></tr>
+      <tr><td>715 个，L1，λ = 0.02</td><td>29</td><td>0.4998</td><td>0.4886</td><td>0.5101</td><td>0.7198</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">训练集、验证集、测试集三列是对数损失，都训 600 轮。有 2 首歌没在训练集里出现，它们那两列的权重始终是 0，所以最多 713 个。</p>
+  <ul>
+    <li><strong>不加正则，训练集损失降到 0.2456</strong>，远低于用真实概率的 0.4611；验证集却升到 1.4002，比谁都猜 0.5 还差。模型用 700 个编号权重，把训练集里每位用户、每首歌碰巧的结果背了下来，换几天就不灵。这就是过拟合（overfitting），见<a href="evaluation.html#fit">过拟合和欠拟合</a>。</li>
+    <li><strong>只靠看着验证集提前停，这个配方下救不回来。</strong>验证集损失在第 10 轮最低（0.6028），之后一路升到 1.4002；即使停在第 10 轮，也比谁都猜 0.227 的 0.5087 差。</li>
+    <li><strong>L2 把权重压小</strong>，验证集好了很多，但 698 个编号权重都留着，测试集 AUC 只有 0.5991。<strong>L1 把其中 674 个清零</strong>，只剩 24 个，结果接近只用 15 个特征的模型。</li>
+  </ul>
+  <p>这份数据里编号本来就没用，所以能整列清零的 L1 占了便宜。真实数据里编号往往带着有用的信息（某首歌就是特别受欢迎），L2、L1 和两者一起用都常见，λ 在验证集上挑。推荐那一页在加了交叉特征的模型上也加过编号，还试了逐条更新、L2 加提前停的做法和编号对新歌的作用，见<a href="ctr-recommendation.html#id-lab">在示例数据上学 ID</a>。</p>
+</section>
+
+<section id="convex">
+  <h2><span class="n">11</span>凸：为什么只有一个谷底</h2>
+  <p>第 05 节的碗只有一个底，不是那两个权重碰巧如此。逻辑回归的对数损失对全部 16 个参数是凸函数（convex）：沿任何一条直线看过去都往上弯（或者是平的），没有第二个坑，从哪出发往下走都到同一个最低值。理由第 04 节已经算出来了：损失对 z 的二阶导数是 p(1 − p)，永远不小于 0；z 又是参数的线性组合，弯曲的方向不会被改变。</p>
+  <p>实验：从 5 个随机起点出发（每个参数取标准正态分布的随机数，种子 1–5，起点损失在 1.22 到 1.71 之间），其他配方同参考模型，训 3000 轮。5 次的训练集损失都是 0.4999，偏好次数和热度的权重都是 0.3434 和 0.3299，偏置都是 −1.3232，2000 条样本的预测和参考模型相差不到 10<sup>−8</sup>。但三个网络特征的权重每次都不一样：种子 1 是 0.912、0.720、0.666，种子 4 是 −0.271、−0.372、−0.184。</p>
+  <p>后一条不是没训好。网络类型是 one-hot 编码（一个类别占一列，属于哪类哪列为 1），三列每行恰好一个 1，加起来恒等于 1。按标准差的比例把三个权重一起加大或减小，所有样本的 z 都不变。碗底在这个方向上是一条平的沟，停在沟底哪一点取决于起点。能解释的只有它们之间的差：5 次算出来"4G 比 Wi-Fi"都是 z 减 0.2661。曲风的 5 列也一样。参考模型从 0 出发，停在沟里离原点最近的那一点。</p>
+  <h3>神经网络不是凸的</h3>
+  <p>神经网络里，第一层的输出要经过 ReLU（输入为负时输出 0，否则原样输出），再乘第二层的权重，参数和参数相乘，损失不再是凸的。最直接的例子：把隐藏层的两个神经元连同各自的权重整体对调，网络算出的结果一模一样，所以一个谷底总有对调出来的"双胞胎"，两个谷底连线的中间通常更高。在同样 3 个特征（偏好次数 ÷ 30、热度、关注，都在 0 到 1 之间）上比较两种模型，都用全量梯度下降，只换起点：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>逻辑回归</th><th>3 → 4 → 1 网络</th></tr></thead>
+    <tbody>
+      <tr><td>起点</td><td>全 0，加 5 个随机起点</td><td>8 个随机起点（种子 1–8）</td></tr>
+      <tr><td>最后的训练集损失</td><td>训 40000 轮，6 次都是 0.507048</td><td>训 20000 轮，0.5035 到 0.5070，各不相同</td></tr>
+      <tr><td>最后的参数</td><td>6 次一样：3.2790、0.9978、0.7707，偏置 −2.0626</td><td>每次都不一样</td></tr>
+    </tbody>
+  </table></div>
+  <p>网络那 8 次里，有 4 次各有一个神经元"死掉"：对全部训练样本，它的 ReLU 输入都是负数，输出恒为 0，梯度也恒为 0，再也学不回来，网络等于少了一个神经元（<a href="neural-network.html#dead">第 3 个单元为什么一直是 0</a>）。所以训练神经网络时，初始化、学习率和随机种子都会影响结果，同一个配方要多跑几次看稳不稳，见<a href="neural-network.html#init">初始值：不能全是 0</a>。</p>
+</section>
+
+<section id="optim">
+  <h2><span class="n">12</span>动量和 Adam</h2>
+  <p>普通梯度下降每一步只看当前的梯度。两种常用的改进：</p>
+  <ul>
+    <li><strong>动量</strong>（momentum）：把以前各步的梯度按比例累加起来，当作这一步的方向，比例常用 0.9。写成 v ← 0.9·v + g，w ← w − η·v，g 是这一步的梯度。方向一直一致时越走越快；来回摆的方向正负相抵，摆动变小。像一个带惯性的球滚下坡。</li>
+    <li><strong>Adam</strong>：每个参数各记两个滑动平均，一个是梯度的平均 m，一个是梯度平方的平均 s，这一步走 η·m ÷ √s（开头几步对 m 和 s 另有修正）。梯度一直很小的参数除以一个小数，步子被放大；梯度一直很大的被缩小。结果每个参数每步大约走 η 那么远，不太受特征尺度的影响。常用的默认值：m 的比例 β<sub>1</sub> = 0.9，s 的比例 β<sub>2</sub> = 0.999，η = 0.001。</li>
+  </ul>
+  <p>在第 07 节的两种碗上比一比，看训练集损失第几轮到 0.5000，每种方法的学习率都在一串候选里挑最快的：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>标准化（圆碗）</th><th>只缩放到 0–1（窄沟）</th></tr></thead>
+    <tbody>
+      <tr><td>梯度下降</td><td>2 轮（η = 5）</td><td>265 轮（η = 4，再大就不收敛）</td></tr>
+      <tr><td>动量 0.9</td><td>46 轮（η = 0.5）</td><td>48 轮（η = 2.5）</td></tr>
+      <tr><td>Adam</td><td>44 轮（η = 0.1）</td><td>51 轮（η = 0.2）</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>碗被压扁时，动量和 Adam 快了 5 倍多</strong>，而且几乎不受压扁的影响，两种碗上都是 50 轮上下。</li>
+    <li><strong>碗已经很圆时，它们反而更慢。</strong>动量带着惯性冲过谷底：学习率 0.5 时，偏好次数的权重第 12 步冲到 0.618（谷底是 0.343），再绕回来，摆了几个来回才停稳。Adam 也有类似的摆动。</li>
+  </ul>
+  <p>这里只有 16 个参数、一个凸的碗，看不出它们最大的用处。神经网络和大模型的损失面复杂得多，几乎都用 Adam 或它的变体（比如 AdamW）。推荐系统里特征多而稀疏，常用 Adagrad、FTRL 这类每个参数各用各的步长的方法。</p>
+</section>
+
+<section id="prod">
+  <h2><span class="n">13</span>真实系统里在哪跑</h2>
+  <p>这一页的参考模型在一台电脑上不到 0.1 秒就训完了（2000 条 × 15 个特征 × 600 轮）。真实的推荐系统里，循环还是这个循环，规模和节奏不同：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>方式</th><th>怎么做</th><th class="nw">多久一次</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">离线批量训练</td><td>从曝光和播放日志里拼出最近若干天的样本，在服务器集群上用小批量梯度下降训练，用最新一天的数据验证，指标达标才替换线上模型</td><td>每天或每几小时</td></tr>
+      <tr><td class="nw">在线学习</td><td>新的曝光和播放结果一到，就拿来更新权重。广告和推荐里的逻辑回归常用 FTRL（Follow The Regularized Leader）做这件事：每个参数各用各的步长，自带 L1，学出来的模型很稀疏。见<a href="ctr-recommendation.html#lineage">模型的演进</a>和<a href="ctr-recommendation.html#serving">线上：特征、延迟和更新</a></td><td>分钟级</td></tr>
+      <tr><td class="nw">手机上</td><td>多数只做预测：拿到服务器下发的权重和标准化参数，算第 01 节的加权求和，见<a href="neural-network.html#android">在 Android 上运行</a>。训练留在服务器上</td><td>每次要排序时</td></tr>
+    </tbody>
+  </table></div>
+  <p>大模型的训练也是同一件事：损失换成"下一个词猜错了多少"的对数损失，在整个词表上算；参数从 16 个变成几十亿个以上；优化器多用 AdamW。见<a href="llm.html#training">训练：还是对数损失</a>。模型怎么上线，见<a href="prediction.html#s10">上线</a>那一站。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>损失变成 NaN 或 Infinity</td><td>学习率太大，z 冲得很大，p 算出来正好是 0 或 1，ln 0 是负无穷</td><td>调小学习率；算对数前把 p 夹在 10<sup>−12</sup> 和 1 − 10<sup>−12</sup> 之间；或者直接用 z 算：L = max(z, 0) − y·z + ln(1 + e<sup>−|z|</sup>)，框架里名字带 with logits 的损失函数就是这样算的</td></tr>
+      <tr><td>损失降得极慢</td><td>学习率太小；或者特征没标准化，碗是一条窄沟。本页不标准化时，学习率 0.5 要 2123 轮，标准化后 44 轮</td><td>先标准化；学习率按 10 倍一档试；换 Adam</td></tr>
+      <tr><td>损失先降后升，或者忽大忽小</td><td>学习率超过 2 ÷ λ。本页的界线是 7.05：8 最后在 0.565 上下跳，50 最高到 9.02</td><td>学习率减半，不行再降一个数量级</td></tr>
+      <tr><td>训练集损失一直降，验证集损失在升</td><td>过拟合：参数相对样本太多。本页加了 700 个编号特征后，验证集升到 1.4002</td><td>加 L1 或 L2；看着验证集提前停；加样本；去掉没用的特征</td></tr>
+      <tr><td>准确率 76%，看着不错，模型其实没用</td><td>正样本只占两成多，全猜"不会播"也有 76.3%</td><td>训练用对数损失，评估看对数损失和 AUC</td></tr>
+      <tr><td>同一份数据训两次，one-hot 那几列的权重差很多</td><td>一组 one-hot 加起来恒等于 1，这组权重只有相对大小是确定的</td><td>只比较同组里的差；或者每组去掉一列；或者加 L2</td></tr>
+      <tr><td>按权重大小排特征重要性，结论不对</td><td>特征没标准化时，权重跟着单位变：偏好次数按"次"算和按"÷ 30"算，权重差 30 倍。one-hot 的权重要成组看</td><td>标准化后再比；同组看差</td></tr>
+      <tr><td>线上预测和离线评估对不上</td><td>线上没有用训练集的平均值和标准差做标准化，或者用了另一个版本的</td><td>平均值、标准差和权重一起发版，一起校验</td></tr>
+      <tr><td>离线评估好得不正常</td><td>平均值和标准差是在全部数据上算的，验证集、测试集的信息漏进了训练</td><td>只在训练集上算，再套到其他集合</td></tr>
+      <tr><td>加了 L1，权重还是没有正好为 0 的</td><td>用的是普通梯度加 λ·sign(w)，权重在 0 附近来回跳。本页这样做，15 个权重没有一个正好是 0</td><td>用近端梯度（每步收缩，过 0 置 0）或 FTRL</td></tr>
+      <tr><td>加正则以后，平均预测偏离了播放率</td><td>偏置也被罚了，被拉向 0，p 跟着被拉向 0.5。本页 L2 λ = 0.1 连偏置一起罚，训练集的平均预测从 0.227 变成 0.310</td><td>偏置不加正则</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">数据和参考模型来自共用的参考脚本 ml_reference.mjs（固定随机种子，用 Node 20 运行，可复现）：3000 次曝光，第 1–20 天训练、第 21–24 天验证、第 25–30 天测试。参考逻辑回归是 15 个特征按训练集标准化、参数从 0 开始、全量梯度下降、学习率 0.5、600 轮；神经网络和 GBDT 的数字也来自这个脚本。本页其余数字是在同一份 samples.csv 上、用同样的特征和标准化重新算的，训练代码先复现了参考模型的全部 16 个参数和整条损失曲线。追加的实验：学习率 0.05 到 50（全量，600 轮）；小批量 32（学习率 0.05 和 0.5）和逐条更新（0.005），打乱顺序的种子 1–3；平方误差和偏置 −6 的起点（2000 轮）；L2 和 L1（近端梯度，偏置不罚，3000 轮）；加用户和歌曲编号的 715 个特征（600 轮）；5 个标准正态随机起点（种子 1–5，3000 轮）；3 个特征的逻辑回归（学习率 0.5，6 个起点，40000 轮）和 3 → 4 → 1 网络（He 初始化，种子 1–8，学习率 1，20000 轮）；梯度下降、动量 0.9 和 Adam 各自在 0.003 到 8 之间扫学习率后取最快的；二阶导数矩阵的特征值用 Jacobi 方法求。等高线图是在 0.005 间隔的网格上算的训练集损失，其余 14 个参数固定在参考模型的值。动量、Adam、AdamW、Adagrad 和 FTRL 的做法、默认值和使用场合是一般知识，不是本页的实验。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 2 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="features-samples.html"><span class="t">← 上一篇：特征和样本</span><span class="d">特征和样本：模型吃进去的是什么</span></a>
+    <a class="demo" href="neural-network.html"><span class="t">下一篇：神经网络 →</span><span class="d">一组加权和画不出"晚上爱听长歌、白天爱听短歌"这种规律。神经网络把加权和叠成几层，学的办法还是同一个。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>视频解码 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../../assets/kb.css?v=6">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../../../index.html">知识库</a><span class="sep">/</span><a href="../../index.html">音视频</a><span class="sep">/</span><a href="../../index.html#video">视频</a><span class="sep">/</span>视频解码</nav>
+  <header class="hero">
+    <div class="eyebrow">音视频 · 视频</div>
+    <h1>视频解码</h1>
+    <p class="lede">YUV 之前的那一步：几百字节的压缩包怎么变回一整帧画面。按编码格式分开讲。</p>
+  </header>
+
+  <!-- 这个主题按编码格式分组：每种格式一个 .label + .topics。新增格式时照着 H.264 那一组复制 -->
+  <div class="label">H.264<span class="c">1</span></div>
+  <div class="topics">
+    <a class="topic" href="h264-decoding.html">
+      <span class="t">H.264 解码：350 字节怎么变回一帧画面</span>
+      <span class="d">NAL 单元和两种包装，SPS、PPS 里的每个字段，宏块怎么预测和重建，I、P、B 帧谁参考谁，解码顺序为什么和显示顺序不同，以及软解和硬解的差别。</span>
+      <span class="m">12 节 · 参数集和 slice 头读自 landscape_720p.mp4</span>
+    </a>
+  </div>
+  <p class="caption" style="margin-top:14px">还没写的格式：HEVC（H.265）、VP9、AV1。</p>
+
+  <div class="label">接着读</div>
+  <div class="demos">
+    <a class="demo" href="../yuv/index.html"><span class="t">YUV 与像素格式 →</span><span class="d">解码之后得到的一帧画面：三个平面怎么排，怎么换算成 RGB。</span></a>
+    <a class="demo" href="../../index.html#container"><span class="t">← 封装格式</span><span class="d">压缩包是从哪读出来的：MP4 里的索引和时间戳。</span></a>
+  </div>
+</main>
+</body>
+</html>

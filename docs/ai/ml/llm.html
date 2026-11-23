@@ -1,0 +1,619 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>大语言模型：一个字一个字地预测</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：图里的条形、注意力矩阵的格子 */
+.fig .bar{fill:var(--accent)}
+.fig .cell{fill:var(--accent)}
+.fig .mask{fill:none;stroke:currentColor;stroke-opacity:.35;stroke-dasharray:4 4}
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+.fig text.big{font-size:16px;font-weight:500}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+.caption+ul{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#task">预测下一个 token</a></li>
+    <li><a href="#counting">先数数：n-gram 模型</a></li>
+    <li><a href="#sampling">让数数的模型写几句</a></li>
+    <li><a href="#limits">数数的模型卡在哪</a></li>
+    <li><a href="#tokens">token：字、词，还是半个词</a></li>
+    <li><a href="#neural">换成神经网络</a></li>
+    <li><a href="#attention">自注意力：手算一遍</a></li>
+    <li><a href="#block">一个 Transformer 块</a></li>
+    <li><a href="#training">训练：还是对数损失</a></li>
+    <li><a href="#decoding">生成：从分布里挑一个</a></li>
+    <li><a href="#tuning">预训练之后：指令微调和偏好</a></li>
+    <li><a href="#memory">内存和速度：几道乘法</a></li>
+    <li><a href="#wrong">为什么说得通顺却会错</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>大语言模型：一个字一个字地预测</h1>
+  <p class="lede">前几篇的模型对一次曝光只算一个数：这首歌会不会被听满 30 秒。大语言模型做的是同一类事：读进到目前为止的文字，给词表里的每个 token 各算一个概率，挑一个接在后面，再算下一个。这一页先用这个知识库自己的文字数出一个最简单的语言模型，看清"预测下一个字"是什么意思；再把它换成神经网络，看大模型怎么训练、怎么生成，以及为什么会说得通顺却说错。</p>
+  <div class="journey" aria-label="三元模型的一次预测">
+    <div class="step"><span class="k">看到的上文</span><span class="v">解码</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">词表里每个字一个概率</span><span class="v">1,502 个</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">最大的是"器"</span><span class="v hex">44.2%</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">下一个字真是"器"时的损失</span><span class="v">0.82</span></div>
+  </div>
+  <p class="caption">数字来自一个三元模型：把这个知识库在 AI 这一组之前发布的 35 个页面的正文取出来，共 273,766 个字符，数每两个字后面跟着什么。"解码"出现了 292 次，其中 129 次后面是"器"；0.82 是 −ln 0.442，第 09 节讲它是什么。这一页是<a href="prediction.html#s11">总览图</a>里"大模型"那一站的展开。</p>
+</header>
+
+<section id="task">
+  <h2><span class="n">01</span>预测下一个 token</h2>
+  <p>前几篇的模型回答的是一道是非题：把这首歌推给这位用户，他会不会听满 30 秒。输入是 15 个特征，输出是 0 到 1 之间的一个概率。逻辑回归、<a href="trees-gbdt.html">树模型</a>和小神经网络，形状都是这样。</p>
+  <p>语言模型回答的是一道选择题：给出到目前为止的文字，下一个 token 是什么。token（中文也叫词元）是模型读写文字的单位，可以是一个字，也可以是半个词，第 05 节细说。所有可能的 token 列成一张表，叫词表（vocabulary）。模型的输出是词表里每个 token 各一个概率，加起来等于 1。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>前几篇：推荐一首歌</th><th>这一页：写下一个字</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">一条样本</td><td>一次曝光</td><td>文字里的一个位置</td></tr>
+      <tr><td class="nw">输入</td><td>15 个特征：曲风偏好、歌曲热度、是否关注歌手……</td><td>这个位置前面的文字</td></tr>
+      <tr><td class="nw">标签</td><td>听满 30 秒记 1，否则记 0</td><td>这个位置上实际出现的 token</td></tr>
+      <tr><td class="nw">输出</td><td>1 个概率</td><td>词表里每个 token 一个概率</td></tr>
+      <tr><td class="nw">标签从哪来</td><td>播放日志，要等用户真的听过</td><td>文字本身</td></tr>
+    </tbody>
+  </table></div>
+  <p>最后一行是关键。<a href="features-samples.html#logs">特征和样本</a>那一篇里，一条正样本要等曝光发生、用户播放之后才有。语言模型的标签是现成的：拿一段真实的文字，每个位置都是一条样本，前面的字是输入，这个位置上的字就是答案。这叫自监督（self-supervised），监督信号来自数据自己，不用人标。</p>
+  <p>DNS 那一页的开头有一句"每次连接之前都要先做它。"单拿出来看，12 个字符就是 12 条样本：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">样本</th><th>输入：前面的字</th><th>标签：下一个字</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>每</td><td>次</td></tr>
+      <tr><td class="num">2</td><td>每次</td><td>连</td></tr>
+      <tr><td class="num">3</td><td>每次连</td><td>接</td></tr>
+      <tr><td class="num">…</td><td>…</td><td>…</td></tr>
+      <tr><td class="num">11</td><td>每次连接之前都要先做</td><td>它</td></tr>
+      <tr><td class="num">12</td><td>每次连接之前都要先做它</td><td><code>。</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>一本书几十万字，就是几十万条样本；网上的文字，就是上万亿条。前几篇的 3,000 条曝光要靠用户一条条产生，这里的样本多到用不完。<a href="prediction.html#s1">预测在预测什么</a>，在大模型这里的答案就是：下一个 token。推荐也借了这个思路：把一个人的听歌记录当成一句话，预测下一首（<a href="ctr-recommendation.html#lineage">推荐</a>那一篇的模型演进）。</p>
+  <p>预测完一个，把它接在末尾，再预测下一个，就能一直写下去。所谓生成，就是这个循环：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 206" role="img" aria-label="生成的循环：已有的文字“解码”交给模型，模型给 1,502 个 token 各一个概率，器 0.44 最大；挑出“器”接到末尾，再算下一个">
+      <defs><marker id="llm-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="ghost" x="10" y="44" width="126" height="78" rx="8"/>
+      <rect class="hot" x="176" y="44" width="104" height="78" rx="8"/>
+      <rect class="band" x="320" y="14" width="150" height="138" rx="8"/>
+      <rect class="hot" x="510" y="44" width="80" height="78" rx="8"/>
+      <g marker-end="url(#llm-arrow)" fill="none">
+        <path class="lead" d="M136 83H174"/>
+        <path class="lead" d="M280 83H318"/>
+        <path class="lead" d="M470 83H508"/>
+        <path class="ghostline" d="M550 122V188H73V124"/>
+      </g>
+      <path class="bar" d="M366 53H423Q426 53 426 56V62Q426 65 423 65H366Z"/>
+      <path class="bar" d="M366 77H375.6Q378.6 77 378.6 80V86Q378.6 89 375.6 89H366Z"/>
+      <path class="bar" d="M366 101H370Q373 101 373 104V110Q373 113 370 113H366Z"/>
+      <g text-anchor="middle">
+        <text x="73" y="74" class="m">已有的文字</text>
+        <text x="73" y="104" class="big">解码</text>
+        <text x="228" y="74">模型</text>
+        <text x="228" y="95" class="m">三元表，</text>
+        <text x="228" y="111" class="m">或神经网络</text>
+        <text x="395" y="36" class="m">每个 token 一个概率</text>
+        <text x="550" y="74" class="m">挑一个</text>
+        <text x="550" y="104" class="big">器</text>
+        <text x="311" y="180" class="a">接到末尾：解码器，再算下一个</text>
+      </g>
+      <text x="334" y="64">器</text>
+      <text x="334" y="88">结束</text>
+      <text x="334" y="112">后</text>
+      <text x="432" y="64" class="mn">0.44</text>
+      <text x="384.6" y="88" class="mn">0.09</text>
+      <text x="379" y="112" class="mn">0.05</text>
+      <text x="334" y="138" class="m">…… 共 1,502 个</text>
+    </svg>
+    </div>
+    <figcaption>一次只出一个 token：算出整张概率表，挑一个，接到末尾，再算下一个。图里的概率是第 02 节的三元模型在"解码"之后给出的真实数字。换成大模型，中间那一格变成神经网络，其余不变。</figcaption>
+  </figure>
+</section>
+
+<section id="counting">
+  <h2><span class="n">02</span>先数数：n-gram 模型</h2>
+  <p>最简单的语言模型不用训练，只用数数：拿一大段文字，统计每个字后面跟过什么字、各几次。</p>
+<pre><code>P(下一个是"器" | 前面是"解码")
+  = "解码器"出现的次数 ÷ "解码"出现的次数
+  = 129 ÷ 292 = 0.442</code></pre>
+  <p>只看前 1 个字叫二元模型（bigram），看前 2 个字叫三元模型（trigram），统称 n-gram：用前 n − 1 个字预测第 n 个。这个办法很老，1948 年香农在《通信的数学理论》里就按英文字母和单词的统计造过句子。</p>
+  <p>用来统计的文字叫语料。这里的语料就是这个知识库：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>项</th><th>做法和结果</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">页面</td><td>AI 这一组之前发布的 35 个页面，包括各类目的首页和演示页</td></tr>
+      <tr><td class="nw">取哪些字</td><td>正文里看得见的文字：去掉 script、style 和代码块（pre），去掉标签。段落、列表项、表格单元格、图里的每个标签各算一段，连续的空白合成一个空格</td></tr>
+      <tr><td class="nw">什么算一个 token</td><td>每个字符一个：汉字、标点、英文字母、数字、空格都算。每段末尾再加一个"段落结束"，它也要被预测</td></tr>
+      <tr><td class="nw">规模</td><td>12,057 段，273,766 个字符，其中汉字 146,002 个。不同的字符 1,501 个，加上段落结束，词表是 1,502 个</td></tr>
+      <tr><td class="nw">样本</td><td>285,823 个位置：每个字符一个，每段的结束标记一个</td></tr>
+    </tbody>
+  </table></div>
+  <p>数出来，"解码"后面跟过 47 种字。只看前一个字"码"时，是 125 种：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 242" role="img" aria-label="只看“码”时后面跟过 125 种字，器占 22.5%；看“解码”时只跟过 47 种，器占 44.2%">
+      <line class="grid" x1="300" y1="8" x2="300" y2="236"/>
+      <line class="axis" x1="80" y1="56" x2="80" y2="210"/>
+      <line class="axis" x1="392" y1="56" x2="392" y2="210"/>
+      <text x="12" y="22">只看前 1 个字：码</text>
+      <text x="12" y="40" class="m">出现 761 次，后面跟过 125 种字</text>
+      <text x="312" y="22">看前 2 个字：解码</text>
+      <text x="312" y="40" class="m">出现 292 次，后面跟过 47 种字</text>
+      <g text-anchor="end">
+        <text x="72" y="72">器</text><text x="72" y="98">段落结束</text><text x="72" y="124">率</text><text x="72" y="150">逗号</text><text x="72" y="176">顿号</text><text x="72" y="202">流</text>
+        <text x="384" y="72">器</text><text x="384" y="98">段落结束</text><text x="384" y="124">后</text><text x="384" y="150">之</text><text x="384" y="176">句号</text><text x="384" y="202">逗号</text>
+      </g>
+      <path class="bar" d="M80 61H148.9Q151.9 61 151.9 64V72Q151.9 75 148.9 75H80Z"/>
+      <path class="bar" d="M80 87H105.6Q108.6 87 108.6 90V98Q108.6 101 105.6 101H80Z"/>
+      <path class="bar" d="M80 113H102.7Q105.7 113 105.7 116V124Q105.7 127 102.7 127H80Z"/>
+      <path class="bar" d="M80 139H98.4Q101.4 139 101.4 142V150Q101.4 153 98.4 153H80Z"/>
+      <path class="bar" d="M80 165H89.6Q92.6 165 92.6 168V176Q92.6 179 89.6 179H80Z"/>
+      <path class="bar" d="M80 191H88.4Q91.4 191 91.4 194V202Q91.4 205 88.4 205H80Z"/>
+      <path class="bar" d="M392 61H530.4Q533.4 61 533.4 64V72Q533.4 75 530.4 75H392Z"/>
+      <path class="bar" d="M392 87H418.6Q421.6 87 421.6 90V98Q421.6 101 418.6 101H392Z"/>
+      <path class="bar" d="M392 113H405.4Q408.4 113 408.4 116V124Q408.4 127 405.4 127H392Z"/>
+      <path class="bar" d="M392 139H401.1Q404.1 139 404.1 142V150Q404.1 153 401.1 153H392Z"/>
+      <path class="bar" d="M392 165H400Q403 165 403 168V176Q403 179 400 179H392Z"/>
+      <path class="bar" d="M392 191H400Q403 191 403 194V202Q403 205 400 205H392Z"/>
+      <text x="157.9" y="72" class="mn">22.5%</text><text x="114.6" y="98" class="mn">8.9%</text><text x="111.7" y="124" class="mn">8.0%</text><text x="107.4" y="150" class="mn">6.7%</text><text x="98.6" y="176" class="mn">3.9%</text><text x="97.4" y="202" class="mn">3.5%</text>
+      <text x="539.4" y="72" class="mn">44.2%</text><text x="427.6" y="98" class="mn">9.2%</text><text x="414.4" y="124" class="mn">5.1%</text><text x="410.1" y="150" class="mn">3.8%</text><text x="409" y="176" class="mn">3.4%</text><text x="409" y="202" class="mn">3.4%</text>
+      <text x="12" y="232" class="m">其余 119 种，合计 46.4%</text>
+      <text x="312" y="232" class="m">其余 41 种，合计 30.8%</text>
+    </svg>
+    </div>
+    <figcaption>多看一个字，候选从 125 种缩到 47 种，"器"从 22.5% 升到 44.2%。前面多了一个"解"，"码率""码流"这类接法就排除了。</figcaption>
+  </figure>
+  <p>再看几个开头：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>前两个字</th><th>出现次数</th><th>后面跟过几种</th><th>最常见的 4 个</th></tr></thead>
+    <tbody>
+      <tr><td>解码</td><td class="num">292</td><td class="num">47</td><td>器 44.2%，段落结束 9.2%，后 5.1%，之 3.8%</td></tr>
+      <tr><td>播放</td><td class="num">150</td><td class="num">28</td><td>器 55.3%，列 10.0%，端 6.0%，时 4.0%</td></tr>
+      <tr><td>数据</td><td class="num">316</td><td class="num">95</td><td>逗号 12.3%，段落结束 8.9%，的 7.0%，句号 4.4%</td></tr>
+      <tr><td>网络</td><td class="num">268</td><td class="num">83</td><td>段落结束 12.3%，上 10.8%，空格 5.2%，逗号 3.7%</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>分布有尖有平。</strong>"解码""播放"后面多半是"器"；"数据""网络"后面接什么的都有，排在前面的是标点和"的"。模型有没有把握，从概率的形状就看得出来。</li>
+    <li><strong>段落结束排得很靠前。</strong>目录、返回链接和标题里的"← 网络""视频解码"这类短语各自单独成段，后面紧跟着就是段落结束。</li>
+    <li><strong>模型就是这张表。</strong>三元模型存的是 37,610 种两字开头、113,399 个不为 0 的次数，没有别的。前几篇的模型是 16 个或 401 个参数，这里是十几万个次数，都是<a href="prediction.html#s8">一堆数</a>。</li>
+  </ul>
+</section>
+
+<section id="sampling">
+  <h2><span class="n">03</span>让数数的模型写几句</h2>
+  <p>有了下一个字的分布就能写字：按概率抽一个字，接上，再看最后两个字，再抽。用 Python 的 <code>random.Random(2026)</code> 固定随机种子，从"解码"和"数据"开始各写 4 段，抽到段落结束（下面记作 ⏎）或者写满 40 个字就停：</p>
+<pre><code>解码器在 PCM，表现为这些问题⏎
+解码、混音就是告诉它：最多两次手，两次转换一次交换的内容，但所有的路由器记着每个 I
+解码⏎
+解码器依次拆帧头的含义⏎
+
+数据量非常大：UDP 不用再问：⏎
+数据本身。同一个⏎
+数据：这个域名到对方拿信令统一排时间。dthlibrarch_lied 0.7。⏎
+数据都来自哪张。所以 Flaget.kt。⏎</code></pre>
+  <ul>
+    <li><strong>每三个连着的字都在知识库里出现过</strong>，所以局部像那么回事。"解码器依次拆帧头的含义"差不多是一句通顺的话。</li>
+    <li><strong>整句没有意思。</strong>第二段二十几个字里，从解码跳到混音，又跳到路由器。它只记得最后两个字，不知道自己在说什么。</li>
+    <li><strong>英文和代码混进来时更乱。</strong>"dthlibrarch_lied"是几个英文单词的碎片拼起来的。语料里四成是英文字母、数字、符号和空格，它分不清自己在写中文还是在写代码。</li>
+    <li><strong>每次运行的结果不同。</strong>换一个种子就是另外 4 段。第 10 节讲怎么控制这种随机。</li>
+  </ul>
+</section>
+
+<section id="limits">
+  <h2><span class="n">04</span>数数的模型卡在哪</h2>
+  <p>这个模型有三个绕不过去的问题。</p>
+  <h3>没见过的，概率就是 0</h3>
+  <p>"训"和"练"两个字在这 35 页里一次也没出现过。这个模型给它们的概率永远是 0，不可能写出"训练"。"梯度""向量""样本"也都是 0 次。"预测"出现了 14 次，全是"帧内预测""预测方式"这类编解码里的说法，出自 H.264 和 AAC 那几篇。</p>
+  <p>它知道什么，完全取决于数过的文字。大模型也一样，只是它数过的文字多得多。</p>
+  <h3>看得越长，没见过的越多</h3>
+  <p>多看几个字，预测会准一些。拿 34 页来数，留出 DNS 那一页当测试，看前 0 到 5 个字各试一遍：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>看前几个字</th><th>34 页里不同的组合</th><th>测试页上没见过的组合</th><th>34 页上的平均损失</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0</td><td class="num">1,492</td><td class="num">0.1%</td><td class="num">5.59</td></tr>
+      <tr><td class="num">1</td><td class="num">37,205</td><td class="num">8.2%</td><td class="num">3.38</td></tr>
+      <tr><td class="num">2</td><td class="num">108,784</td><td class="num">34.1%</td><td class="num">1.96</td></tr>
+      <tr><td class="num">3</td><td class="num">161,449</td><td class="num">57.2%</td><td class="num">1.02</td></tr>
+      <tr><td class="num">4</td><td class="num">187,937</td><td class="num">69.6%</td><td class="num">0.64</td></tr>
+      <tr><td class="num">5</td><td class="num">202,178</td><td class="num">75.8%</td><td class="num">0.50</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">"没见过"指的是前面这几个字加上下一个字的组合，在 34 页里一次也没出现过，按次数算概率就是 0。损失越小，说明模型给真实下一个字的概率越大，第 09 节细讲。</p>
+  <p>看得越长，在数过的文字上越准，因为它几乎是把原文背了下来。换到没见过的一页，看前 2 个字时就有三分之一的位置是没见过的组合，看前 5 个字时是四分之三。这和<a href="evaluation.html#fit">评估</a>那一篇说的过拟合是一回事：在训练数据上的分数，说明不了新数据上的表现。</p>
+  <p>表的大小也在涨。1,502 个字，前两个字的组合理论上有 1,502² ≈ 226 万种，再接一个字就是 1,502³ ≈ 34 亿格。35 页里填上的只有 113,399 格，约三万分之一。文字再多也填不满。</p>
+  <h3>两个字以外的都看不见</h3>
+  <p>"音频解码器输出"和"视频解码器输出"，接下来一个该说 PCM，一个该说 YUV。三元模型只看得到最后的"输出"两个字，两种情况给出的概率完全一样。第 03 节写着写着就换话题，也是这个原因。</p>
+  <p>补救的办法有过不少，比如没见过三个字的组合就退回去看两个字，第 09 节会用到。真正绕过去靠的是神经网络，它做了两件事：</p>
+  <ul>
+    <li><strong>把字变成向量。</strong>"解码"和"编码"后面跟的字很像，排第一的都是"器"（44.2% 和 29.4%），可在计数表里它们是毫不相干的两行，各数各的。神经网络给每个 token 学一个向量，用法相近的 token 向量也相近，在一个上面学到的规律会用到另一个上。2003 年 Bengio 等人提出神经网络语言模型，出发点就是这个。</li>
+    <li><strong>用注意力看全部上文</strong>，不只是最后两个字。见第 07 节。</li>
+  </ul>
+</section>
+
+<section id="tokens">
+  <h2><span class="n">05</span>token：字、词，还是半个词</h2>
+  <p>上面的模型一个字符算一个 token。好处是词表小，什么文字都拼得出来；代价是序列长，一句话要预测很多步，每一步带的信息也少。按词切可以短很多，但词表会大到几十万，新词、错别字、代码里的变量名还是切不出来。</p>
+  <p>现在的大模型用折中的子词（subword）：常见的词整个算一个 token，少见的拆成几块。最常用的切法是 BPE（byte pair encoding，字节对编码），原本是一种压缩算法，2016 年 Sennrich 等人把它用到了机器翻译上。它的训练只有一句话：找出语料里出现次数最多的相邻两个 token，合并成一个新 token，重复几千到几万次。</p>
+  <p>在这个知识库的正文上跑一遍。为了看得清楚，只在连续的汉字之间合并，英文、数字和标点保持一个字符一个 token。最先合并出来的 12 个，括号里是合并时的次数：</p>
+  <p>一个（1,092）、字节（723）、地址（659）、路由（439）、服务（391）、没有（372）、服务器（362）、手机（351）、什么（335）、里的（327）、数据（316）、路由器（315）。"服务器"是第 7 次把已经合并好的"服务"和"器"再合一次得来的，"解码"排在第 17 次。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>合并次数</th><th>词表（汉字部分）</th><th>146,002 个汉字切成几个 token</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0</td><td class="num">1,364</td><td class="num">146,002</td></tr>
+      <tr><td class="num">100</td><td class="num">1,464</td><td class="num">126,426</td></tr>
+      <tr><td class="num">1,000</td><td class="num">2,364</td><td class="num">97,262</td></tr>
+      <tr><td class="num">3,000</td><td class="num">4,364</td><td class="num">81,563</td></tr>
+    </tbody>
+  </table></div>
+  <p>合并 1,000 次之后，DNS 那一页开头的一句切成 11 个 token，原来是 17 个字符（两个空格也各算一个）：</p>
+<pre><code>网络|上的|机器|靠| |I|P| |地址|找到|对方</code></pre>
+  <p>"音频解码器输出"切成 <code>音频|解码器|输出</code>，3 个 token。第 07 节就拿它手算。</p>
+  <ul>
+    <li><strong>合并只看次数，不看意思。</strong>"里的""的是""要先"也成了 token，它们不是词典里的词。</li>
+    <li><strong>大模型的 BPE 从字节开始，不从字开始。</strong>UTF-8 里一个常用汉字占 3 个字节，这 273,766 个字符一共是 601,942 字节。GPT-2 的词表是 256 种字节，加上合并出来的 5 万个，再加一个文本结束标记，共 50,257 个。语料里常见的汉字会合成一个 token，少见的字可能还是两三个。同一段中文在不同模型里切出来的 token 数可以差很多，要用那个模型自己的分词器去数。</li>
+    <li><strong>LLaMA 和 Llama 2 也用 BPE，词表 32k 个。</strong>它们把数字拆成单个数字，遇到词表里没有的字就退回 UTF-8 字节。</li>
+    <li><strong>词表大小是个取舍。</strong>词表大，同样的文字 token 少，生成的步数少，上下文窗口（第 13 节）里装得下的文字多；但每个 token 在输入和输出各要一行参数，见下一节。</li>
+  </ul>
+</section>
+
+<section id="neural">
+  <h2><span class="n">06</span>换成神经网络</h2>
+  <p>神经网络语言模型的输入输出和计数表一样：进去前面的 token，出来词表上的概率。区别在中间。GPT、LLaMA 用的都是 Transformer（2017 年 Vaswani 等人提出），从下往上分四步：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 410" role="img" aria-label="Transformer 从下往上：三个 token 查嵌入表变成向量，过 N 个块（注意力只从前面的位置取信息，前馈各位置单算），最后一个位置的向量乘输出矩阵得到 logit，softmax 成概率">
+      <defs><marker id="llm-arrow2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="band" x="40" y="150" width="340" height="152" rx="10"/>
+      <rect class="hot" x="250" y="12" width="140" height="28" rx="6"/>
+      <rect class="ghost" x="250" y="60" width="140" height="28" rx="6"/>
+      <g class="ghost">
+        <rect x="71.5" y="116" width="57" height="14" rx="3"/><rect x="181.5" y="116" width="57" height="14" rx="3"/>
+        <rect x="65" y="184" width="70" height="28" rx="6"/><rect x="175" y="184" width="70" height="28" rx="6"/><rect x="285" y="184" width="70" height="28" rx="6"/>
+      </g>
+      <rect class="hot" x="291.5" y="116" width="57" height="14" rx="3"/>
+      <g class="snap" fill="none"><path d="M100 294L210 248"/><path d="M100 294L320 248"/><path d="M210 294L320 248"/></g>
+      <g class="lead" fill="none"><path d="M100 294V250"/><path d="M210 294V250"/><path d="M320 294V250"/></g>
+      <circle class="dot" cx="100" cy="244" r="4"/><circle class="dot" cx="210" cy="244" r="4"/><circle class="dot" cx="320" cy="244" r="4"/>
+      <g class="band">
+        <rect x="71.5" y="320" width="57" height="14" rx="3"/><rect x="181.5" y="320" width="57" height="14" rx="3"/><rect x="291.5" y="320" width="57" height="14" rx="3"/>
+      </g>
+      <g class="ghost">
+        <rect x="58" y="370" width="84" height="28" rx="6"/><rect x="168" y="370" width="84" height="28" rx="6"/><rect x="278" y="370" width="84" height="28" rx="6"/>
+      </g>
+      <g class="lead" fill="none" marker-end="url(#llm-arrow2)">
+        <path d="M100 370V337"/><path d="M210 370V337"/><path d="M320 370V337"/>
+        <path d="M100 320V297"/><path d="M210 320V297"/><path d="M320 320V297"/>
+        <path d="M100 240V215"/><path d="M210 240V215"/><path d="M320 240V215"/>
+        <path d="M100 184V133"/><path d="M210 184V133"/><path d="M320 184V133"/>
+        <path d="M320 116V91"/><path d="M320 60V43"/>
+      </g>
+      <g text-anchor="middle">
+        <text x="320" y="31">每个 token 一个概率</text>
+        <text x="320" y="79" class="m">词表大小个分数</text>
+        <text x="100" y="203">前馈</text><text x="210" y="203">前馈</text><text x="320" y="203">前馈</text>
+        <text x="100" y="389">音频</text><text x="210" y="389">解码器</text><text x="320" y="389">输出</text>
+      </g>
+      <text x="400" y="31" class="m">softmax：变成概率</text>
+      <text x="400" y="79" class="m">乘输出矩阵：logit</text>
+      <text x="400" y="127" class="m">只用最后一个位置</text>
+      <text x="400" y="166" class="a">块 ×N（GPT-3 是 96 个）</text>
+      <text x="400" y="203" class="m">前馈：各位置各算各的</text>
+      <text x="400" y="272" class="m">注意力：看自己和前面</text>
+      <text x="400" y="331" class="m">查嵌入表，加上位置</text>
+      <text x="400" y="389" class="m">token 编号</text>
+    </svg>
+    </div>
+    <figcaption>数据从下往上走。注意力那一层的斜线只从左往右连：每个位置只从自己和前面取信息。训练时每个位置都会在顶上算出一张概率表；生成时只用最后一个位置的那张。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>查嵌入表。</strong>每个 token 是一个编号。嵌入表（embedding）是一个"词表大小 × d"的矩阵，编号是几就取第几行，得到一个 d 维向量。d 在 LLaMA-7B 里是 4,096，在 GPT-3 里是 12,288。光有向量分不出谁在前谁在后，还要加上位置信息（第 07 节末尾）。</li>
+    <li><strong>过 N 个 Transformer 块。</strong>每个块先做自注意力，让每个位置从前面的位置取信息；再过一个前馈网络，每个位置各算各的。块的输入和输出形状相同，可以一个接一个叠上去，GPT-3 叠了 96 个。从下往上算一遍，就是<a href="prediction.html#s6">前向传播</a>。</li>
+    <li><strong>算 logit。</strong>最后一个位置的向量乘一个"d × 词表大小"的输出矩阵，词表里每个 token 得到一个分数，叫 logit。每个分数都是向量各维的<a href="prediction.html#s3">加权求和</a>，每个 token 有自己的一组权重。</li>
+    <li><strong>softmax 变成概率。</strong>p<sub>i</sub> = e<sup>z<sub>i</sub></sup> ÷ (e<sup>z<sub>1</sub></sup> + e<sup>z<sub>2</sub></sup> + … + e<sup>z<sub>V</sub></sup>)，z 是 logit，V 是词表大小。取指数让每个数变成正的，除以总和让它们加起来是 1，分数高的概率大。</li>
+  </ul>
+  <div class="key">只有两类时，把另一类的分数定为 0，softmax 就是 e<sup>z</sup> ÷ (e<sup>z</sup> + 1) = 1 ÷ (1 + e<sup>−z</sup>)，正是前几篇的 sigmoid。逻辑回归就是一个只有两个 token 的输出层。</div>
+  <p>第 04 节的稀疏问题在这里缓解了：softmax 给出的概率不会是 0；一个没见过的组合，只要里面的 token 和见过的 token 向量相近，算出来的概率也相近。<a href="ctr-recommendation.html#embedding">推荐</a>那一篇给用户和歌曲的 ID 查表得到向量，是同一个办法。代价是参数多了：LLaMA-7B 的嵌入表是 32,000 × 4,096 ≈ 1.3 亿个参数，输出矩阵也是这个形状。</p>
+</section>
+
+<section id="attention">
+  <h2><span class="n">07</span>自注意力：手算一遍</h2>
+  <p>自注意力（self-attention）解决的是计数模型的第三个问题：让一个位置用上前面任何位置的信息，而且自己决定用多少。</p>
+  <p>每个位置的向量先乘三个学出来的矩阵，变成三个向量：</p>
+  <ul>
+    <li><strong>查询 q（query）</strong>：我在找什么样的信息；</li>
+    <li><strong>键 k（key）</strong>：我这里有什么样的信息；</li>
+    <li><strong>值 v（value）</strong>：被选中时我交出去的内容。</li>
+  </ul>
+  <p>位置 i 给位置 j 打的分，是 q<sub>i</sub> 和 k<sub>j</sub> 的点积（对应的数相乘再相加）除以 √d。每一行分数做 softmax 得到权重，再用权重把各位置的 v 加起来，就是位置 i 的输出。</p>
+  <p>拿第 05 节切出来的"音频|解码器|输出"算一遍。d = 4，√d = 2。真实模型里 q、k、v 由向量乘矩阵得到，每个头有 64 到 128 维，每一维也没有说得出的含义；下面这些是为了手算编的小整数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">位置</th><th>token</th><th>q</th><th>k</th><th>v</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>音频</td><td class="mono">(1, 0, 0, 1)</td><td class="mono">(1, 0, 1, 0)</td><td class="mono">(2, 0, 0, 1)</td></tr>
+      <tr><td class="num">2</td><td>解码器</td><td class="mono">(0, 2, 0, 0)</td><td class="mono">(0, 1, 0, 1)</td><td class="mono">(0, 1, 1, 0)</td></tr>
+      <tr><td class="num">3</td><td>输出</td><td class="mono">(2, 0, 2, 0)</td><td class="mono">(0, 0, 1, 1)</td><td class="mono">(0, 0, 1, 0)</td></tr>
+    </tbody>
+  </table></div>
+  <p>算第 3 个位置"输出"。它要预测下一个 token，得知道前面说的是音频还是视频。</p>
+<pre><code>① 点积      q₃·k₁ = 2×1 + 0×0 + 2×1 + 0×0 = 4
+            q₃·k₂ = 2×0 + 0×1 + 2×0 + 0×1 = 0
+            q₃·k₃ = 2×0 + 0×0 + 2×1 + 0×1 = 2
+② 除以 √d   4、0、2  →  2、0、1
+③ 掩码      位置 3 是最后一个，前面都能看，三个分数都保留
+④ softmax   e² = 7.389，e⁰ = 1，e¹ = 2.718，合计 11.107
+            权重 = 7.389 ÷ 11.107，1 ÷ 11.107，2.718 ÷ 11.107
+                 = 0.665，0.090，0.245
+⑤ 加权求和  0.665 × (2, 0, 0, 1) + 0.090 × (0, 1, 1, 0) + 0.245 × (0, 0, 1, 0)
+            = (1.33, 0.09, 0.33, 0.67)</code></pre>
+  <p>"输出"把三分之二的注意力给了"音频"，它的新向量大半来自"音频"交出的 v。后面的层拿这个向量去预测下一个 token，就有了分清 PCM 和 YUV 的依据。前两个位置也这样算，三行合起来是一张权重表：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 244" role="img" aria-label="3 行 3 列的注意力权重表。音频这一行：看音频 1.000。解码器这一行：看音频 0.269，看解码器 0.731。输出这一行：看音频 0.665，看解码器 0.090，看输出 0.245。右上三格被因果掩码挡住。每一行合计 1">
+      <text x="320" y="26" class="m" text-anchor="middle">被看的位置（k、v）</text>
+      <text x="158" y="54" class="m" text-anchor="end">在算的位置（q）</text>
+      <g text-anchor="middle">
+        <text x="220" y="54">音频</text><text x="320" y="54">解码器</text><text x="420" y="54">输出</text>
+      </g>
+      <g text-anchor="end">
+        <text x="158" y="97">音频</text><text x="158" y="153">解码器</text><text x="158" y="209">输出</text>
+      </g>
+      <rect class="cell" x="172" y="66" width="96" height="52" rx="5" fill-opacity="0.48"/>
+      <rect class="mask" x="272" y="66" width="96" height="52" rx="5"/>
+      <rect class="mask" x="372" y="66" width="96" height="52" rx="5"/>
+      <rect class="cell" x="172" y="122" width="96" height="52" rx="5" fill-opacity="0.19"/>
+      <rect class="cell" x="272" y="122" width="96" height="52" rx="5" fill-opacity="0.37"/>
+      <rect class="mask" x="372" y="122" width="96" height="52" rx="5"/>
+      <rect class="cell" x="172" y="178" width="96" height="52" rx="5" fill-opacity="0.35"/>
+      <rect class="cell" x="272" y="178" width="96" height="52" rx="5" fill-opacity="0.12"/>
+      <rect class="cell" x="372" y="178" width="96" height="52" rx="5" fill-opacity="0.18"/>
+      <g text-anchor="middle">
+        <text x="220" y="93" class="mn big">1.000</text><text x="220" y="111" class="t">分数 0.5</text>
+        <text x="320" y="97" class="m">挡住</text>
+        <text x="420" y="97" class="m">挡住</text>
+        <text x="220" y="149" class="mn big">0.269</text><text x="220" y="167" class="t">分数 0.0</text>
+        <text x="320" y="149" class="mn big">0.731</text><text x="320" y="167" class="t">分数 1.0</text>
+        <text x="420" y="153" class="m">挡住</text>
+        <text x="220" y="205" class="mn big">0.665</text><text x="220" y="223" class="t">分数 2.0</text>
+        <text x="320" y="205" class="mn big">0.090</text><text x="320" y="223" class="t">分数 0.0</text>
+        <text x="420" y="205" class="mn big">0.245</text><text x="420" y="223" class="t">分数 1.0</text>
+      </g>
+      <text x="486" y="97" class="m">合计 1</text>
+      <text x="486" y="153" class="m">合计 1</text>
+      <text x="486" y="209" class="m">合计 1</text>
+    </svg>
+    </div>
+    <figcaption>每一行是一个位置分给各位置的权重，小字是除以 √d 之后的分数。右上三格被因果掩码挡住：分数先设成负无穷，softmax 之后就是 0。"输出"这一行把 0.665 给了"音频"。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>因果掩码。</strong>被挡住的分数在 softmax 之前设成负无穷，e 的负无穷次方是 0。生成时后面的字还不存在；训练时整段文字一次喂进去，不挡住的话，模型看一眼下一个字就把答案抄了。</li>
+    <li><strong>为什么除以 √d。</strong>不除的话，第 3 行的权重是 0.867、0.016、0.117，尖得多。d 有上百维时，softmax 会几乎只剩一个 1、其余都是 0，梯度很小，学不动。原论文的理由是：q、k 每一维的方差为 1 时，点积的方差是 d，除以 √d 正好拉回 1。</li>
+    <li><strong>距离不要紧，顺序要另外告诉它。</strong>打分只看 q 和 k 合不合，"音频"在 2,000 个 token 之前也一样算。反过来，把前面的 token 换个次序，加权和也不变，所以第 06 节要在向量里加位置信息：GPT-2、GPT-3 给每个位置学一个向量，LLaMA 用旋转位置编码（RoPE）。</li>
+    <li><strong>多头。</strong>真实模型同时做很多组注意力，每组有自己的三个矩阵，叫一个头（head）。GPT-3 每层 96 个头，每个头 128 维。各个头关注什么是训练出来的，不是人定的。</li>
+  </ul>
+</section>
+
+<section id="block">
+  <h2><span class="n">08</span>一个 Transformer 块</h2>
+  <p>真实的块在注意力外面还有几层包装。以 GPT-3 为例，d = 12,288：</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">① 归一化</div><ol><li>调到均值 0、方差 1</li><li>再乘一组缩放系数</li></ol></div>
+    <div class="lane"><div class="who">② 多头注意力</div><ol><li>96 个头各算一遍</li><li>拼回 12,288 维</li></ol></div>
+    <div class="lane"><div class="who">③ 加回输入</div><ol><li>加上 ① 之前的向量</li><li>这叫残差连接</li></ol></div>
+    <div class="lane"><div class="who">④ 前馈网络</div><ol><li>归一化，放大再缩回</li><li>结果再加回输入</li></ol></div>
+  </div>
+  <ul>
+    <li><strong>归一化（layer normalization）和残差连接（residual）</strong>是让几十上百层训得动的两样结构，<a href="neural-network.html#vanish">神经网络</a>那一篇讲过。残差把一步的输入直接加到输出上，每一步只学"在原来的基础上改多少"，梯度也多了一条传回底层的近路。LLaMA 的归一化用的是更简单的 RMSNorm。</li>
+    <li><strong>前馈网络（feed-forward）</strong>是每个位置单独过的两层小网络：先放大到 4 倍宽（GPT-3 是 49,152 维），过一个非线性函数，再缩回来。它和那一篇的 15 → 16 → 8 → 1 是同一种东西，只是宽得多。非线性函数 GPT 系列用 GELU，LLaMA 用 SwiGLU。</li>
+  </ul>
+  <p>参数几乎全在矩阵里，数一数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>部分</th><th>矩阵</th><th class="num">参数</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">注意力</td><td>q、k、v 和输出各一个 d × d</td><td class="num">4d²</td></tr>
+      <tr><td class="nw">前馈网络</td><td>d × 4d 和 4d × d</td><td class="num">8d²</td></tr>
+      <tr><td class="nw">一个块</td><td>归一化和偏置很少，略去</td><td class="num">约 12d²</td></tr>
+    </tbody>
+  </table></div>
+  <p>GPT-3：12 × 12,288² × 96 层 ≈ 1,739 亿；嵌入表 50,257 × 12,288 ≈ 6.2 亿，位置表 2,048 × 12,288 ≈ 0.3 亿；合计约 1,746 亿。论文附录的算力表里，GPT-3 的参数量写的就是 174,600 百万，对外叫 1750 亿。三分之二的参数在前馈网络里。</p>
+  <div class="key">一个大模型就是这几种矩阵按固定的形状排好，再重复几十遍。结构一页纸画得下，那 1,746 亿个数才是它学到的东西。</div>
+</section>
+
+<section id="training">
+  <h2><span class="n">09</span>训练：还是对数损失</h2>
+  <p>训练要一个损失函数，衡量模型给的概率有多差。用的就是前几篇的<a href="evaluation.html#logloss">对数损失</a>（log loss），在这里通常叫交叉熵（cross-entropy）：</p>
+<pre><code>损失 = −ln(模型给真实下一个 token 的概率)</code></pre>
+  <p>二分类时，标签是 1 损失是 −ln p，标签是 0 损失是 −ln(1 − p)，两种情况都是"−ln（给真实结果的概率）"。语言模型只是把两个可能的结果换成了 1,502 个或者 5 万个。用三元模型的数字算三个位置：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>上文</th><th>真实的下一个字</th><th>模型给它的概率</th><th>这一步的损失</th></tr></thead>
+    <tbody>
+      <tr><td>解码</td><td>器</td><td class="num">0.442</td><td class="num">0.82</td></tr>
+      <tr><td>解码</td><td>顺（"解码顺序"）</td><td class="num">0.027</td><td class="num">3.60</td></tr>
+      <tr><td>解码</td><td>一个它在"解码"后面没见过的字</td><td class="num">0</td><td class="num">无穷大</td></tr>
+    </tbody>
+  </table></div>
+  <p>猜对了又有把握，损失小；真实的字只分到一点概率，损失大；给了 0，损失无穷大，所以真正用的模型绝不能把概率给成 0。完全不懂、每个 token 给一样的概率时，损失是 ln（词表大小）：前几篇的 2 类是 ln 2 = 0.693，本页的 1,502 个字是 7.31，LLaMA 的 32k 个 token 是 10.37，GPT-2 的 50,257 个是 10.82。</p>
+  <p>拿第 04 节留出的 DNS 那一页打分：34 页统计，测试页有 15,783 个位置。e 的损失次方叫困惑度（perplexity），可以读成"相当于每一步在多少个字里平均地瞎猜"：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th>测试页上的平均损失</th><th>困惑度</th></tr></thead>
+    <tbody>
+      <tr><td>每个字一样的概率</td><td class="num">7.31</td><td class="num">1,493</td></tr>
+      <tr><td>只看单字频率，加一平滑</td><td class="num">5.53</td><td class="num">252</td></tr>
+      <tr><td>三元，直接用次数</td><td class="num">无穷大</td><td class="num">无穷大</td></tr>
+      <tr><td>三元、二元、单字按 0.6、0.3、0.1 混合</td><td class="num">3.60</td><td class="num">36.5</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">直接用次数时，测试页上 34.1% 的位置概率是 0。加一平滑：每个字的次数都加 1。混合：三个模型的概率按权重相加，两字开头没见过时，它的权重让给二元；权重没有调过，换成 0.5、0.4、0.1 是 3.59。这里的词表是 34 页里的 1,491 个字加段落结束，再加一个"没见过的字"，共 1,493。</p>
+  <h3>神经网络怎么训</h3>
+  <p>和前几篇一样：前向算出每个位置的概率，算损失，<a href="neural-network.html#backward">反向传播</a>求出每个参数的梯度，沿梯度的反方向改一小步（<a href="gradient-descent.html">梯度下降</a>，<a href="prediction.html#s7">总览第 7 站</a>）。实际用的是 Adam 这类梯度下降的改进版。</p>
+  <p>不同的是规模，还有一点：一段 2,048 个 token 的文字，一次前向就能得到 2,048 个位置的损失。因果掩码保证每个位置只看得到自己前面，所以所有位置可以同时算，不用一个一个来。生成时做不到，下一个 token 要等上一个抽出来。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">参数</th><th>训练数据</th></tr></thead>
+    <tbody>
+      <tr><td><a href="neural-network.html#dnn">神经网络</a>那一篇的小网络</td><td class="num">21</td><td>2,000 次曝光，60 轮</td></tr>
+      <tr><td>同一篇的 DNN（15 → 16 → 8 → 1）</td><td class="num">401</td><td>2,000 次曝光，12 轮</td></tr>
+      <tr><td>本页的三元模型</td><td class="num">113,399 个次数</td><td>285,823 个位置</td></tr>
+      <tr><td>GPT-2</td><td class="num">15 亿</td><td>800 万个网页</td></tr>
+      <tr><td>GPT-3</td><td class="num">1,750 亿</td><td>3,000 亿 token</td></tr>
+      <tr><td>LLaMA-7B</td><td class="num">67 亿</td><td>1.0 万亿 token</td></tr>
+      <tr><td>LLaMA-65B</td><td class="num">652 亿</td><td>1.4 万亿 token</td></tr>
+      <tr><td>Chinchilla</td><td class="num">700 亿</td><td>1.4 万亿 token</td></tr>
+    </tbody>
+  </table></div>
+  <p>训练的计算量大约是 6 × 参数 × token 数：前向时每个参数对每个 token 做一次乘法、一次加法，算 2 次；反向大约是前向的 2 倍。GPT-3 是 6 × 1,746 亿 × 3,000 亿 ≈ 3.14 × 10<sup>23</sup> 次浮点运算，和论文附录给的数一致。</p>
+</section>
+
+<section id="decoding">
+  <h2><span class="n">10</span>生成：从分布里挑一个</h2>
+  <p>训练好的模型，对任何上文都能给出一张概率表。从表里怎么挑，叫解码策略。这一步不改模型，只改怎么用它的输出。下面都用三元模型在"解码"之后的真实分布演示。</p>
+  <h3>贪心：每次取最大的</h3>
+  <p>结果是确定的，同一个开头永远写出同一句。问题是容易绕圈。不让它停（跳过段落结束），从 4 个开头各写 40 个字：</p>
+<pre><code>解码器的 MAC 地址，不是 100 ms 的 MAC 地址，不是 100 ms 的
+数据，解码器的 MAC 地址，不是 100 ms 的 MAC 地址，不是 100 m
+网络上的 MAC 地址，不是 100 ms 的 MAC 地址，不是 100 ms 的
+播放器的 MAC 地址，不是 100 ms 的 MAC 地址，不是 100 ms 的</code></pre>
+  <p>四个开头掉进了同一个圈。每一步都是"最可能的字"，连起来是一句废话。大模型也有这个毛病：Holtzman 等人 2020 年的论文指出，按最大概率解码出来的文字平淡，而且会反复重复。</p>
+  <h3>按概率抽，用温度调形状</h3>
+  <p>把每个概率取 1/T 次方，再重新归一化，等价于把 logit 除以 T 再做 softmax。T 叫温度（temperature）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>"解码"之后</th><th class="num">T = 0.5</th><th class="num">T = 1（原样）</th><th class="num">T = 2</th></tr></thead>
+    <tbody>
+      <tr><td>器</td><td class="num">91.0%</td><td class="num">44.2%</td><td class="num">13.2%</td></tr>
+      <tr><td>段落结束</td><td class="num">4.0%</td><td class="num">9.2%</td><td class="num">6.0%</td></tr>
+      <tr><td>后</td><td class="num">1.2%</td><td class="num">5.1%</td><td class="num">4.5%</td></tr>
+      <tr><td>之</td><td class="num">0.7%</td><td class="num">3.8%</td><td class="num">3.8%</td></tr>
+      <tr><td>其余 43 种</td><td class="num">3.1%</td><td class="num">37.7%</td><td class="num">72.5%</td></tr>
+      <tr><td>凑够 90% 要几种</td><td class="num">1</td><td class="num">21</td><td class="num">39</td></tr>
+    </tbody>
+  </table></div>
+  <p>T 小于 1 把高的拉得更高，T 大于 1 把分布压平，T 趋近 0 就成了贪心。同一个种子，各抽 3 段：</p>
+<pre><code>T = 0.5   解码器不支持。⏎
+          解码器自己的 IP 的 ABIC 地址⏎
+          解码后不再涨⏎
+
+T = 2     解码器处理是两个⏎
+          解码，19（9）。路上的线路稳定地址存不一致时，很多城市，甚至公网⏎
+          解码之后。VP9、G.95448⏎</code></pre>
+  <p>低温度稳，但单调；高温度花样多，错字和乱码也多。</p>
+  <h3>只在前几名里抽</h3>
+  <ul>
+    <li><strong>top-k</strong>：只留概率最大的 k 个，重新归一化再抽。k = 3 时，"解码"之后只剩器 75.4%、段落结束 15.8%、后 8.8%。</li>
+    <li><strong>top-p</strong>（nucleus sampling，核采样）：从大到小往上加，加够 p 就停，只在这些里抽。p = 0.9 要留 21 种，p = 0.5 只留 2 种。分布尖时留得少，平时留得多，比固定的 k 灵活。</li>
+  </ul>
+  <p>温度和 top-p 常常一起用：温度定形状，top-p 砍掉长尾里那些不靠谱的字。同一个问题问两次答案不一样，原因就在这一步的抽签。要稳定的输出，比如抽取字段、写代码，把温度调低。</p>
+</section>
+
+<section id="tuning">
+  <h2><span class="n">11</span>预训练之后：指令微调和偏好</h2>
+  <p>只做过"预测下一个 token"的模型叫基座模型（base model）。它会续写，不一定会回答。网上的文字里，一个问题后面常常跟着另一个问题，所以问它"DNS 是什么？"，它可能接着再列几个问题。InstructGPT 的论文直接说，预测网页上的下一个 token，和按用户的意思把事情做好，不是同一个目标。</p>
+  <p>InstructGPT 把基座模型调成助手，在预训练后面接了三步：</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">① 预训练</div><ol><li>海量文字</li><li>预测下一个 token</li></ol></div>
+    <div class="lane"><div class="who">② 指令微调</div><ol><li>人写的提问和好回答</li><li>还是预测下一个 token</li></ol></div>
+    <div class="lane"><div class="who">③ 奖励模型</div><ol><li>人给几个回答排先后</li><li>学一个打分的模型</li></ol></div>
+    <div class="lane"><div class="who">④ 强化学习</div><ol><li>按奖励模型的分数调参数</li><li>不许离 ② 太远</li></ol></div>
+  </div>
+  <ul>
+    <li><strong>指令微调还是同一个损失。</strong>数据换成人写的示范：一个提问，一个好回答。InstructGPT 的示范数据约 1.3 万条提问。现在的对话模型把多轮对话拼成一段文字，用几个特殊 token 标出谁在说话、回答在哪里结束。模型学会了在回答写完时输出结束标记，所以知道什么时候停。</li>
+    <li><strong>奖励模型和前几篇是同一个问题。</strong>给同一个提问的两个回答 A、B，预测"人更喜欢 A"的概率：p = sigmoid（A 的分数 − B 的分数），损失是 −ln p。这就是前几篇的 sigmoid 加对数损失，标签从"有没有听满 30 秒"换成了"人选了哪一个"。InstructGPT 让标注员一次给 4 到 9 个回答排序，再拆成两两比较。</li>
+    <li><strong>强化学习这一步没有标准答案。</strong>模型自己写，奖励模型打分，用 PPO 算法往高分的方向调。同时加一项惩罚，不许它离指令微调后的模型太远，否则它会去钻奖励模型的空子，写出分数高、但人并不想要的东西。</li>
+    <li><strong>效果。</strong>InstructGPT 的论文里，标注员更喜欢 13 亿参数的 InstructGPT 的回答，而不是 1,750 亿参数的 GPT-3。</li>
+    <li><strong>也有省掉奖励模型的做法</strong>，比如 DPO（Rafailov 等，2023），直接拿成对的偏好数据调语言模型。</li>
+  </ul>
+  <p>这几步改的是它更愿意说什么、用什么口气说。底下还是那台预测下一个 token 的机器。</p>
+</section>
+
+<section id="memory">
+  <h2><span class="n">12</span>内存和速度：几道乘法</h2>
+  <p><a href="prediction.html#s8">模型就是一堆数</a>。它占多少内存，就是参数个数乘每个参数的字节数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>每个参数存成</th><th>字节</th><th>DNN，401 个参数</th><th>7B 模型，70 亿个</th></tr></thead>
+    <tbody>
+      <tr><td>32 位浮点（FP32）</td><td class="num">4</td><td class="num">1,604 字节</td><td class="num">28 GB</td></tr>
+      <tr><td>16 位浮点（FP16、BF16）</td><td class="num">2</td><td class="num">802 字节</td><td class="num">14 GB</td></tr>
+      <tr><td>8 位整数</td><td class="num">1</td><td class="num">401 字节</td><td class="num">7 GB</td></tr>
+      <tr><td>4 位整数</td><td class="num">0.5</td><td class="num">约 200 字节</td><td class="num">3.5 GB</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">"7B"是档位的名字。LLaMA-7B 的论文里写的是 6.7B，用 16 位存是 13.4 GB。</p>
+  <ul>
+    <li><strong>量化。</strong>从 16 位压到 8 位、4 位叫量化（quantization）：把一小组参数映射到 256 个或 16 个整数档位上，每组再记一个缩放系数。4 位的文件会比 3.5 GB 略大，多出来的就是这些系数。精度有损失，损失多少看模型和方法。</li>
+    <li><strong>KV cache。</strong>生成第 n 个 token 时，要和前面所有 token 的 k、v 做注意力。前面的 k、v 不会再变，算一次存起来，这叫 KV cache。按 LLaMA-7B 的形状（32 层，每层 4,096 维）、16 位存：每个 token 每层存 k 和 v 各 4,096 个数，一共 2 × 32 × 4,096 = 262,144 个数，524,288 字节，约 0.5 MB。上下文 2,048 个 token 是 1.07 GB，4,096 个是 2.15 GB，和 4 位量化后的模型本身是一个量级。</li>
+    <li><strong>算力。</strong>每生成一个 token，每个参数做一次乘法、一次加法，7B 模型约 140 亿次浮点运算。</li>
+    <li><strong>速度上限常常卡在内存带宽。</strong>每生成一个 token，全部权重都要从内存读一遍。4 位的 7B 模型是 3.5 GB，假如内存每秒能读 50 GB，每秒最多生成约 14 个 token，算得再快也没用。读提示词（prefill）不一样：提示词的 token 全都已知，可以像训练时那样一次并行算完，所以读一段长提示词比生成同样长的回答快得多。</li>
+  </ul>
+  <p>和前几篇比一比：推荐里的排序模型给每首候选歌算一个概率，每首只算一次（总览的<a href="prediction.html#s10">上线</a>一站，<a href="ctr-recommendation.html#serving">推荐</a>那一篇的线上部分）。大模型回答 500 个 token，要把整个网络连着算 500 遍，每一遍都要等上一遍抽出的 token。</p>
+  <h3>Android 上的大模型</h3>
+  <p>小网络在手机上怎么跑，见<a href="neural-network.html#android">神经网络</a>那一篇。大模型目前有两条路。一条用系统的：部分机型的 AICore 系统服务里带着 Google 的 Gemini Nano，App 通过 ML Kit 的 GenAI API 调用，有摘要、校对、改写、图片描述这些现成接口，也可以用 Prompt API 自己写提示词。模型由系统下载和更新，不算在 App 的存储和运行内存里；但不是每台手机都有，要准备没有它时的退路，比如改走云端。</p>
+  <p>另一条是 App 自己带模型。Google 的 LiteRT-LM 建在 LiteRT（TensorFlow Lite 的后继）之上，能跑 Gemma 这类开放模型，会话、KV cache、流式输出都替你管；开源的 llama.cpp 也能编译到 Android 上。这时模型文件要自己下发，上面那几道乘法就是你的预算：模型、KV cache 和 App 本身都得放进手机内存，生成期间处理器一直在忙，耗电和发热也要算进去。</p>
+</section>
+
+<section id="wrong">
+  <h2><span class="n">13</span>为什么说得通顺却会错</h2>
+  <p>回到第 03 节的"解码器依次拆帧头的含义"和第 10 节的"解码器的 MAC 地址"：每三个连着的字都是真的，整句是错的。大模型的错要隐蔽得多，原因是同一个。</p>
+  <ul>
+    <li><strong>每一步只问"接下来什么最像"。</strong>回答一个事实问题时，模型没有去哪里查，它在续写一段"像正确答案"的文字。训练文字里反复出现的事实，会把正确的 token 推到很高的概率，所以它常常是对的。很少出现的事实，比如一个冷门 API 的参数、一篇论文的页码，概率分散在很多候选上，它照样抽出一个，写得一样流畅。</li>
+    <li><strong>没有"不知道"这个默认选项。</strong>softmax 总会给出一个分布，抽样总会抽出一个 token。除非训练时专门奖励过"说不知道"，它更倾向于给一个像样的答案。</li>
+    <li><strong>一步编错，后面跟着编。</strong>抽出来的 token 会接进上文，成为下一步的输入。前面编出一个名字，后面会顺着它往下编。</li>
+    <li><strong>知识停在训练数据截止那天。</strong>参数训完就固定了，之后发生的事它不知道，除非写进上文。</li>
+  </ul>
+  <h3>上下文窗口</h3>
+  <p>上下文窗口（context window）是模型一次能看到的最大 token 数：GPT-2 是 1,024，GPT-3 和 LLaMA 是 2,048，Llama 2 是 4,096。窗口里的任何位置，注意力都能直接看到；窗口外的完全看不到。这和三元模型只看得到 2 个字是同一种限制，只是宽得多。对话太长时，最早的内容要么被截掉，要么被压成摘要。</p>
+  <p>这也解释了为什么把资料贴进提示词有用：原文就在窗口里，注意力可以直接从那里取，不用靠参数里模糊的统计。先检索出相关的文档、再交给模型回答的做法，叫检索增强生成（RAG）。</p>
+  <div class="key">所以大模型的回答要当作"一段很可能对的文字"来用：常见的知识大多可靠；冷门的名字、数字、出处要自己核对；需要准确的事实，就把原文放进上下文。</div>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>一本正经地编出不存在的 API、参数或出处</td><td>它在续写"像答案的文字"；冷门的事实在训练文字里太少，概率分散在许多候选上，抽中哪个都写得一样流畅</td><td>把官方文档贴进上下文；要出处就自己点开核对</td></tr>
+      <tr><td>同一个问题问两次，答案不一样</td><td>生成时按概率抽样，温度大于 0</td><td>要稳定输出就把温度调低；重要的结论多问几次，看是否一致</td></tr>
+      <tr><td>输出绕圈，同一句重复好几遍；或者温度一高就满篇乱码</td><td>贪心和低温度容易掉进高概率的循环；T 大于 1 又把长尾的字抬了起来，见第 10 节</td><td>适当的温度加 top-p；有的接口有重复惩罚参数</td></tr>
+      <tr><td>对话一长，忘了前面说过的话</td><td>超出上下文窗口，早期内容被截掉或被压成摘要</td><td>关键要求放在最近的消息里；长资料先摘要</td></tr>
+      <tr><td>中文比预想的更快用完上下文或额度</td><td>窗口和计费按 token 算，不按字算；不同的分词器切中文差别很大</td><td>用那个模型自己的分词器数，不要按字数估</td></tr>
+      <tr><td>数不清字数，多位数的乘法算错</td><td>模型看到的是 token 编号，"解码器"可能是一个 token 而不是三个字；它也没有计算器</td><td>让它写代码或调用工具来算</td></tr>
+      <tr><td>问最近的事，答得很肯定，内容却过时了</td><td>参数停在训练数据截止的那天</td><td>把最新资料放进上下文</td></tr>
+      <tr><td>7B 模型在手机上装不下，或者一跑就被系统杀掉</td><td>16 位要 14 GB，再加 KV cache 和 App 自己的内存</td><td>选 1B 到 3B 的模型，4 位量化；限制上下文长度；能用系统的 Gemini Nano 就优先用</td></tr>
+      <tr><td>回答越长越慢，内存越占越多</td><td>KV cache 随 token 数线性增长，每一步要看的 k、v 越来越多</td><td>限制最大输出长度；长对话先摘要再继续</td></tr>
+      <tr><td>以为参数越多一定越好</td><td>数据也要跟上。Chinchilla 用 700 亿参数、1.4 万亿 token，赢过了 1,750 亿参数、3,000 亿 token 的 GPT-3</td><td>在自己的任务上用留出的数据比，见<a href="evaluation.html">评估</a></td></tr>
+      <tr><td>用户贴进来的文字让模型改了行为</td><td>对模型来说上文只是一串 token，分不清哪段是你的指令、哪段是用户给的材料</td><td>模型的输出不要直接触发敏感操作；用户内容和指令分开放，并做校验</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">n-gram 的次数、分布、生成、温度表、留出一页的损失和 BPE 合并，都是 2026 年 11 月用 Python 3.9 标准库算的，语料和取字的办法见第 02 节的表（只看 body，在块级标签处分段）。生成用 <code>random.Random(2026)</code>，先"解码"后"数据"各 4 段，最多 40 个字；温度对比的两组各自从同一个种子重新开始；贪心那组不许选段落结束。留出测试用 DNS 那一页，其余 34 页统计，混合权重没有调过。BPE 只在连续的汉字之间合并，每次取次数最多的一对，共 3,000 次。第 07 节的 q、k、v 是为手算编的数；第 12 节的内存、KV cache 和速度上限是按公开的模型形状算的估计，50 GB/s 是假设的带宽，没有在手机上实测。模型的形状、参数和训练数据取自原文：Vaswani 等 2017（Transformer）、Bengio 等 2003（神经网络语言模型）、Sennrich 等 2016（BPE）、Radford 等 2019 和 OpenAI 发布 GPT-2 时的说明及公开的模型配置、Brown 等 2020（GPT-3 的表 2.1 和附录表 D.1）、Touvron 等 2023（LLaMA 的表 2 和 2.1 节，Llama 2 的表 1 和 2.2 节）、Hoffmann 等 2022（Chinchilla）、Ouyang 等 2022（InstructGPT）、Holtzman 等 2020（核采样）、Rafailov 等 2023（DPO）、香农 1948 年的《通信的数学理论》。Android 部分对照的是 Android 开发者网站的 Gemini Nano 页面，以及 Google AI Edge 的 LiteRT 和 LiteRT-LM 文档。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 7 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="ctr-recommendation.html"><span class="t">← 上一篇：推荐和点击率预估</span><span class="d">推荐和点击率预估：工业界怎么预测</span></a>
+    <a class="demo" href="../index.html#ml"><span class="t">回到目录：机器学习 →</span><span class="d">八篇都读完了。目录页按顺序列着每一篇讲什么，回头查哪一篇都方便。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

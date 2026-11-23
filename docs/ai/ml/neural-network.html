@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>神经网络：一层一层算出来</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：网络图、点和区域、训练曲线 */
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+.fig text.m2{fill:var(--muted)}
+.fig text.w{fill:var(--warn)}
+.fig .tk text{font-family:var(--font-mono);font-size:11.5px;fill:var(--muted)}
+.fig .axisbox{stroke:currentColor;stroke-opacity:.45}
+.fig .cellfill{fill:var(--accent);fill-opacity:.24}
+.fig .pt1{fill:none;stroke:currentColor;stroke-width:5;stroke-linecap:round}
+.fig .pt0{fill:none;stroke:currentColor;stroke-opacity:.3;stroke-width:3.2;stroke-linecap:round}
+.fig .hl{stroke:var(--accent);stroke-width:1.8}
+.fig .hl.weak{stroke-dasharray:4 3}
+.fig .badge{fill:var(--surface);stroke:var(--accent);stroke-width:1.3}
+.fig .mline{fill:none;stroke:currentColor;stroke-opacity:.5;stroke-width:1.8;stroke-linejoin:round}
+.fig .wline{fill:none;stroke:var(--warn);stroke-width:1.8;stroke-linejoin:round}
+.fig .wdot{fill:var(--warn)}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw,th.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#why">一个加权和画不出的规律</a></li>
+    <li><a href="#neuron">神经元、层和网络</a></li>
+    <li><a href="#activation">激活函数：为什么要弯一下</a></li>
+    <li><a href="#forward">前向传播：样本 2462 走一遍</a></li>
+    <li><a href="#dead">第 3 个单元为什么一直是 0</a></li>
+    <li><a href="#backward">反向传播：一个样本学一步</a></li>
+    <li><a href="#chain">链式法则：多少层都一样</a></li>
+    <li><a href="#hidden">隐藏单元学到了什么</a></li>
+    <li><a href="#dnn">训练 15→16→8→1 的网络</a></li>
+    <li><a href="#compare">和逻辑回归、GBDT 比</a></li>
+    <li><a href="#init">初始值：不能全是 0</a></li>
+    <li><a href="#vanish">梯度消失和 ReLU</a></li>
+    <li><a href="#scale">深度、宽度、批量和 GPU</a></li>
+    <li><a href="#android">在 Android 上运行</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>神经网络：一层一层算出来</h1>
+  <p class="lede">逻辑回归只算一次加权和，再压成一个概率。神经网络先用几组权重各算一个加权和，每个结果过一道弯折，再把这几个数当成新的特征交给下一层。这份笔记用一个 21 个参数的小网络，把一次预测和一次学习里的每个乘法、加法都写出来；再看 401 个参数的网络在 2000 条数据上学到了什么，又多学了什么。</p>
+  <div class="journey" aria-label="样本 2462 在小网络里走一遍">
+    <div class="step"><span class="k">样本 2462 的输入</span><span class="v">3 个数</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">隐藏层</span><span class="v">4 个数</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">点开的概率</span><span class="v hex">0.3136</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">学一步之后</span><span class="v">0.3382</span></div>
+  </div>
+  <p class="caption">数据是一个固定种子的脚本生成的示意数据：音乐 App 首页推荐，一次曝光是给一位用户展示一首歌，点开并播放超过 30 秒算正样本（label = 1），没点、划走或不到 30 秒算负样本。3000 次曝光按天切成训练（第 1–20 天，2000 条）、验证（第 21–24 天，400 条）、测试（第 25–30 天，600 条）三段。页面里的权重、中间结果和指标都是用这个脚本在这份数据上算的，配方写在用到它的地方。这一页展开的是总览里<a href="prediction.html#s5">神经网络</a>、<a href="prediction.html#s6">前向传播</a>和<a href="prediction.html#s7">反向传播</a>三站。</p>
+</header>
+
+<section id="why">
+  <h2><span class="n">01</span>一个加权和画不出的规律</h2>
+  <p>逻辑回归（<a href="gradient-descent.html">梯度下降</a>那一页训练的模型）给每个特征一个权重，加起来再过 sigmoid 变成概率。每个特征的作用是固定的：晚上曝光加多少分，不管歌长还是短都一样。数据里偏偏有一条规律不是这样。把 3000 次曝光按"是不是晚上"和"是不是长歌"分成四格，看正样本的比例：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">短歌（不到 4 分钟）</th><th class="num">长歌（4 分钟及以上）</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">白天</td><td class="num">0.3469（784 次）</td><td class="num">0.1200（825 次）</td></tr>
+      <tr><td class="nw">晚上</td><td class="num">0.1200（675 次）</td><td class="num">0.3156（716 次）</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">晚上指 18 点到次日 2 点之前。</p>
+  <p>白天爱听短歌，晚上爱听长歌。"晚上"本身不加分也不减分，要看和歌的长短配不配。</p>
+  <p>一个加权和排不出这四格。设分数 z = c + a × 晚上 + b × 长歌（晚上、长歌取 0 或 1）：</p>
+<pre><code>白天短歌   c            要高
+白天长歌   c + b        要低
+晚上短歌   c + a        要低
+晚上长歌   c + a + b    要高</code></pre>
+  <p>两格"要高"加起来是 2c + a + b，两格"要低"加起来也是 2c + a + b，前者不可能比后者大，所以 a、b、c 取什么都排不出这个顺序。sigmoid 只是把分数单调地压到 0 到 1，不改变大小顺序。</p>
+  <p>训练出来也是这样。15 个特征的逻辑回归给"晚上"的权重是 −0.0631，给歌长的是 −0.1642；它在测试集上对四格的平均预测是 0.2575、0.2255、0.2154、0.2045，几乎是平的，按真实规律应该是 0.331、0.1203、0.1133、0.3419。有两条路：</p>
+  <ul>
+    <li><strong>人来造特征。</strong>加一个交叉特征：晚上和长歌相同（同为 1 或同为 0）时取 1。它学到的权重是 0.7208，测试集 AUC 从 0.7175 升到 0.7715（AUC 见<a href="evaluation.html">评估</a>）。前提是你已经知道该交叉这两个。</li>
+    <li><strong>让模型自己造。</strong>先用几组权重各算一个加权和，各自弯一下，再把结果加权求和。这就是神经网络。</li>
+  </ul>
+  <p>二维演示把这件事放大了。200 个点，横轴是曝光时间 6–24 点，纵轴是歌曲时长 2–6 分钟，白天短歌和晚上长歌点开的概率是 0.88，其余是 0.12。逻辑回归在这 200 个点上的准确率是 0.535，全猜"不点"也有 0.52；2→6→1 的网络（2 个输入、6 个隐藏单元、1 个输出）是 0.89，照着真实规则猜也只能对 0.90。<a href="prediction.html#s5">总览第 5 站</a>用的就是这 200 个点。</p>
+</section>
+
+<section id="neuron">
+  <h2><span class="n">02</span>神经元、层和网络</h2>
+  <p>神经网络里最小的计算单位叫神经元，也叫单元（unit）。它做两件事：</p>
+<pre><code>z = w1·x1 + w2·x2 + … + b      加权和，和逻辑回归一样
+a = f(z)                       过一个激活函数 f</code></pre>
+  <p>w 是权重，b 是偏置，f 是一个固定的函数（下一节）。f 取 sigmoid 时，一个神经元就是一个逻辑回归。</p>
+  <p>几个神经元看同一份输入、各用各的权重，就是一层。第 04 节小网络的第一层有 4 个神经元，每个看 3 个输入：4 组权重排成 4 行 3 列的矩阵 W，4 个偏置排成向量 b，整层一次写完：</p>
+<pre><code>z = W·x + b      (4×3)·(3) + (4) = (4)
+h = f(z)         对 4 个数逐个算</code></pre>
+  <p>一层的输出是下一层的输入，几层串起来就是网络。3→4→1 表示 3 个输入、一个 4 个单元的中间层、1 个输出。中间这层叫隐藏层：数据里没有它该收什么、该出什么，它算什么全由训练决定。每个单元都连着上一层的全部输出，这种层叫全连接层。隐藏层多于一层的网络常叫深度神经网络（DNN）。</p>
+  <p>参数这样数：每层的权重是"输入数 × 单元数"，偏置是"单元数"。3→4→1 是 3×4 + 4 + 4×1 + 1 = 21 个；第 09 节的 15→16→8→1 是 15×16 + 16 + 16×8 + 8 + 8×1 + 1 = 401 个；15 个特征的逻辑回归是 16 个。写成代码，一层就是两重循环：外层遍历单元，内层遍历输入做乘加，Kotlin 版见第 14 节。</p>
+</section>
+
+<section id="activation">
+  <h2><span class="n">03</span>激活函数：为什么要弯一下</h2>
+  <p>先看不弯会怎样。两层都只做加权和：</p>
+<pre><code>第 1 层   h = 2x + 1
+第 2 层   y = 3h - 4
+合起来    y = 3(2x + 1) - 4 = 6x - 1</code></pre>
+  <p>两层 4 个数，等于一层 2 个数。换成矩阵也一样：W2(W1x + b1) + b2 = (W2W1)x + (W2b1 + b2)，还是一个加权和。叠多少层都能合成一层，第 01 节那四格照样排不出来。</p>
+  <p>在两层中间加一个 ReLU，也就是把小于 0 的数变成 0：</p>
+<pre><code>y = 3·max(0, 2x + 1) - 4
+
+x = -1    h = max(0, -1) = 0    y = -4
+x =  0    h = max(0,  1) = 1    y = -1
+x =  1    h = max(0,  3) = 3    y =  5</code></pre>
+  <p>x 小于 −0.5 时输出一直是 −4，大于 −0.5 时是 6x − 1，在 −0.5 处拐了一个弯（不弯的版本在 x = −1 时是 −7）。一个单元拐一个弯，几个单元的弯加在一起，就能拼出折线、凹槽、四格这样的形状。这个弯叫非线性，加在加权和后面提供它的函数叫激活函数。常用的三个：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th>公式</th><th>输出范围</th><th>斜率（导数）</th><th>用在哪</th></tr></thead>
+    <tbody>
+      <tr><td>sigmoid</td><td>1 / (1 + e<sup>−z</sup>)</td><td class="nw">0 到 1</td><td>p(1 − p)，最大 0.25</td><td>输出层，把分数变成概率</td></tr>
+      <tr><td>tanh</td><td>(e<sup>z</sup> − e<sup>−z</sup>) / (e<sup>z</sup> + e<sup>−z</sup>)</td><td class="nw">−1 到 1</td><td>1 − h²，最大 1</td><td>隐藏层；第 08 节的二维演示</td></tr>
+      <tr><td>ReLU</td><td>max(0, z)</td><td class="nw">0 到无穷</td><td>z &gt; 0 时 1，否则 0</td><td>现在的隐藏层最常用</td></tr>
+    </tbody>
+  </table></div>
+  <p>z = 2 时三者分别是 0.8808、0.9640、2；z = −2 时是 0.1192、−0.9640、0。斜率那一列训练时要用：误差往回传，每经过一个单元都要乘一次它的斜率（第 06、12 节）。输出层要一个概率时用 sigmoid；要在几个类别里选一个时用 softmax，它把几个分数变成加起来等于 1 的几个概率。</p>
+</section>
+
+<section id="forward">
+  <h2><span class="n">04</span>前向传播：样本 2462 走一遍</h2>
+  <p>从输入一层层算到输出，叫前向传播，预测就是做一次前向传播。用一个最小的网络来算：</p>
+  <ul>
+    <li><strong>输入 3 个特征：</strong>曲风偏好 affinity ÷ 30（用户最近 7 天听这个曲风的次数，最多 30）、歌曲热度 heat、是否关注了歌手 follow。都在 0 到 1 之间，没做标准化。</li>
+    <li><strong>结构 3→4→1：</strong>4 个 ReLU 单元，1 个 sigmoid 输出，21 个参数。</li>
+    <li><strong>训练：</strong>2000 条训练样本，He 初始化（第 11 节，种子 7），逐个样本的随机梯度下降，学习率 0.05，60 轮。训练完权重四舍五入到两位小数，下面的数都用两位小数的权重算。它的测试 AUC 是 0.7191，同样 3 个特征的逻辑回归是 0.7234。</li>
+  </ul>
+<pre><code>W1                       b1
+ 2.15  -0.78  -1.14      0.05      单元 1
+ 0.71  -0.42   1.30     -0.34      单元 2
+-0.59  -0.99  -1.25      0         单元 3
+ 3.21   1.30   0.39      0.01      单元 4
+
+W2   0.33   0.59   1.38   0.89     b2   -1.81</code></pre>
+  <p>样本 2462 来自测试集（第 25 天）：用户 60 晚上 20 点刷到歌曲 137，一首 5.4 分钟的民谣。他这个曲风最近 7 天听了 6 次，歌的热度 0.32，没关注歌手。这次他点开听了 30 秒以上，label = 1。网络只看三个数：x = [6 ÷ 30, 0.32, 0] = [0.2, 0.32, 0]。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 300" role="img" aria-label="样本 2462 在 3→4→1 网络里的前向传播：输入 0.2、0.32、0，隐藏层过 ReLU 后是 0.2304、0、0、1.068，输出 p = 0.3136">
+      <defs><marker id="nn-fa" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path class="dot" d="M0 0L8 4L0 8z"/></marker></defs>
+      <g class="lead" fill="none"><path d="M110 245L215 60"/><path d="M110 95L215 130"/><path d="M110 170L215 130"/><path d="M110 245L215 130"/><path d="M110 95L215 200"/><path d="M110 170L215 200"/><path d="M110 245L215 200"/><path d="M110 245L215 270"/></g>
+      <g class="snap" fill="none" marker-end="url(#nn-fa)"><path d="M110 95L215 60"/><path d="M110 170L215 60"/><path d="M110 95L215 270"/><path d="M110 170L215 270"/></g>
+      <g class="ghostline"><path d="M355 130L455 165"/><path d="M355 200L455 165"/></g>
+      <g class="snap" fill="none" marker-end="url(#nn-fa)"><path d="M355 60L455 165"/><path d="M355 270L455 165"/></g>
+      <rect class="band" x="20" y="72" width="90" height="46" rx="8"/>
+      <rect class="band" x="20" y="147" width="90" height="46" rx="8"/>
+      <rect class="band" x="20" y="222" width="90" height="46" rx="8"/>
+      <rect class="hot" x="215" y="37" width="140" height="46" rx="8"/>
+      <rect class="ghost" x="215" y="107" width="140" height="46" rx="8"/>
+      <rect class="ghost" x="215" y="177" width="140" height="46" rx="8"/>
+      <rect class="hot" x="215" y="247" width="140" height="46" rx="8"/>
+      <rect class="hot" x="455" y="134" width="120" height="62" rx="8"/>
+      <g text-anchor="middle">
+        <text x="65" y="20" class="m">输入</text><text x="285" y="20" class="m">隐藏层（ReLU）</text><text x="515" y="20" class="m">输出（sigmoid）</text>
+        <text x="65" y="91" class="m">偏好 6÷30</text><text x="65" y="110" class="mn">0.2</text>
+        <text x="65" y="166" class="m">热度</text><text x="65" y="185" class="mn">0.32</text>
+        <text x="65" y="241" class="m">关注</text><text x="65" y="260" class="mn">0</text>
+        <text x="285" y="56" class="m">单元 1</text><text x="285" y="75" class="mn">0.2304 → 0.2304</text>
+        <text x="285" y="126" class="m">单元 2</text><text x="285" y="145" class="mn">−0.3324 → 0</text>
+        <text x="285" y="196" class="m">单元 3</text><text x="285" y="215" class="mn">−0.4348 → 0</text>
+        <text x="285" y="266" class="m">单元 4</text><text x="285" y="285" class="mn">1.068 → 1.068</text>
+        <text x="515" y="153" class="m">输出</text><text x="515" y="171" class="mn">z = −0.7834</text><text x="515" y="189" class="mn a">p = 0.3136</text>
+      </g>
+      <path class="bg" d="M163 63h37v16h-37zM159 87h44v16h-44zM163 206h37v16h-37zM166 230h30v16h-30zM386 104h37v16h-37zM386 140h37v16h-37zM386 174h37v16h-37zM386 210h37v16h-37z"/>
+      <g text-anchor="middle"><text x="181" y="75" class="mn a">2.15</text><text x="181" y="99" class="mn a">−0.78</text><text x="181" y="218" class="mn a">3.21</text><text x="181" y="242" class="mn a">1.3</text><text x="405" y="116" class="mn a">0.33</text><text x="405" y="152" class="mn m2">0.59</text><text x="405" y="186" class="mn m2">1.38</text><text x="405" y="222" class="mn a">0.89</text></g>
+    </svg>
+    </div>
+    <figcaption>从左往右算一遍。隐藏单元里写的是"加权和 z → ReLU 之后的 h"，边上的数是权重，偏置没画。实线是这次真正影响结果的路径；单元 2、3 的加权和是负数，被 ReLU 变成 0，它们连到输出的虚线这次贡献为 0。关注是 0，从它出发的边也不起作用。</figcaption>
+  </figure>
+  <h3>第一层：4 个加权和</h3>
+<pre><code>z1 =  2.15×0.2 + (-0.78)×0.32 + (-1.14)×0 + 0.05  =  0.43  - 0.2496 + 0 + 0.05 =  0.2304
+z2 =  0.71×0.2 + (-0.42)×0.32 +   1.30×0  - 0.34  =  0.142 - 0.1344 + 0 - 0.34 = -0.3324
+z3 = -0.59×0.2 + (-0.99)×0.32 + (-1.25)×0 + 0     = -0.118 - 0.3168 + 0 + 0    = -0.4348
+z4 =  3.21×0.2 +   1.30×0.32  +   0.39×0  + 0.01  =  0.642 + 0.416  + 0 + 0.01 =  1.068</code></pre>
+  <h3>ReLU</h3>
+<pre><code>h = [max(0, 0.2304), max(0, -0.3324), max(0, -0.4348), max(0, 1.068)]
+  = [0.2304, 0, 0, 1.068]</code></pre>
+  <h3>第二层：1 个加权和，再过 sigmoid</h3>
+<pre><code>z = 0.33×0.2304 + 0.59×0 + 1.38×0 + 0.89×1.068 - 1.81
+  = 0.076032 + 0 + 0 + 0.95052 - 1.81
+  = -0.7834
+
+p = 1 / (1 + e^0.7834) = 1 / (1 + 2.1889) = 0.3136</code></pre>
+  <p>网络说这次点开的概率是 0.3136。一共做了 16 次乘法、16 次加法（含加偏置）、4 次 ReLU、1 次指数。乘加的次数等于权重的个数，每个权重用一次；401 个参数的网络做一次预测是 376 次乘加。</p>
+  <p>把 ReLU 拿掉，两层就能合成一层：W2·W1 = [3.1711, −0.7144, −0.9871]，W2·b1 + b2 = −1.9852，z = 3.1711·x1 − 0.7144·x2 − 0.9871·x3 − 1.9852。样本 2462 代进去得 −1.5796，一层一层算也是 −1.5796。21 个数退化成 4 个数，就是一个逻辑回归。</p>
+  <p>这个样本按真实规律算的概率是 0.5226，网络只给了 0.3136。差的那部分它看不到：生成数据的规则里，"晚上 + 长歌"加 0.8 分，"晚上听民谣"再加 0.4 分，而这三个输入里既没有时间也没有歌长。模型能做到多好，先由给它的特征决定，见<a href="features-samples.html">特征和样本</a>。</p>
+</section>
+
+<section id="dead">
+  <h2><span class="n">05</span>第 3 个单元为什么一直是 0</h2>
+  <p>单元 3 的三个权重 −0.59、−0.99、−1.25 都是负的，偏置是 0。三个输入都不小于 0，它的加权和就不会大于 0，过了 ReLU 永远是 0。单元的输出大于 0 叫激活。在 2000 条训练样本上数一数每个单元的激活比例：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="nw">单元</th><th>权重</th><th class="num">偏置</th><th class="num">激活比例</th><th>什么时候激活</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="nw">2.15, −0.78, −1.14</td><td class="num">0.05</td><td class="num">37.4%</td><td>没关注歌手，并且 2.15 × 偏好 &gt; 0.78 × 热度 − 0.05；关注了的只有 0.3%</td></tr>
+      <tr><td>2</td><td class="nw">0.71, −0.42, 1.30</td><td class="num">−0.34</td><td class="num">11.9%</td><td>关注了歌手的样本 100% 激活，没关注的只有 0.04%</td></tr>
+      <tr><td>3</td><td class="nw">−0.59, −0.99, −1.25</td><td class="num">0</td><td class="num">0</td><td>从不激活</td></tr>
+      <tr><td>4</td><td class="nw">3.21, 1.30, 0.39</td><td class="num">0.01</td><td class="num">100%</td><td>一直激活。权重全是正的，等于一个不弯的加权和</td></tr>
+    </tbody>
+  </table></div>
+  <p>真正在拐弯的只有 1 和 2，一个管没关注歌手的，一个管关注了的；4 是直的，3 是死的。</p>
+  <p>单元 3 一直是 0，就一直学不到东西。反向传播时误差要乘 ReLU 的斜率（第 06 节），加权和不大于 0 时斜率是 0，传到它这里就成了 0；它连到输出的权重，梯度是"误差 × 它的输出"，也是 0。对一下初始值就能确认：种子 7 给它抽的初始权重是 −0.5950、−0.9934、−1.2486，偏置 0，连到输出的权重 1.3763；训练 60 轮后，这 5 个数和初始值一模一样。输出层里最大的权重 1.38 不是学出来的，是初始化时抽到的，从来没被用上。</p>
+  <p>这叫死掉的 ReLU（dead ReLU）：对所有输入都输出 0，也就再也收不到梯度。这一个是一开始就死的：输入全是正数，三个权重随机抽正负，全抽到负的机会是 1/8，偏置又从 0 开始。学习率太大、一步把偏置推得很负，也会让单元死掉。避免的办法：</p>
+  <ul>
+    <li><strong>输入做标准化</strong>（减去均值、除以标准差），让每个特征有正有负。第 09 节的网络用的是标准化后的特征，训练完 24 个隐藏单元没有一个是死的。</li>
+    <li><strong>换成 Leaky ReLU：</strong>z 小于 0 时不给 0，给一个很小的斜率，比如 0.01z，梯度总能传过去一点。</li>
+    <li><strong>学习率别太大</strong>，训练时统计每个单元的激活比例，长期为 0 的就是死了。</li>
+  </ul>
+</section>
+
+<section id="backward">
+  <h2><span class="n">06</span>反向传播：一个样本学一步</h2>
+  <p>学习要回答：21 个参数各往哪边改、改多少，预测才会更准。答案是每个参数的梯度，也就是"这个参数加一点点，损失跟着变多少"。有了梯度，按<a href="gradient-descent.html">梯度下降</a>往反方向走一步。反向传播是一次把 21 个梯度全算出来的办法：从输出往回，一层一层算。</p>
+  <h3>损失</h3>
+  <p>用对数损失（log loss）：label = 1 时损失是 −ln p，label = 0 时是 −ln(1 − p)，p 越接近正确答案，损失越接近 0。下面的中间结果都用不取整的数算，显示时保留 4 位小数，拿显示的数重算，末位可能差 1。样本 2462 是正样本：</p>
+<pre><code>L = -ln 0.3136 = 1.1597</code></pre>
+  <h3>第 1 步：输出的误差 δ</h3>
+  <p>先算损失对输出层加权和 z 的导数，记作 δ（delta），这一页叫它误差。sigmoid 配对数损失时，它化简后正好是 p − y（y 是标签，这里是 1）：</p>
+<pre><code>dL/dp = -1/p     = -3.189
+dp/dz = p(1 - p) =  0.2152
+δ = dL/dz = (-1/p) × p(1 - p) = -(1 - p) = p - y = 0.3136 - 1 = -0.6864</code></pre>
+  <p>δ 是负的，意思是 z 应该变大。</p>
+  <h3>第 2 步：输出层的梯度</h3>
+  <p>z = w2·h + b2，所以 w2 每个数的梯度是 δ 乘上它连着的那个 h，b2 的梯度就是 δ：</p>
+<pre><code>dL/dw2 = δ × h = -0.6864 × [0.2304, 0, 0, 1.068] = [-0.1582, 0, 0, -0.7331]
+dL/db2 = δ     = -0.6864</code></pre>
+  <h3>第 3 步：误差传回隐藏层</h3>
+  <p>每个隐藏单元分到的误差，等于它连到输出的权重 × δ × ReLU 在它这里的斜率：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 300" role="img" aria-label="反向传播：输出的误差 −0.6864 乘四条边的权重传回隐藏层，再乘 ReLU 的斜率 1、0、0、1，得到 −0.2265、0、0、−0.6109">
+      <defs><marker id="nn-ba" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path class="dot" d="M0 0L8 4L0 8z"/></marker></defs>
+      <g class="lead" fill="none" stroke-dasharray="2 4"><path d="M110 95L215 60"/><path d="M110 170L215 60"/><path d="M110 245L215 60"/><path d="M110 95L215 130"/><path d="M110 170L215 130"/><path d="M110 245L215 130"/><path d="M110 95L215 200"/><path d="M110 170L215 200"/><path d="M110 245L215 200"/><path d="M110 95L215 270"/><path d="M110 170L215 270"/><path d="M110 245L215 270"/></g>
+      <g class="snap" fill="none" marker-end="url(#nn-ba)"><path d="M455 165L357 60"/><path d="M455 165L357 130"/><path d="M455 165L357 200"/><path d="M455 165L357 270"/></g>
+      <rect class="ghost" x="20" y="72" width="90" height="46" rx="8"/>
+      <rect class="ghost" x="20" y="147" width="90" height="46" rx="8"/>
+      <rect class="ghost" x="20" y="222" width="90" height="46" rx="8"/>
+      <rect class="hot" x="215" y="37" width="140" height="46" rx="8"/>
+      <rect class="ghost" x="215" y="107" width="140" height="46" rx="8"/>
+      <rect class="ghost" x="215" y="177" width="140" height="46" rx="8"/>
+      <rect class="hot" x="215" y="247" width="140" height="46" rx="8"/>
+      <rect class="hot" x="455" y="134" width="120" height="62" rx="8"/>
+      <g text-anchor="middle">
+        <text x="65" y="20" class="m">输入</text><text x="285" y="20" class="m">隐藏层的 δ</text><text x="515" y="20" class="m">输出的 δ</text>
+        <text x="65" y="91" class="m">x1</text><text x="65" y="110" class="mn">0.2</text>
+        <text x="65" y="166" class="m">x2</text><text x="65" y="185" class="mn">0.32</text>
+        <text x="65" y="241" class="m">x3</text><text x="65" y="260" class="mn">0</text>
+        <text x="285" y="56" class="mn m2">−0.2265 × 斜率 1</text><text x="285" y="75" class="mn a">δ = −0.2265</text>
+        <text x="285" y="126" class="mn m2">−0.4050 × 斜率 0</text><text x="285" y="145" class="mn">δ = 0</text>
+        <text x="285" y="196" class="mn m2">−0.9473 × 斜率 0</text><text x="285" y="215" class="mn">δ = 0</text>
+        <text x="285" y="266" class="mn m2">−0.6109 × 斜率 1</text><text x="285" y="285" class="mn a">δ = −0.6109</text>
+        <text x="515" y="153" class="m">p − y</text><text x="515" y="171" class="mn">0.3136 − 1</text><text x="515" y="189" class="mn a">δ = −0.6864</text>
+      </g>
+      <path class="bg" d="M383 104h44v16h-44zM383 140h44v16h-44zM383 174h44v16h-44zM383 210h44v16h-44z"/>
+      <g text-anchor="middle"><text x="405" y="116" class="mn a">×0.33</text><text x="405" y="152" class="mn a">×0.59</text><text x="405" y="186" class="mn a">×1.38</text><text x="405" y="222" class="mn a">×0.89</text></g>
+      <text x="65" y="292" text-anchor="middle" class="m">不用再往回传</text>
+    </svg>
+    </div>
+    <figcaption>误差沿着前向时的边往回走，乘的是同一条边上的权重。单元 2、3 前向时被 ReLU 截成了 0，斜率是 0，传回来的数在这里被截断。输入不是参数，误差不用再往回传。</figcaption>
+  </figure>
+<pre><code>δ1 = 0.33 × (-0.6864) × 1 = -0.2265
+δ2 = 0.59 × (-0.6864) × 0 =  0
+δ3 = 1.38 × (-0.6864) × 0 =  0
+δ4 = 0.89 × (-0.6864) × 1 = -0.6109</code></pre>
+  <h3>第 4 步：第一层的梯度</h3>
+  <p>W1 里连着单元 j 和输入 k 的权重，梯度是 δj × xk；单元 j 的偏置，梯度是 δj：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">连 x1 = 0.2</th><th class="num">连 x2 = 0.32</th><th class="num">连 x3 = 0</th><th class="num">偏置</th></tr></thead>
+    <tbody>
+      <tr><td>单元 1（δ = −0.2265）</td><td class="num">−0.0453</td><td class="num">−0.0725</td><td class="num">0</td><td class="num">−0.2265</td></tr>
+      <tr><td>单元 2、3（δ = 0）</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+      <tr><td>单元 4（δ = −0.6109）</td><td class="num">−0.1222</td><td class="num">−0.1955</td><td class="num">0</td><td class="num">−0.6109</td></tr>
+    </tbody>
+  </table></div>
+  <p>21 个梯度里只有 9 个不是 0：被 ReLU 关掉的单元 2、3 不改，连着 x3 = 0 的权重也不改。可以用笨办法核对：把 w2 的第 4 个数 0.89 加上 0.000001，重新前向一遍，损失减少 0.000000733，比值 −0.7331，和上面一样。这叫数值梯度检查，自己写反向传播时常用它查错。</p>
+  <h3>走一步</h3>
+  <p>每个参数减去"学习率 × 梯度"。学习率用训练这个网络时的 0.05，W1[1] 指 W1 里单元 1 那一行：</p>
+<pre><code>w2      0.33 -> 0.33 + 0.05×0.1582 = 0.3379       0.89 -> 0.9267
+b2     -1.81 -> -1.81 + 0.05×0.6864 = -1.7757
+W1[1]   2.15 -> 2.1523    -0.78 -> -0.7764    b1[1]  0.05 -> 0.0613
+W1[4]   3.21 -> 3.2161     1.30 -> 1.3098     b1[4]  0.01 -> 0.0405</code></pre>
+  <p>用新参数再前向一遍：z1 = 0.2433，z4 = 1.1029，输出的 z = −0.6714，p = 0.3382，这个样本的损失从 1.1597 降到 1.0842。步子多大由学习率决定：同样的梯度，学习率取 0.01、0.1、0.5、1，这一步之后 p 分别是 0.3184、0.3643、0.6132、0.8788。</p>
+  <p>这一步只照顾了一个样本。它把训练集里每个样本的概率都推高了一点，平均从 0.2853 到 0.3052。负样本的损失跟着升，而负样本占 77%，训练集的平均损失反而从 0.5161 升到 0.5233。所以训练要轮流看所有样本，每步只改一点，下一个负样本会把多推的拉回来。这个小网络训练 60 轮，一共走了 120000 步。</p>
+</section>
+
+<section id="chain">
+  <h2><span class="n">07</span>链式法则：多少层都一样</h2>
+  <p>上一节只用了一条规则：几个函数套在一起，总的导数等于每一层的导数相乘，这叫链式法则。拿 W1 左上角的权重 2.15 来看，它影响损失的路径是 w → z1 → h1 → z → p → L，每一段的导数只和这一段有关：</p>
+<pre><code>dL/dp    = -1/p      = -3.189
+dp/dz    = p(1 - p)  =  0.2152
+dz/dh1   = w2[1]     =  0.33      单元 1 连到输出的权重
+dh1/dz1  = ReLU'     =  1         z1 &gt; 0，斜率是 1
+dz1/dw   = x1        =  0.2
+相乘：-3.189 × 0.2152 × 0.33 × 1 × 0.2 = -0.0453</code></pre>
+  <p>和上一节表里的 −0.0453 一样。反向传播就是按这个顺序从后往前乘，共用的部分只算一次：前四项的乘积就是 δ1，单元 1 的 3 个权重和 1 个偏置都用它。换成任意多层（l 是层号），每一层做同样的三件事：</p>
+<pre><code>δ[l]     = (W[l+1]ᵀ · δ[l+1]) ⊙ f'(z[l])     误差收回来，再乘斜率
+dL/dW[l] = δ[l] · a[l-1]ᵀ                    梯度 = 误差 × 这条边的输入
+dL/db[l] = δ[l]</code></pre>
+  <p>Wᵀ 是 W 的转置：前向时一个单元把输出分给下一层的很多单元，反向时它按同样的权重把这些单元的误差收回来。⊙ 是两个向量逐个相乘，f′ 是激活函数的斜率，a[l−1] 是上一层的输出。</p>
+  <ul>
+    <li><strong>先前向，再反向。</strong>反向要用前向时每层的 z 和输出，训练时这些中间结果都得留在内存里。</li>
+    <li><strong>反向的计算量大约是前向的两倍：</strong>每层算一次传回去的误差，再算一次权重的梯度。这个小网络前向 16 次乘法，反向 20 次（传回误差 4 次，两层的梯度 4 + 12 次）。</li>
+    <li><strong>不用自己写。</strong>PyTorch、TensorFlow 这类框架在前向时记下每个运算，调一次反向就算出所有梯度，这叫自动求导。生成这一页数据的脚本是手写的，反向传播只有十来行。</li>
+    <li><strong>每过一层都要乘一次斜率</strong>，层数一多，这串乘积可能越乘越小，见第 12 节。</li>
+  </ul>
+</section>
+
+<section id="hidden">
+  <h2><span class="n">08</span>隐藏单元学到了什么</h2>
+  <p>回到第 01 节的二维演示，看 2→6→1 的网络怎么排出四格。配方：200 个点的两个坐标各自线性缩放到 [−1, 1]；6 个 tanh 隐藏单元，1 个 sigmoid 输出；初始权重按 He 的方式抽（种子 3）；逐个样本的随机梯度下降，学习率 0.05，300 轮。</p>
+  <p>一个 tanh 单元算的是 tanh(w1·时间 + w2·时长 + b)。加权和等于 0 的点在平面上连成一条直线，线的一侧输出接近 +1，另一侧接近 −1，权重越大过渡越陡。所以每个隐藏单元做的事，是画一条线，回答"这个点在线的哪一边"。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 274" role="img" aria-label="左：200 个点和 6 个隐藏单元各画的一条线。右：合起来 p ≥ 0.5 的区域，大致是白天短歌和晚上长歌两块">
+      <rect class="bg" x="52" y="46" width="236" height="176"/>
+      <g class="grid"><path d="M130.7 46V222"/><path d="M209.3 46V222"/><path d="M52 134H288"/></g>
+      <rect x="52" y="46" width="236" height="176" fill="none" class="axisbox"/>
+      <g class="tk" text-anchor="middle"><text x="52" y="238">6</text><text x="131" y="238">12</text><text x="209" y="238">18</text><text x="288" y="238">24</text></g><g class="tk" text-anchor="end"><text x="46" y="226">2</text><text x="46" y="138">4</text><text x="46" y="50">6</text></g>
+      <rect class="bg" x="352" y="46" width="236" height="176"/>
+      <path class="cellfill" d="M352 214.7h177v7.33h-177zM352 207.3h163.9v7.33h-163.9zM352 200h157.3v7.33h-157.3zM352 192.7h150.8v7.33h-150.8zM352 185.3h144.2v7.33h-144.2zM352 178h144.2v7.33h-144.2zM352 170.7h150.8v7.33h-150.8zM352 163.3h157.3v7.33h-157.3zM358.6 156h157.3v7.33h-157.3zM371.7 148.7h157.3v7.33h-157.3zM384.8 141.3h45.9v7.33h-45.9zM470 141.3h72.1v7.33h-72.1zM476.6 134h78.7v7.33h-78.7zM483.1 126.7h78.7v7.33h-78.7zM489.7 119.3h85.2v7.33h-85.2zM489.7 112h98.3v7.33h-98.3zM352 104.7h6.6v7.33h-6.6zM496.2 104.7h91.8v7.33h-91.8zM352 97.3h6.6v7.33h-6.6zM502.8 97.3h85.2v7.33h-85.2zM352 90h6.6v7.33h-6.6zM502.8 90h85.2v7.33h-85.2zM352 82.7h6.6v7.33h-6.6zM509.3 82.7h78.7v7.33h-78.7zM509.3 75.3h78.7v7.33h-78.7zM509.3 68h78.7v7.33h-78.7zM502.8 60.7h85.2v7.33h-85.2zM502.8 53.3h85.2v7.33h-85.2zM509.3 46h78.7v7.33h-78.7z"/>
+      <path class="lim" d="M509.3 46V222M352 134H588"/>
+
+      <rect x="352" y="46" width="236" height="176" fill="none" class="axisbox"/>
+      <g class="tk" text-anchor="middle"><text x="352" y="238">6</text><text x="431" y="238">12</text><text x="509" y="238">18</text><text x="588" y="238">24</text></g><g class="tk" text-anchor="end"><text x="346" y="226">2</text><text x="346" y="138">4</text><text x="346" y="50">6</text></g>
+      <path class="pt0" d="M55 213h0M224 178h0M121 50h0M259 187h0M232 209h0M183 112h0M280 112h0M247 213h0M73 86h0M153 138h0M267 165h0M247 108h0M80 130h0M192 50h0M182 90h0M183 77h0M204 90h0M57 55h0M192 94h0M118 50h0M85 46h0M102 77h0M225 108h0M196 94h0M225 156h0M177 81h0M236 209h0M153 160h0M247 152h0M179 169h0M187 50h0M90 99h0M196 72h0M279 182h0M119 125h0M116 77h0M85 94h0M184 125h0M120 130h0M266 174h0M131 64h0M251 222h0M267 174h0M114 81h0M65 143h0M156 125h0M234 169h0M249 218h0M74 204h0M216 178h0M69 130h0M236 196h0M188 99h0M270 174h0M148 108h0M110 134h0M212 147h0M108 90h0M81 125h0M150 55h0M173 99h0M283 209h0M106 72h0M178 55h0M125 130h0M121 125h0M80 125h0M188 86h0M194 103h0M112 46h0M266 213h0M174 77h0M283 134h0M141 112h0M232 191h0M76 165h0M255 218h0M156 86h0M179 94h0M279 165h0M245 81h0M124 81h0M232 213h0M208 64h0M56 121h0M95 103h0M171 59h0M177 55h0M132 64h0M169 55h0M133 90h0M201 94h0M246 209h0M268 191h0M153 55h0M87 108h0M148 103h0M250 204h0M255 209h0M127 108h0M243 182h0M281 209h0M95 116h0M128 121h0"/>
+      <path class="pt1" d="M217 130h0M162 178h0M233 130h0M139 169h0M89 169h0M136 147h0M219 99h0M136 196h0M201 165h0M213 59h0M262 55h0M182 77h0M174 165h0M125 182h0M201 218h0M242 112h0M186 196h0M167 182h0M239 72h0M183 138h0M94 178h0M165 191h0M93 218h0M259 50h0M93 152h0M238 99h0M184 169h0M247 77h0M111 160h0M182 147h0M169 147h0M272 125h0M121 204h0M225 50h0M114 209h0M271 86h0M220 90h0M224 112h0M278 196h0M267 72h0M271 103h0M229 204h0M72 209h0M238 99h0M170 204h0M221 64h0M250 108h0M93 178h0M259 218h0M274 59h0M174 209h0M222 72h0M187 156h0M119 160h0M246 68h0M219 68h0M217 99h0M156 152h0M208 112h0M157 182h0M166 191h0M217 86h0M53 138h0M123 204h0M211 77h0M229 112h0M222 68h0M211 112h0M95 165h0M204 165h0M125 55h0M87 178h0M52 94h0M196 156h0M116 156h0M233 125h0M66 152h0M262 121h0M101 147h0M87 143h0M55 222h0M153 169h0M216 99h0M188 178h0M62 213h0M241 86h0M169 152h0M226 86h0M187 138h0M162 116h0M173 191h0M271 103h0M124 147h0M77 138h0M276 108h0M163 160h0"/>
+      <g fill="none"><path class="hl" d="M52 99.2L288 61.5"/><path class="hl" d="M288 118.1L117.9 222"/><path class="hl" d="M116.4 222L237.3 46"/><path class="hl" d="M57.2 222L195.4 46"/><path class="hl weak" d="M52 101.8L288 157.1"/><path class="hl" d="M52 78L224.4 222"/></g>
+      <circle class="badge" cx="299" cy="61.5" r="8"/><text x="299" y="65.5" text-anchor="middle" class="mn">1</text><circle class="badge" cx="299" cy="118.1" r="8"/><text x="299" y="122.1" text-anchor="middle" class="mn">2</text><circle class="badge" cx="237.3" cy="36" r="8"/><text x="237.3" y="40" text-anchor="middle" class="mn">3</text><circle class="badge" cx="195.4" cy="36" r="8"/><text x="195.4" y="40" text-anchor="middle" class="mn">4</text><circle class="badge" cx="299" cy="157.1" r="8"/><text x="299" y="161.1" text-anchor="middle" class="mn">5</text><circle class="badge" cx="41" cy="78" r="8"/><text x="41" y="82" text-anchor="middle" class="mn">6</text>
+      <text x="12" y="16">每个隐藏单元画一条线</text><text x="312" y="16">合起来：p ≥ 0.5 的区域</text>
+      <g text-anchor="middle"><text x="170" y="258" class="m">曝光时间（点）</text><text x="470" y="258" class="m">曝光时间（点）</text></g>
+      <text class="m" transform="translate(14 134) rotate(-90)" text-anchor="middle">时长（分钟）</text>
+    </svg>
+    </div>
+    <figcaption>左：200 个点（大而清楚的是点开，小而淡的是没点开）和 6 个隐藏单元各自的线，圆圈里是单元编号，单元 5 画成虚线。右：输出层把 6 个回答加权求和后，p ≥ 0.5 的格子涂上颜色；虚线是生成数据用的真实分界，18 点和 4 分钟。</figcaption>
+  </figure>
+  <p>6 条线没有一条正好落在 18 点或 4 分钟上。网络不知道规则长什么样，它找到的是一组斜线，合起来能把这 200 个点分开，准确率 0.89。输出层怎么合，看四个象限中心（12 点或 21 点，3 分钟或 5 分钟）上每个单元的输出：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>单元</th><th class="num">白天短歌</th><th class="num">白天长歌</th><th class="num">晚上短歌</th><th class="num">晚上长歌</th><th class="num">到输出的权重</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="num">−1</td><td class="num">−0.24</td><td class="num">−1</td><td class="num">−0.93</td><td class="num">1.90</td></tr>
+      <tr><td>2</td><td class="num">0.94</td><td class="num">1</td><td class="num">−0.94</td><td class="num">0.99</td><td class="num">2.42</td></tr>
+      <tr><td>3</td><td class="num">0.74</td><td class="num">1</td><td class="num">−1</td><td class="num">−0.99</td><td class="num">−2.44</td></tr>
+      <tr><td>4</td><td class="num">−0.93</td><td class="num">0.85</td><td class="num">−1</td><td class="num">−1</td><td class="num">−2.25</td></tr>
+      <tr><td>5</td><td class="num">0.30</td><td class="num">−0.16</td><td class="num">0.16</td><td class="num">−0.30</td><td class="num">0.25</td></tr>
+      <tr><td>6</td><td class="num">−0.92</td><td class="num">0.99</td><td class="num">0.99</td><td class="num">1</td><td class="num">−3.54</td></tr>
+      <tr><td>输出的 z（含偏置 0.48）</td><td class="num">4.48</td><td class="num">−5.46</td><td class="num">−2.49</td><td class="num">2.14</td><td></td></tr>
+      <tr><td>p</td><td class="num">0.989</td><td class="num">0.004</td><td class="num">0.076</td><td class="num">0.895</td><td></td></tr>
+    </tbody>
+  </table></div>
+  <p>每个单元像一个只会答"是"或"否"的问题，+1 和 −1 是它的回答，到输出的权重是这个回答占多少分。单元 6 只在白天短歌答 −0.92，另外三格都答 +1，乘上 −3.54，给白天短歌加 3.26 分，给另外三格各减 3.5 分左右。单元 4 用同样的办法单独压低白天长歌，单元 2 单独压低晚上短歌。单元 5 的两个权重只有 −0.15 和 −0.47，线很平，在整个区域里输出都在 −0.53 到 0.56 之间，乘上 0.25，对总分的影响不到 0.15，几乎没用上。</p>
+  <p>换一个种子，线会画在别处，准确率在 0.855 到 0.895 之间（种子 1、2、4、5、6）。单元少了就画不好：2→2→1 用种子 1 到 5 训练，准确率只有 0.72 到 0.795；2→4→1（种子 3）是 0.86。</p>
+  <p>15 个特征的网络做的是同一件事，只是线变成了 15 维空间里的平面，ReLU 单元在平面一侧输出 0、另一侧线性增长；第二层的 8 个单元再把第一层 16 个回答组合一次。</p>
+</section>
+
+<section id="dnn">
+  <h2><span class="n">09</span>训练 15→16→8→1 的网络</h2>
+  <p>换成推荐数据的全部 15 个特征（见<a href="features-samples.html">特征和样本</a>），按训练集的均值和标准差做标准化。配方：</p>
+  <ul>
+    <li><strong>结构：</strong>15→16→8→1，两个 ReLU 隐藏层，输出 sigmoid，401 个参数。</li>
+    <li><strong>训练：</strong>He 初始化，种子 11；逐个样本的随机梯度下降，学习率 0.01，每一轮把 2000 条训练样本打乱后各学一次。</li>
+    <li><strong>观察：</strong>先训 30 轮，每轮结束在训练、验证、测试三段上各算一次平均对数损失和 AUC。</li>
+  </ul>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 262" role="img" aria-label="训练 30 轮的损失：训练集降到 0.3872；验证集第 12 轮最低 0.4794，之后回升；测试集升到 0.5274">
+      <g class="grid"><path d="M52 201H508"/><path d="M52 138.5H508"/><path d="M52 76H508"/></g>
+      <path class="axis" fill="none" d="M52 26V226H508"/>
+      <path class="truth" d="M52 124.6H508"/>
+      <path class="ghostline" d="M225 26V226"/>
+      <path class="mline" d="M52 49.3L67.7 51L83.4 65L99.2 82.5L114.9 84.4L130.6 86.5L146.3 99L162.1 98.8L177.8 97.3L193.5 94.9L209.2 93.1L225 94.6L240.7 87.3L256.4 96.1L272.1 82.4L287.9 78L303.6 85L319.3 70.9L335 91.5L350.8 62.4L366.5 59L382.2 73L397.9 77.8L413.7 65.6L429.4 45L445.1 59.5L460.8 31L476.6 53.9L492.3 44.1L508 41.8"/>
+      <path class="wline" d="M52 70L67.7 53.9L83.4 61.4L99.2 66.8L114.9 72.6L130.6 90.9L146.3 92L162.1 84.8L177.8 89.5L193.5 78.8L209.2 69.6L225 101.8L240.7 86L256.4 74.4L272.1 82.6L287.9 52.4L303.6 73L319.3 82.6L335 78.3L350.8 84.1L366.5 65.6L382.2 73.5L397.9 77.5L413.7 63.6L429.4 43.9L445.1 51.5L460.8 33.5L476.6 78.8L492.3 50L508 68.9"/>
+      <path class="out" d="M52 72.6L67.7 87.4L83.4 103.1L99.2 116.4L114.9 126.4L130.6 140.1L146.3 146.1L162.1 147.4L177.8 153L193.5 150.4L209.2 158L225 170.3L240.7 173.5L256.4 179.4L272.1 176.9L287.9 179.5L303.6 189.8L319.3 179.3L335 187.4L350.8 183.9L366.5 194L382.2 206.9L397.9 201L413.7 205.4L429.4 207.5L445.1 200.8L460.8 203.1L476.6 214.8L492.3 212.4L508 217"/>
+      <circle class="wdot" cx="225" cy="101.8" r="4"/>
+      <g class="tk" text-anchor="end"><text x="46" y="205">0.40</text><text x="46" y="142">0.45</text><text x="46" y="80">0.50</text></g><g class="tk" text-anchor="middle"><text x="52" y="242">1</text><text x="115" y="242">5</text><text x="194" y="242">10</text><text x="272" y="242">15</text><text x="351" y="242">20</text><text x="429" y="242">25</text><text x="508" y="242">30</text></g>
+      <text x="514" y="45.8" class="m">测试 0.5274</text>
+      <text x="514" y="72.9" class="w">验证 0.5057</text>
+      <text x="514" y="221" class="a">训练 0.3872</text>
+      <text x="231" y="38" class="m">第 12 轮：验证集最低 0.4794</text>
+      <text x="504" y="117.6" text-anchor="end" class="m">真实概率在训练集上的损失 0.4611</text>
+      <text x="280" y="260" text-anchor="middle" class="m">训练轮数</text>
+    </svg>
+    </div>
+    <figcaption>每一轮结束时三段数据上的平均对数损失。第 0 轮（刚初始化）三条线在 0.81 到 0.83，画不下，从第 1 轮画起。灰色粗线是拿真实概率去算训练集得到的损失。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">轮</th><th class="num">训练损失</th><th class="num">验证损失</th><th class="num">训练 AUC</th><th class="num">验证 AUC</th><th class="num">测试 AUC</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td class="num">0.5027</td><td class="num">0.5048</td><td class="num">0.6631</td><td class="num">0.5930</td><td class="num">0.6408</td></tr>
+      <tr><td class="num">5</td><td class="num">0.4597</td><td class="num">0.5027</td><td class="num">0.7563</td><td class="num">0.6440</td><td class="num">0.7330</td></tr>
+      <tr><td class="num">12</td><td class="num">0.4246</td><td class="num">0.4794</td><td class="num">0.8012</td><td class="num">0.6810</td><td class="num">0.7310</td></tr>
+      <tr><td class="num">30</td><td class="num">0.3872</td><td class="num">0.5057</td><td class="num">0.8406</td><td class="num">0.6797</td><td class="num">0.6920</td></tr>
+    </tbody>
+  </table></div>
+  <p>训练集的损失一直在降；验证集和测试集降到第 7 到第 12 轮就不降了，之后往上走。这叫过拟合：模型开始记住训练集里的偶然，比如某个用户某天恰好点开了一首冷门歌，这些在新数据上不会重复。</p>
+  <p>有一个直接的证据。拿真实概率去算训练集，损失是 0.4611，AUC 是 0.7503，知道真实规律也只能做到这样，剩下的是掷骰子式的随机。网络在第 5 轮训练损失就到了 0.4597，比真实规律还"准"；第 12 轮训练 AUC 0.8012，第 30 轮 0.8406。超出真实规律的部分只能是噪声。</p>
+  <h3>早停</h3>
+  <p>训练时不能看测试集，就用验证集挑轮数：验证集损失最低在第 12 轮（0.4794），最终模型用同一个种子从头训到第 12 轮停下，测试 AUC 0.731；一直训到第 30 轮，测试 AUC 降到 0.692。这叫早停（early stopping）。</p>
+  <p>验证集只有 400 条、82 个正样本，曲线跳得厉害：第 12、7、6、9 轮的验证损失是 0.4794、0.4872、0.4881、0.4892，差得不多，测试损失其实在第 7 轮最低。换种子也不稳：同一个配方用种子 1 到 11 各训一次，按验证集挑出的轮数从第 2 到第 17 轮都有，测试 AUC 在 0.6948 到 0.7587 之间，中位数 0.7229；训满 30 轮的中位数是 0.7022。11 次里有 9 次早停比训满好。</p>
+  <h3>别的办法</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>办法</th><th>做法</th><th>在这里</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">L2 正则</td><td>损失里加上 λ × 全部权重的平方和（λ 是自己定的系数），权重越大罚得越多</td><td>没用。第 12 到第 30 轮，权重平方和的开方从 8.27 涨到 9.93</td></tr>
+      <tr><td class="nw">dropout</td><td>训练时每一步随机让一部分隐藏单元输出 0（比如一半），网络没法依赖某一个单元；预测时全部用上</td><td>没用</td></tr>
+      <tr><td class="nw">更多数据</td><td>参数不变，数据多了，噪声互相抵消，规律留下来</td><td>下一节试了 10 倍数据</td></tr>
+      <tr><td class="nw">更小的网络</td><td>减少层数或单元数，能记住的东西变少</td><td>没试</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="compare">
+  <h2><span class="n">10</span>和逻辑回归、GBDT 比</h2>
+  <p>同一份数据、同样的切分，几个模型的 AUC：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">参数</th><th class="num">训练</th><th class="num">验证</th><th class="num">测试</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑回归，15 个特征</td><td class="num">16</td><td class="num">0.6738</td><td class="num">0.6438</td><td class="num">0.7175</td></tr>
+      <tr><td>3→4→1 小网络，3 个特征</td><td class="num">21</td><td class="num">0.6614</td><td class="num">0.6598</td><td class="num">0.7191</td></tr>
+      <tr><td>15→16→8→1，第 12 轮</td><td class="num">401</td><td class="num">0.8012</td><td class="num">0.6810</td><td class="num">0.7310</td></tr>
+      <tr><td>同上，训满 30 轮</td><td class="num">401</td><td class="num">0.8406</td><td class="num">0.6797</td><td class="num">0.6920</td></tr>
+      <tr><td>GBDT，103 棵深度 2 的树</td><td class="num">—</td><td class="num">0.7490</td><td class="num">0.7081</td><td class="num">0.7499</td></tr>
+      <tr><td>逻辑回归 + 1 个交叉特征</td><td class="num">17</td><td class="num">0.7479</td><td class="num">0.6961</td><td class="num">0.7715</td></tr>
+      <tr><td>真实概率（上限）</td><td class="num">—</td><td class="num">0.7503</td><td class="num">0.7230</td><td class="num">0.7834</td></tr>
+    </tbody>
+  </table></div>
+  <p>三段的上限不一样，验证集最难（0.723），测试集最容易（0.7834），只能在同一段里比。GBDT 的配方见<a href="trees-gbdt.html">决策树和 GBDT</a>。</p>
+  <p>测试集只有 600 条、142 个正样本，差距有多少是真的？用自助法估计：从这 600 条里有放回地抽 600 条算一次 AUC，重复 2000 次。每个模型测试 AUC 的标准差都在 0.023 到 0.026 之间。两两在同一次抽样里比：GBDT 比网络平均高 0.019，95% 区间 −0.024 到 +0.059；网络比逻辑回归高 0.013，区间 −0.033 到 +0.058，都分不出高下。只有加了交叉特征的逻辑回归比网络高 0.040 是比较确定的，区间 +0.003 到 +0.077。</p>
+  <h3>网络学到交叉了吗</h3>
+  <p>学到了一部分。在测试集上按第 01 节的四格看平均预测：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">白天短歌</th><th class="num">白天长歌</th><th class="num">晚上短歌</th><th class="num">晚上长歌</th></tr></thead>
+    <tbody>
+      <tr><td>真实概率</td><td class="num">0.331</td><td class="num">0.120</td><td class="num">0.113</td><td class="num">0.342</td></tr>
+      <tr><td>逻辑回归</td><td class="num">0.258</td><td class="num">0.225</td><td class="num">0.215</td><td class="num">0.205</td></tr>
+      <tr><td>GBDT</td><td class="num">0.277</td><td class="num">0.208</td><td class="num">0.186</td><td class="num">0.237</td></tr>
+      <tr><td>网络，第 12 轮</td><td class="num">0.324</td><td class="num">0.153</td><td class="num">0.141</td><td class="num">0.284</td></tr>
+      <tr><td>加交叉的逻辑回归</td><td class="num">0.361</td><td class="num">0.125</td><td class="num">0.108</td><td class="num">0.329</td></tr>
+    </tbody>
+  </table></div>
+  <p>没人告诉网络要看"晚上和长歌配不配"，它自己把四格拉开了，逻辑回归做不到。但它在 2000 条数据上同时学进了噪声，落到每个样本的排序上，反而不如只多一个特征的逻辑回归。</p>
+  <h3>数据多 10 倍</h3>
+  <p>用同一个生成脚本、同样的规律接着造 18000 条（第 31 到 210 天），和原来的 2000 条合成 20000 条训练集；验证集、测试集和各模型的配方都不变：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>训练数据</th><th class="num">逻辑回归</th><th class="num">加交叉的逻辑回归</th><th class="num">网络 15→16→8→1</th></tr></thead>
+    <tbody>
+      <tr><td>2000 条</td><td class="num">0.7175</td><td class="num">0.7715</td><td class="num">0.7310</td></tr>
+      <tr><td>20000 条</td><td class="num">0.7286</td><td class="num">0.7772</td><td class="num">0.7671</td></tr>
+    </tbody>
+  </table></div>
+  <p>网络涨得最多。这次按验证集挑出的是第 29 轮，训练 AUC 0.7557，和真实概率在这 20000 条上的 0.7535 差不多，不再过拟合；换种子 1 到 5 再训，测试 AUC 在 0.7638 到 0.7811 之间。逻辑回归加了数据也只到 0.7286，它的形式排不出四格。</p>
+  <div class="key">这组对比说明：2000 条数据、401 个参数，网络学规律的同时也在学噪声，比不过 GBDT 和一个好特征；数据多了，它不用人提示就接近了手工交叉的效果和 0.7834 的上限。数据少时，逻辑回归、GBDT 加好特征更划算；交叉说不清、数据又够时，网络才显出好处。推荐系统里的用法见<a href="ctr-recommendation.html">推荐和点击率预估</a>。</div>
+</section>
+
+<section id="init">
+  <h2><span class="n">11</span>初始值：不能全是 0</h2>
+  <p>训练要从一组初始参数出发。逻辑回归可以从全 0 开始（<a href="gradient-descent.html">梯度下降</a>那一页就是），网络不行。</p>
+  <h3>全是 0：梯度传不回去</h3>
+  <p>隐藏层输出全是 0，输出层权重的梯度（δ × h）就是 0；输出层权重也是 0，传回隐藏层的误差（w × δ）也是 0，只有输出层的偏置能学。把 3→4→1 小网络从全 0 开始训练 60 轮：所有权重仍是 0，偏置学到 −1.2299，每个样本的预测都是 0.2262，接近训练集的正样本率 0.227。测试 AUC 0.5，什么都没学到。</p>
+  <h3>全都一样：对称</h3>
+  <p>不是 0、但每个单元的初始权重都一样，问题更隐蔽。同一层的单元看同样的输入、有同样的权重，算出同样的输出，分到同样的误差，做同样的更新，永远是彼此的复制品。把二维演示的 2→6→1 网络所有权重都设成 0.5，其余配方不变，训练 300 轮后 6 个单元的权重全是 (−2.82, 3.09)，偏置全是 −1.75：6 个单元画的是同一条线，准确率 0.69，随机初始化时是 0.89。所以初始权重要随机抽，让每个单元从不同的地方出发；偏置一般从 0 开始。</p>
+  <h3>抽多大</h3>
+  <p>抽得太大或太小，数值会一层层放大或缩小。拿 2000 条标准化后的训练样本，送进一个 10 层、每层 16 个 ReLU 单元的网络（权重用种子 5 抽），看每层输出的均方根（平方的平均再开方，代表数值的典型大小；输入是 1）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>第几层</th><th class="num">标准正态 N(0, 1)</th><th class="num">He：N(0, 2/输入数)</th><th class="num">N(0, 0.1²)</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="num">2.63</td><td class="num">0.961</td><td class="num">0.263</td></tr>
+      <tr><td>2</td><td class="num">7.46</td><td class="num">0.963</td><td class="num">0.0746</td></tr>
+      <tr><td>5</td><td class="num">153</td><td class="num">0.873</td><td class="num">0.00153</td></tr>
+      <tr><td>10</td><td class="num">28100</td><td class="num">0.885</td><td class="num">0.0000028</td></tr>
+    </tbody>
+  </table></div>
+  <p>标准正态的权重让数值每层放大约 2.8 倍，标准差 0.1 让每层缩到约 0.28 倍。He 初始化按输入个数缩放，方差取 2/输入数，各层基本保持在 1 附近；多乘一个 2，是因为 ReLU 把大约一半的数变成了 0。常见的两种取法：</p>
+  <ul>
+    <li><strong>He 初始化：</strong>方差 2/输入数，配 ReLU。这一页的网络都用它，二维演示的 tanh 网络也是。</li>
+    <li><strong>Xavier 初始化</strong>（也叫 Glorot）：方差 2/(输入数 + 输出数)，不少实现简化成 1/输入数，配 tanh 和 sigmoid。</li>
+  </ul>
+</section>
+
+<section id="vanish">
+  <h2><span class="n">12</span>梯度消失和 ReLU</h2>
+  <p>误差每往回传一层，都要乘一次激活函数的斜率（第 07 节）。sigmoid 的斜率最大是 0.25（在 z = 0 处），离 0 越远越小。只看斜率这一项，传过 10 层最多剩 0.25<sup>10</sup> ≈ 0.00000095。</p>
+  <p>实际算一下。还是 10 层、每层 16 个单元、同样 2000 条训练样本，sigmoid 和 tanh 用 Xavier（方差取 1/输入数），ReLU 用 He。刚初始化时在全部样本上平均出每层权重的梯度，看它的均方根：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>层</th><th class="num">sigmoid + Xavier</th><th class="num">tanh + Xavier</th><th class="num">ReLU + He</th></tr></thead>
+    <tbody>
+      <tr><td>第 1 层</td><td class="num">9.9×10<sup>−9</sup></td><td class="num">0.0067</td><td class="num">0.012</td></tr>
+      <tr><td>第 5 层</td><td class="num">1.4×10<sup>−5</sup></td><td class="num">0.0064</td><td class="num">0.039</td></tr>
+      <tr><td>第 10 层</td><td class="num">0.012</td><td class="num">0.0068</td><td class="num">0.13</td></tr>
+      <tr><td>输出层</td><td class="num">0.15</td><td class="num">0.021</td><td class="num">0.39</td></tr>
+    </tbody>
+  </table></div>
+  <p>sigmoid 网络第 1 层的梯度不到第 10 层的百万分之一，学习率一样，前面的层几乎不动。两个网络各训练 10 轮（学习率 0.01）：sigmoid 网络第 1 层权重变化的均方根只有 0.0000019，测试 AUC 0.5234，和乱猜差不多；ReLU 网络第 1 层变了 0.15，测试 AUC 0.7359。</p>
+  <p>这就是梯度消失。ReLU 缓解它的原因很直接：激活的单元斜率正好是 1，误差原样穿过，只乘权重；没激活的斜率是 0，那条路断开，代价是第 05 节的死单元。tanh 在 0 附近斜率是 1，刚初始化时没有消失，但 |z| 一大，斜率同样趋近 0。ReLU 还便宜，一次比较，不用算指数。</p>
+  <p>更深的网络还靠两样结构：残差连接，每隔几层把输入直接加到输出上，误差多一条不乘斜率的近路；归一化层，把每层的输出拉回均值 0、方差 1 附近。<a href="llm.html">大语言模型</a>里两样都有。</p>
+</section>
+
+<section id="scale">
+  <h2><span class="n">13</span>深度、宽度、批量和 GPU</h2>
+  <p>每层加单元叫加宽，加层叫加深。理论上一个隐藏层只要足够宽，就能逼近任意连续函数，但"足够宽"可能大得不现实。多一层，后一层就能把前一层的回答再组合一次，像第 08 节那样先画线、再拼区域。用几层、每层多宽，和学习率一样，是在验证集上试出来的。</p>
+  <p>这一页的网络每看一个样本就更新一次（批大小为 1），401 个参数的网络训 30 轮，在一台 Mac 的 CPU 上不到 0.3 秒。大网络一次取一批样本，比如 256 个，前向就成了一次矩阵乘法：</p>
+<pre><code>X (256×15) · W1ᵀ (15×16) + b1  ->  Z (256×16)</code></pre>
+  <p>反向也是矩阵乘法，一批的梯度取平均，更新一次参数。这些乘加互不依赖，GPU 可以同时算成千上万个，所以训练大网络用 GPU。</p>
+  <h3>模型就是一堆数</h3>
+  <p>训练完，网络就是它的参数。按 float32（每个数 4 字节）存：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>模型</th><th class="num">参数</th><th>大小</th></tr></thead>
+    <tbody>
+      <tr><td>3→4→1</td><td class="num">21</td><td>84 字节</td></tr>
+      <tr><td>15→16→8→1</td><td class="num">401</td><td>1604 字节</td></tr>
+      <tr><td>70 亿参数的大模型</td><td class="num">7,000,000,000</td><td>28 GB；每个数用 16 位存是 14 GB，8 位约 7 GB</td></tr>
+    </tbody>
+  </table></div>
+  <p>模型文件里还要记下结构：几层、每层多少单元、用什么激活函数。参数换成 16 位或 8 位存叫量化，文件更小、算得更快，精度会损失一点。见<a href="prediction.html#s8">总览第 8 站</a>和<a href="llm.html">大语言模型</a>。</p>
+</section>
+
+<section id="android">
+  <h2><span class="n">14</span>在 Android 上运行</h2>
+  <p>预测只用前向。参数少的网络直接手写，第 04 节的 3→4→1 在 Kotlin 里是这样：</p>
+<pre><code>import kotlin.math.exp
+
+private val W1 = arrayOf(
+    floatArrayOf(2.15f, -0.78f, -1.14f),
+    floatArrayOf(0.71f, -0.42f, 1.30f),
+    floatArrayOf(-0.59f, -0.99f, -1.25f),
+    floatArrayOf(3.21f, 1.30f, 0.39f),
+)
+private val B1 = floatArrayOf(0.05f, -0.34f, 0f, 0.01f)
+private val W2 = floatArrayOf(0.33f, 0.59f, 1.38f, 0.89f)
+private const val B2 = -1.81f
+
+// x = [偏好 ÷ 30, 热度, 关注]
+fun predict(x: FloatArray): Float {
+    var z = B2
+    for (j in 0 until 4) {
+        var zj = B1[j]
+        for (k in 0 until 3) zj += W1[j][k] * x[k]
+        z += W2[j] * maxOf(zj, 0f)      // ReLU
+    }
+    return 1f / (1f + exp(-z))          // sigmoid
+}
+
+// predict(floatArrayOf(6 / 30f, 0.32f, 0f)) 约等于 0.3136</code></pre>
+  <p>15→16→8→1 也是这样几重循环，前面多一步：输入先按训练集的均值和标准差标准化。比如偏好这一项是 (affinity ÷ 30 − 0.0898) ÷ 0.104，样本 2462 标准化后约是 1.06。这 30 个常数是模型的一部分，要和权重一起带上；手机上漏了这一步，或者用了另一份均值，概率就全错了，而且不会报错。</p>
+  <p>模型大了、结构复杂了，就不再手写，而是导出成模型文件，在手机上用推理运行时加载：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>做法</th><th>是什么</th><th>适合</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">手写前向</td><td>权重写成数组，自己循环</td><td>几百到几千个参数的小模型</td></tr>
+      <tr><td>TensorFlow Lite（2024 年起改名 LiteRT）</td><td>模型转成 <code>.tflite</code> 文件放进 App，用它的 <code>Interpreter</code> 加载，传入输入数组、取回输出数组</td><td>常见的端上推理，能用 GPU 等硬件加速</td></tr>
+      <tr><td class="nw">ONNX Runtime</td><td>加载 <code>.onnx</code> 格式的模型，有 Android 版本</td><td>PyTorch 等框架导出的模型</td></tr>
+    </tbody>
+  </table></div>
+  <p>推荐排序常见的做法是在服务端算，模型大，也要用很多用户的数据；放到手机上的多是小模型，图的是不联网也能算、延迟低、数据不出手机。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">15</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>训练集指标一直涨，验证集先涨后跌</td><td>过拟合：参数多、数据少，开始记训练集里的噪声。训练 AUC 超过真实概率能做到的，就是在记噪声</td><td>按验证集早停；L2、dropout；加数据；缩小网络</td></tr>
+      <tr><td>某个隐藏单元的输出永远是 0</td><td>死掉的 ReLU：输入全为正而权重全为负；或者学习率太大，把偏置推得很负</td><td>输入标准化；Leaky ReLU；调小学习率；统计每个单元的激活比例</td></tr>
+      <tr><td>所有样本的预测都一样；或者一层里几个单元的权重一模一样</td><td>权重全 0 初始化，梯度传不回去；或者初始值全相同，对称性没打破</td><td>随机初始化（He 或 Xavier）</td></tr>
+      <tr><td>损失变成 NaN，或者突然暴涨</td><td>学习率太大；初始值太大，数值逐层放大；p 算成了 0 或 1，取了 ln 0</td><td>调小学习率；He 或 Xavier 初始化；算损失前把 p 限制在 [10<sup>−12</sup>, 1 − 10<sup>−12</sup>]</td></tr>
+      <tr><td>深层网络前面几层几乎不动</td><td>梯度消失：sigmoid 的斜率最多 0.25，层层相乘</td><td>隐藏层用 ReLU；合适的初始化；残差连接、归一化层</td></tr>
+      <tr><td>换个随机种子，测试 AUC 差了 0.06</td><td>小数据上训练本身不稳：种子 1 到 11 早停后的测试 AUC 从 0.6948 到 0.7587</td><td>多跑几个种子看分布，或者把几个模型的预测平均；报结果时写清种子</td></tr>
+      <tr><td>测试 AUC 高了 0.02，上线后没区别</td><td>600 条测试样本，AUC 本身就有约 0.025 的抽样误差</td><td>用自助法看区间，或者换更大的测试集</td></tr>
+      <tr><td>训练久了，预测的概率整体偏高</td><td>过拟合也让概率失准：第 30 轮测试集的平均预测 0.2609，实际正样本率 0.2367；第 12 轮是 0.2296</td><td>早停；上线前对比平均预测和实际比例，见<a href="evaluation.html">评估</a></td></tr>
+      <tr><td>手机上算的概率和服务端对不上</td><td>特征算法不一致：没做标准化、均值和标准差不是训练时那份、特征顺序错了</td><td>标准化常数和权重一起导出；拿同一批样本两边各算一遍，逐个对数</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">数字都来自一个固定种子的 Node.js 脚本（纯 JavaScript，没用机器学习库）和它生成的 3000 条示意曝光，训练都是逐样本的随机梯度下降。3→4→1：特征 [affinity/30, heat, follow]，He 初始化种子 7，学习率 0.05，60 轮，权重取两位小数；前向、反向和学一步（学习率 0.05）按两位小数的权重手算后用脚本核对，数值梯度的扰动是 10<sup>−6</sup>。15→16→8→1：特征按训练集标准化，种子 11，学习率 0.01，30 轮，按验证集损失取第 12 轮；种子波动换的是种子 1 到 11。二维演示：坐标缩放到 [−1, 1]，2→6→1 tanh，种子 3，学习率 0.05，300 轮；全 0.5 初始化、2→2→1、2→4→1 只改了这一处。初始化和梯度消失：10 层、每层 16 个单元，种子 5，输入是标准化后的 2000 条训练样本，训练对照为学习率 0.01、10 轮。AUC 误差：自助法 2000 次，种子 99。10 倍数据：同一生成器接着生成第 31 到 210 天的 18000 条。Kotlin 代码按 float32 核对过结果；推理运行时一段按公开文档写，没有在真机上跑。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 3 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="gradient-descent.html"><span class="t">← 上一篇：损失和梯度下降</span><span class="d">损失和梯度下降：模型是怎么学的</span></a>
+    <a class="demo" href="trees-gbdt.html"><span class="t">下一篇：决策树和 GBDT →</span><span class="d">不做加权求和也能预测：决策树问一串是非题，GBDT 把很多棵小树一棵接一棵地加起来。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

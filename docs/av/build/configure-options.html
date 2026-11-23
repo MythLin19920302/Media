@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>configure_android.sh 参数详解</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：参数表第一列不换行；速查索引分栏 */
+table.opts td:first-child{white-space:nowrap}
+table.opts td:first-child code{font-size:.84em}
+.dflt{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);white-space:nowrap}
+.az{columns:2;column-gap:28px;margin:0 0 18px;padding:0;list-style:none;font-size:14.5px}
+.az li{break-inside:avoid;display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--rule);padding:6px 0;margin:0}
+.az a{text-decoration:none;font-family:var(--font-mono);font-size:13px}
+.az a:hover{text-decoration:underline}
+.az span{color:var(--muted);font-size:13px;white-space:nowrap}
+@media (max-width:620px){.az{columns:1}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#build">← 构建</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#role">它为什么最重要</a></li>
+    <li><a href="#layout">脚本的四段</a></li>
+    <li><a href="#syntax">参数的语法规则</a></li>
+    <li><a href="#g1">① 安装位置</a></li>
+    <li><a href="#g2">② 目标平台</a></li>
+    <li><a href="#g3">③ 工具链</a></li>
+    <li><a href="#g4">④ sysroot</a></li>
+    <li><a href="#g5">⑤ 产物形态</a></li>
+    <li><a href="#g6">⑥ Android 能力</a></li>
+    <li><a href="#g7">⑦ 组件裁剪</a></li>
+    <li><a href="#defaults">没写但生效的默认值</a></li>
+    <li><a href="#lookup">去哪里查参数</a></li>
+    <li><a href="#az">参数速查索引</a></li>
+    <li><a href="#change">改参数的流程</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">音视频 · 构建</div>
+  <h1>configure_android.sh 参数详解</h1>
+  <p class="lede">编译 FFmpeg 时，所有决定都在 configure 这一步做完：给谁编、用什么工具、编成什么形态、包含哪些格式。之后的 <code>make</code> 只是照着执行。这篇把 <code>ffmpeg/configure_android.sh</code> 里的每一个参数讲清楚，并给出一份索引：想查某个参数时该去哪里找。</p>
+  <div class="journey" aria-label="configure 的输入和输出">
+    <div class="step"><span class="k">输入</span><span class="v">30 个参数</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">configure 探测</span><span class="v hex">只编译，不运行</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">输出</span><span class="v">config.h · config.mak</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">make</span><span class="v">6 个 .so</span></div>
+  </div>
+  <p class="caption">本文的默认值来自 FFmpeg n8.1.3 的 <code>configure --help</code> 原文，"实际结果"来自这个工程的 <code>ffmpeg/build/arm64-v8a/ffbuild/config.mak</code> 和构建日志。交叉编译的背景知识见 <a href="ffmpeg-android.html">在 Mac 上编出 Android 的 FFmpeg</a>。</p>
+</header>
+
+<section id="role">
+  <h2><span class="n">01</span>它为什么最重要</h2>
+  <p>FFmpeg 的构建分三步：configure → make → make install。后两步没有任何可调的地方，全部行为由 configure 生成的四个文件决定：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>configure 生成的文件</th><th>内容</th><th>谁来读</th></tr></thead>
+    <tbody>
+      <tr><td><code>config.h</code></td><td>平台探测结果：<code>ARCH_AARCH64</code>、<code>HAVE_NEON</code> 等几百个宏，以及完整的配置命令行 <code>FFMPEG_CONFIGURATION</code></td><td>C 源码，用 <code>#if</code> 取舍</td></tr>
+      <tr><td><code>config_components.h</code></td><td>每个组件开没开：<code>CONFIG_H264_DECODER 1</code></td><td>C 源码，决定哪些格式被注册</td></tr>
+      <tr><td><code>ffbuild/config.mak</code></td><td>编译器路径、<code>CFLAGS</code>、<code>LDFLAGS</code>、要编哪些文件</td><td>make</td></tr>
+      <tr><td><code>ffbuild/config.log</code></td><td>每一次探测用的测试程序、命令和编译器输出</td><td>你，configure 失败时</td></tr>
+    </tbody>
+  </table></div>
+  <p>所以出了问题，几乎都能追到 configure 的某个参数上：架构不对是第 ② ③ 组，加载失败是第 ⑤ 组，某个格式打不开是第 ⑦ 组。</p>
+</section>
+
+<section id="layout">
+  <h2><span class="n">02</span>脚本的四段</h2>
+  <p>67 行的脚本分四段。真正传给 configure 的只有第三段的 <code>ARGS</code> 数组，前两段是在为它准备变量和挡住错误的前提。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>段</th><th>行</th><th>做什么</th></tr></thead>
+    <tbody>
+      <tr><td>按 ABI 取值</td><td class="num">9–14</td><td>由 ABI 名得到 <code>ARCH</code>、<code>CPU</code>、<code>TRIPLE</code>。两个 ABI 的差别只在这里。</td></tr>
+      <tr><td>路径和版本</td><td class="num">16–23</td><td>源码、构建、安装三个目录；<code>API</code>、<code>NDK</code>、工具链目录 <code>TC</code>。</td></tr>
+      <tr><td>前提检查</td><td class="num">25–29</td><td>编译器存在、源码存在、源码目录里没有残留的 <code>config.h</code>。</td></tr>
+      <tr><td>参数和执行</td><td class="num">31–67</td><td><code>ARGS</code> 数组分七组；进入构建目录后调用 <code>configure</code>。</td></tr>
+    </tbody>
+  </table></div>
+  <h3>脚本里的变量</h3>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>变量</th><th>值</th><th>含义</th><th>什么时候改</th></tr></thead>
+    <tbody>
+      <tr><td><code>ABI</code></td><td>命令行第一个参数</td><td>Android ABI 名</td><td>不改，调用时传</td></tr>
+      <tr><td><code>ARCH</code></td><td><code>aarch64</code> / <code>arm</code></td><td>FFmpeg 的架构名，传给 <code>--arch</code></td><td>增加 ABI 时加一行</td></tr>
+      <tr><td><code>CPU</code></td><td><code>armv8-a</code> / <code>armv7-a</code></td><td>最低指令集，传给 <code>--cpu</code></td><td>同上</td></tr>
+      <tr><td><code>TRIPLE</code></td><td><code>aarch64-linux-android</code> / <code>armv7a-linux-androideabi</code></td><td>编译器文件名前缀</td><td>同上</td></tr>
+      <tr><td><code>API</code></td><td><code>24</code></td><td>API 级别，拼进编译器文件名</td><td>App 的 minSdk 变了</td></tr>
+      <tr><td><code>NDK</code></td><td><code>$ANDROID_NDK_HOME</code>，没设则用 <code>~/Library/Android/sdk/ndk/27.2.12479018</code></td><td>NDK 根目录</td><td>升级 NDK；要和 <code>build.gradle.kts</code> 的 <code>ndkVersion</code> 一起改</td></tr>
+      <tr><td><code>TC</code></td><td><code>$NDK/toolchains/llvm/prebuilt/darwin-x86_64</code></td><td>工具链目录</td><td>换到 Linux 上构建时改成 <code>linux-x86_64</code></td></tr>
+      <tr><td><code>SRC</code> <code>BUILD</code> <code>OUT</code></td><td><code>ffmpeg/src</code>、<code>ffmpeg/build/&lt;abi&gt;</code>、<code>ffmpeg/out/&lt;abi&gt;</code></td><td>源码、构建、安装目录</td><td>一般不改</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="syntax">
+  <h2><span class="n">03</span>参数的语法规则</h2>
+  <p>FFmpeg 的 configure 是一个 8000 多行的 shell 脚本，参数只有三种写法：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>写法</th><th>含义</th><th>例子</th></tr></thead>
+    <tbody>
+      <tr><td><code>--enable-X</code> / <code>--disable-X</code></td><td>开关一个功能、一个库，或一整类组件</td><td><code>--enable-shared</code>、<code>--disable-doc</code>、<code>--disable-decoders</code></td></tr>
+      <tr><td><code>--X=值</code></td><td>设置一个取值</td><td><code>--arch=aarch64</code>、<code>--cc=…</code></td></tr>
+      <tr><td><code>--enable-类别=名字,名字</code></td><td>点名打开某类里的若干组件，逗号分隔，不能有空格</td><td><code>--enable-decoder=h264,hevc</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>有四条规则不写在帮助里，但决定了参数怎么生效：</p>
+  <ul>
+    <li><strong>从左到右依次处理，后面的覆盖前面的。</strong>所以 <code>--disable-everything</code> 必须写在所有 <code>--enable-decoder=…</code> 之前；反过来写，刚打开的就又被关掉了。</li>
+    <li><strong>组件名写错不会报错，只有一行警告。</strong><code>--enable-decoder=h246</code> 会得到 <code>Option --enable-decoder=h246 did not match anything</code>，configure 继续往下跑，产物里就是没有这个解码器。参数名本身写错（比如 <code>--enable-shard</code>）才会直接报 <code>Unknown option</code> 退出。</li>
+    <li><strong>组件之间有依赖，会自动带上。</strong>打开一个组件，它声明依赖的其他组件会被一并打开，所以实际启用的可能比你写的多，见 <a href="#g7">第 ⑦ 组</a>。</li>
+    <li><strong>帮助里方括号是默认值。</strong><code>[no]</code> 是默认关，<code>[autodetect]</code> 是探测到就用、探测不到就悄悄关掉。对 autodetect 的库显式写 <code>--enable-xxx</code>，探测不到时会报错退出，而不是悄悄关掉。</li>
+  </ul>
+</section>
+
+<section id="g1">
+  <h2><span class="n">04</span>① 安装位置</h2>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>参数</th><th>脚本里的值</th><th>默认值</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>--prefix</code></td><td><code>ffmpeg/out/&lt;abi&gt;</code></td><td class="dflt">/usr/local</td><td><code>make install</code> 的根目录。库装到 <code>PREFIX/lib</code>，头文件装到 <code>PREFIX/include</code>。</td></tr>
+    </tbody>
+  </table></div>
+  <p>不写的话会试图装进 Mac 的 <code>/usr/local</code>，把手机用的库混进本机系统目录。每个 ABI 用各自的目录，产物才不会互相覆盖。相关的还有 <code>--libdir</code>、<code>--incdir</code>、<code>--shlibdir</code>，可以把库和头文件分别指到别处，这个工程用默认的 <code>PREFIX/lib</code> 和 <code>PREFIX/include</code>。</p>
+</section>
+
+<section id="g2">
+  <h2><span class="n">05</span>② 目标平台</h2>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>参数</th><th>脚本里的值</th><th>默认值</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>--enable-cross-compile</code></td><td>开</td><td class="dflt">关</td><td>告诉 configure 产物不能在本机运行：探测程序只编译和链接，不执行；Mac 上要跑的构建工具改用 host 编译器。</td></tr>
+      <tr><td><code>--target-os</code></td><td><code>android</code></td><td class="dflt">空（按本机猜）</td><td>目标操作系统。决定动态库的命名和链接方式。</td></tr>
+      <tr><td><code>--arch</code></td><td><code>aarch64</code> / <code>arm</code></td><td class="dflt">空（按本机猜）</td><td>目标 CPU 架构。决定编哪个目录下的汇编优化（<code>libavcodec/aarch64/</code> 或 <code>libavcodec/arm/</code>）。</td></tr>
+      <tr><td><code>--cpu</code></td><td><code>armv8-a</code> / <code>armv7-a</code></td><td class="dflt">空</td><td>产物要求的最低指令集，变成编译器的 <code>-march=</code>。</td></tr>
+    </tbody>
+  </table></div>
+  <h3><code>--target-os=android</code> 具体改了什么</h3>
+  <p>configure 里有一段按目标系统分支的代码，<code>android</code> 这一支只有几行，但每一行都对应 Android 的一个限制：</p>
+<pre><code>android)
+    disable symver                                  # 不做符号版本
+    SLIB_INSTALL_NAME='$(SLIBNAME)'                 # 安装的文件名不带版本号
+    SLIB_INSTALL_LINKS=                             # 不创建 .so.62 → .so 这类软链接
+    SHFLAGS='-shared -Wl,-soname,$(SLIBNAME)'       # soname 也不带版本号
+    add_allcflags -fPIE</code></pre>
+  <p>桌面 Linux 上会得到 <code>libavcodec.so.62.x.y</code> 加两个软链接，soname 是 <code>libavcodec.so.62</code>。APK 只打包文件名以 <code>.so</code> 结尾的文件，也不支持软链接，所以这里全部去掉版本号。不写 <code>--target-os=android</code>，产物在手机上会报 <code>library "libavcodec.so.62" not found</code>。</p>
+  <h3><code>--cpu</code> 落到哪里</h3>
+<pre><code># ffmpeg/build/arm64-v8a/ffbuild/config.mak
+CFLAGS=   -march=armv8-a -std=c17 -fPIE -fomit-frame-pointer -fPIC -pthread -g …
+# ffmpeg/build/armeabi-v7a/ffbuild/config.mak
+CFLAGS=   -march=armv7-a -std=c17 -fPIE -fomit-frame-pointer -fPIC -marm -pthread -g …</code></pre>
+  <p><code>--cpu</code> 是下限：写 <code>armv8-a</code> 表示所有 arm64 手机都能跑。写得更高（比如 <code>armv8.2-a</code>）编译器会用上新指令，老手机遇到就崩溃。更新的指令集优化不靠这个参数，FFmpeg 默认开着运行时 CPU 检测，在支持的手机上自动走更快的汇编路径。</p>
+  <div class="callout"><b><code>--cpu=host</code> 在交叉编译时没有意义。</b>它的意思是"按当前这台机器的 CPU 优化"，而当前机器是 Mac。configure 会给出警告。</div>
+</section>
+
+<section id="g3">
+  <h2><span class="n">06</span>③ 工具链</h2>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>参数</th><th>脚本里的值</th><th>默认值</th><th>这个工具做什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>--cc</code></td><td><code>$TC/bin/&lt;triple&gt;24-clang</code></td><td class="dflt">gcc</td><td>C 编译器，同时也被当作链接器和汇编器的入口。</td></tr>
+      <tr><td><code>--ar</code></td><td><code>$TC/bin/llvm-ar</code></td><td class="dflt">ar</td><td>把多个 <code>.o</code> 打成静态库 <code>.a</code>。只编动态库时构建过程中间也会用到。</td></tr>
+      <tr><td><code>--nm</code></td><td><code>$TC/bin/llvm-nm</code></td><td class="dflt">nm -g</td><td>列出目标文件的符号。configure 用它探测符号名前缀，make 用它生成导出符号表。</td></tr>
+      <tr><td><code>--ranlib</code></td><td><code>$TC/bin/llvm-ranlib</code></td><td class="dflt">ranlib</td><td>给静态库建索引。</td></tr>
+      <tr><td><code>--strip</code></td><td><code>$TC/bin/llvm-strip</code></td><td class="dflt">strip</td><td><code>make install</code> 时去掉调试符号，体积大幅减小。</td></tr>
+    </tbody>
+  </table></div>
+  <p>五个默认值都是 Mac 自带的工具：<code>gcc</code> 在 Mac 上其实是 Apple clang，产出 Mach-O；<code>ar</code>、<code>nm</code>、<code>strip</code> 只认 Mach-O。漏掉任何一个，要么 configure 失败，要么在 make 或 install 的某一步报"无法识别的文件格式"。</p>
+  <h3>为什么不用 <code>--cross-prefix</code></h3>
+  <p>很多教程写的是 <code>--cross-prefix=aarch64-linux-android-</code>，让 configure 自己拼出 <code>…-gcc</code>、<code>…-ar</code>、<code>…-nm</code>。这套写法对应的是旧版 NDK 的 GCC 工具链。现在的 NDK 里，编译器文件名中间夹着 API 级别（<code>aarch64-linux-android24-clang</code>），而 <code>llvm-ar</code> 这些工具没有前缀，拼不出来，所以逐个指定。</p>
+  <h3>没写但存在的第二个编译器</h3>
+  <p>构建日志里有一行 <code>host C compiler  gcc</code>。FFmpeg 构建时要先编几个小工具并在 Mac 上当场运行，它们用 <code>--host-cc</code> 指定的编译器，默认就是本机的 <code>gcc</code>，正好是对的，所以脚本里不用写。相关参数还有 <code>--host-cflags</code>、<code>--host-ldflags</code>。</p>
+</section>
+
+<section id="g4">
+  <h2><span class="n">07</span>④ sysroot</h2>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>参数</th><th>脚本里的值</th><th>默认值</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>--sysroot</code></td><td><code>$TC/sysroot</code></td><td class="dflt">空</td><td>把这个目录当作目标系统的根目录，头文件和系统库都从这里找。</td></tr>
+    </tbody>
+  </table></div>
+  <p>它会同时出现在编译和链接两边：</p>
+<pre><code>CPPFLAGS= --sysroot=…/darwin-x86_64/sysroot -D_ISOC11_SOURCE -D_FILE_OFFSET_BITS=64 …
+LDFLAGS=  -Wl,-z,max-page-size=16384 --sysroot=…/darwin-x86_64/sysroot -march=armv8-a …</code></pre>
+  <p>NDK 的 clang 包装脚本其实已经知道自己的 sysroot 在哪，不写这个参数通常也能编过。显式写上有两个好处：configure 自己做探测时用的路径和编译时一致；别人读脚本时能看出系统头文件来自哪里。只想换头文件目录、不换库目录时用 <code>--sysinclude</code>。</p>
+</section>
+
+<section id="g5">
+  <h2><span class="n">08</span>⑤ 产物形态</h2>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>参数</th><th>默认值</th><th>作用</th><th>不写会怎样</th></tr></thead>
+    <tbody>
+      <tr><td><code>--enable-shared</code></td><td class="dflt">关</td><td>编动态库 <code>.so</code></td><td>没有 <code>.so</code>，App 无法 <code>loadLibrary</code></td></tr>
+      <tr><td><code>--disable-static</code></td><td class="dflt">静态库默认开</td><td>不编静态库 <code>.a</code></td><td>多编一套用不到的 <code>.a</code>，构建时间接近翻倍</td></tr>
+      <tr><td><code>--enable-pic</code></td><td class="dflt">按平台决定</td><td>生成位置无关代码，变成 <code>-fPIC</code></td><td>开了 shared 时通常会自动打开；显式写上避免依赖推断</td></tr>
+      <tr><td><code>--extra-ldflags</code></td><td class="dflt">空</td><td>原样追加到链接参数。这里传 <code>-Wl,-z,max-page-size=16384</code></td><td><code>.so</code> 按 4 KB 对齐，在 16 KB 页的设备上加载失败</td></tr>
+      <tr><td><code>--disable-programs</code></td><td class="dflt">默认编</td><td>不编 <code>ffmpeg</code>、<code>ffprobe</code>、<code>ffplay</code> 命令行程序</td><td>多编几个 App 用不到的可执行文件</td></tr>
+      <tr><td><code>--disable-doc</code></td><td class="dflt">默认编</td><td>不生成 man、HTML 文档</td><td>浪费时间，还可能因缺少文档工具而警告</td></tr>
+      <tr><td><code>--disable-avdevice</code></td><td class="dflt">默认编</td><td>不编 <code>libavdevice</code>（摄像头、麦克风、屏幕采集的封装）</td><td>多一个 <code>.so</code>。Android 上采集走系统 API，用不到</td></tr>
+    </tbody>
+  </table></div>
+  <h3><code>--extra-*</code> 是通用的后门</h3>
+  <p>configure 没有专门参数的事，都通过这一族参数把选项直接塞给编译器或链接器：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>参数</th><th>追加到</th><th>典型用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>--extra-cflags</code></td><td>编译每个 <code>.c</code></td><td><code>-I</code> 外部库头文件目录、<code>-D</code> 宏</td></tr>
+      <tr><td><code>--extra-ldflags</code></td><td>所有链接</td><td>页对齐、<code>-L</code> 外部库目录</td></tr>
+      <tr><td><code>--extra-ldsoflags</code></td><td>只在链接 <code>.so</code> 时</td><td>只影响动态库的链接选项</td></tr>
+      <tr><td><code>--extra-libs</code></td><td>链接的库列表末尾</td><td><code>-lm</code> 之类需要额外链接的库</td></tr>
+    </tbody>
+  </table></div>
+  <p>值里有空格或逗号时要整体加引号，脚本里写的是 <code>--extra-ldflags="-Wl,-z,max-page-size=16384"</code>。</p>
+  <h3>六个库各是什么</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>库</th><th>职责</th><th>关掉它的参数</th></tr></thead>
+    <tbody>
+      <tr><td><code>libavutil</code></td><td>公共基础：内存、数学、像素和采样格式定义。其他库都依赖它</td><td>不能关</td></tr>
+      <tr><td><code>libavcodec</code></td><td>编解码器、解析器、码流过滤器</td><td><code>--disable-avcodec</code></td></tr>
+      <tr><td><code>libavformat</code></td><td>容器的解封装和封装、读写协议</td><td><code>--disable-avformat</code></td></tr>
+      <tr><td><code>libavfilter</code></td><td>画面和声音的滤镜图</td><td><code>--disable-avfilter</code></td></tr>
+      <tr><td><code>libswscale</code></td><td>画面缩放和像素格式转换</td><td><code>--disable-swscale</code></td></tr>
+      <tr><td><code>libswresample</code></td><td>音频重采样和采样格式转换</td><td><code>--disable-swresample</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="g6">
+  <h2><span class="n">09</span>⑥ Android 能力</h2>
+  <p>这一组在帮助里属于 "External library support"：让 FFmpeg 链接到它自己源码之外的库。这里的三个"外部库"都是 Android 系统自带的，不需要另外编译。</p>
+  <div class="tbl"><table class="opts">
+    <thead><tr><th>参数</th><th>默认值</th><th>作用</th><th>依赖</th></tr></thead>
+    <tbody>
+      <tr><td><code>--enable-jni</code></td><td class="dflt">关</td><td>让 FFmpeg 能持有 JavaVM、从 C 调用 Java 方法。MediaCodec 的一部分实现要靠它。</td><td>pthreads</td></tr>
+      <tr><td><code>--enable-mediacodec</code></td><td class="dflt">关</td><td>接入系统的硬件编解码器，才会有 <code>h264_mediacodec</code> 这类组件可选。</td><td>目标是 android、能链接到 <code>libmediandk</code>、pthreads</td></tr>
+      <tr><td><code>--enable-zlib</code></td><td class="dflt">autodetect</td><td>链接系统的 <code>libz</code>。PNG 解码要用它做解压。</td><td>sysroot 里有 <code>libz.so</code></td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>打开能力不等于打开组件。</strong><code>--enable-mediacodec</code> 只是让硬件编解码器"可以被选"。真正编进去哪个，还要在第 ⑦ 组点名。这个工程只点了编码器 <code>h264_mediacodec</code>；解码器列表里的 <code>h264</code> 是软件解码器，硬件解码器的名字是 <code>h264_mediacodec</code>，目前没有打开。</li>
+    <li><strong>zlib 为什么显式写。</strong>它本来就是自动探测的，探测不到会被悄悄关掉，随后 PNG 解码器因为依赖不满足也被悄悄关掉。显式写上后探测不到会直接报 <code>zlib requested but not found</code>，问题暴露在 configure 这一步。</li>
+    <li><strong>JNI 还需要运行时配合。</strong>编进去之后，App 启动时要把 JavaVM 交给 FFmpeg（<code>av_jni_set_java_vm</code>），MediaCodec 的 Java 路径才能工作。</li>
+  </ul>
+  <p>构建日志的摘要里能看到这一组的结果，还多出一个没写的：</p>
+<pre><code>External libraries:
+jni                     mediacodec              zlib
+
+External libraries providing hardware acceleration:
+v4l2_m2m                                        ← 自动探测到的，见第 11 节</code></pre>
+</section>
+
+<section id="g7">
+  <h2><span class="n">10</span>⑦ 组件裁剪</h2>
+  <p>FFmpeg n8.1.3 一共有上千个组件，默认全部编进去。<code>--disable-everything</code> 把下面这些类别全部清空，再逐类点名。它不影响六个库本身和第 ⑤ ⑥ 组的开关。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>类别</th><th class="num">可选总数</th><th class="num">点名</th><th class="num">实际启用</th><th>查看全部名字</th></tr></thead>
+    <tbody>
+      <tr><td>decoder 解码器</td><td class="num">607</td><td class="num">8</td><td class="num">8</td><td><code>--list-decoders</code></td></tr>
+      <tr><td>encoder 编码器</td><td class="num">275</td><td class="num">2</td><td class="num">2</td><td><code>--list-encoders</code></td></tr>
+      <tr><td>demuxer 解封装</td><td class="num">366</td><td class="num">9</td><td class="num">9</td><td><code>--list-demuxers</code></td></tr>
+      <tr><td>muxer 封装</td><td class="num">184</td><td class="num">1</td><td class="num">2</td><td><code>--list-muxers</code></td></tr>
+      <tr><td>parser 解析器</td><td class="num">68</td><td class="num">8</td><td class="num">9</td><td><code>--list-parsers</code></td></tr>
+      <tr><td>bsf 码流过滤器</td><td class="num">50</td><td class="num">4</td><td class="num">5</td><td><code>--list-bsfs</code></td></tr>
+      <tr><td>protocol 协议</td><td class="num">54</td><td class="num">2</td><td class="num">2</td><td><code>--list-protocols</code></td></tr>
+      <tr><td>filter 滤镜</td><td class="num">593</td><td class="num">13</td><td class="num">13</td><td><code>--list-filters</code></td></tr>
+      <tr><td>hwaccel 硬件加速</td><td class="num">77</td><td class="num">0</td><td class="num">0</td><td><code>--list-hwaccels</code></td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">"实际启用"数自 <code>ffmpeg/build/arm64-v8a/config_components.h</code>。多出来的三个是依赖带进来的，见本节末尾。</p>
+
+  <h3>一个文件要经过哪些组件</h3>
+<pre><code>播放：  protocol ──▶ demuxer ──▶ parser ──▶ decoder ──▶ filter ──▶ 屏幕 / 喇叭
+        读字节       拆容器      切成帧      解压        加工
+
+导出：  filter ──▶ encoder ──▶ bsf ──▶ muxer ──▶ protocol
+        加工       压缩        转码流格式  装容器     写字节</code></pre>
+  <p>每一环都要有对应的组件，缺一环整条链就断。新增一种格式时，按这条链逐环检查。</p>
+
+  <h3><code>--enable-protocol=file,fd</code></h3>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th>作用</th><th>为什么要</th></tr></thead>
+    <tbody>
+      <tr><td><code>file</code></td><td>按路径读写本地文件</td><td>读写 App 私有目录里的文件</td></tr>
+      <tr><td><code>fd</code></td><td>从一个已打开的文件描述符读写</td><td>Android 10 起拿不到媒体文件的真实路径，只能通过 ContentResolver 拿到 fd</td></tr>
+    </tbody>
+  </table></div>
+  <p>没有打开 <code>http</code>、<code>https</code>、<code>rtmp</code> 等网络协议，所以这个构建不能直接播放网络地址。</p>
+
+  <h3><code>--enable-demuxer=…</code></h3>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th>对应的文件</th></tr></thead>
+    <tbody>
+      <tr><td><code>mov</code></td><td>MP4、MOV、M4A、3GP。这一族容器共用一个解封装器，名字是 <code>mov</code> 而不是 <code>mp4</code></td></tr>
+      <tr><td><code>matroska</code></td><td>MKV、WebM</td></tr>
+      <tr><td><code>mp3</code></td><td>MP3 文件</td></tr>
+      <tr><td><code>aac</code></td><td>裸的 ADTS AAC 文件（<code>.aac</code>）。M4A 里的 AAC 走 <code>mov</code></td></tr>
+      <tr><td><code>flac</code></td><td>FLAC 文件</td></tr>
+      <tr><td><code>wav</code></td><td>WAV 文件</td></tr>
+      <tr><td><code>ogg</code></td><td>OGG、OPUS 文件</td></tr>
+      <tr><td><code>image2</code></td><td>单张图片或图片序列，用于把封面图当作视频画面</td></tr>
+      <tr><td><code>concat</code></td><td>按一个列表文件把多段素材首尾相接</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><code>--enable-decoder=…</code> 和 <code>--enable-parser=…</code></h3>
+  <p>解码器负责解压；解析器负责在解码之前把连续的码流切成一帧一帧，并读出分辨率、采样率等信息。大多数格式两者要成对打开，名字通常相同，少数不同。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>格式</th><th>decoder</th><th>parser</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>H.264 视频</td><td><code>h264</code></td><td><code>h264</code></td><td>软件解码</td></tr>
+      <tr><td>H.265 视频</td><td><code>hevc</code></td><td><code>hevc</code></td><td>软件解码</td></tr>
+      <tr><td>AAC 音频</td><td><code>aac</code></td><td><code>aac</code></td><td></td></tr>
+      <tr><td>MP3 音频</td><td><code>mp3</code></td><td><code>mpegaudio</code></td><td>解析器名字不同：MP1/MP2/MP3 共用一个</td></tr>
+      <tr><td>FLAC 音频</td><td><code>flac</code></td><td><code>flac</code></td><td></td></tr>
+      <tr><td>Vorbis 音频</td><td><code>vorbis</code></td><td><code>vorbis</code></td><td>常见于 OGG</td></tr>
+      <tr><td>Opus 音频</td><td><code>opus</code></td><td><code>opus</code></td><td>解码器依赖 <code>libswresample</code></td></tr>
+      <tr><td>PNG 图片</td><td><code>png</code></td><td><code>png</code></td><td>依赖 zlib</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><code>--enable-encoder=…</code> 和 <code>--enable-muxer=mp4</code></h3>
+  <div class="tbl"><table>
+    <thead><tr><th>类别</th><th>名字</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td>encoder</td><td><code>h264_mediacodec</code></td><td>用手机的硬件编码器压 H.264。FFmpeg 自带的代码里没有软件 H.264 编码器，软件编码要另接 x264，而 x264 是 GPL</td></tr>
+      <tr><td>encoder</td><td><code>aac</code></td><td>FFmpeg 自带的软件 AAC 编码器</td></tr>
+      <tr><td>muxer</td><td><code>mp4</code></td><td>输出 MP4 文件</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><code>--enable-bsf=…</code></h3>
+  <p>码流过滤器不解码，只改写压缩数据的包装方式。同一种编码在不同容器里的存放格式不一样，换容器或交给硬件编解码器时要转。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>h264_mp4toannexb</code></td><td>把 MP4 里"长度前缀"格式的 H.264 转成带起始码的 Annex B 格式，MediaCodec 要后者</td></tr>
+      <tr><td><code>hevc_mp4toannexb</code></td><td>同上，H.265</td></tr>
+      <tr><td><code>aac_adtstoasc</code></td><td>把 ADTS 格式的 AAC 转成 MP4 容器要的格式，去掉每帧的 ADTS 头</td></tr>
+      <tr><td><code>extract_extradata</code></td><td>从码流里取出 SPS/PPS 等参数集。硬件编码器把它们放在码流里，而 MP4 要求写在文件头</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><code>--enable-filter=…</code></h3>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th>处理</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>scale</code></td><td>画面</td><td>缩放、像素格式转换。依赖 <code>libswscale</code></td></tr>
+      <tr><td><code>crop</code></td><td>画面</td><td>裁剪出一块区域</td></tr>
+      <tr><td><code>overlay</code></td><td>画面</td><td>把一路画面叠到另一路上，比如把歌词图层叠到背景上</td></tr>
+      <tr><td><code>format</code></td><td>画面</td><td>限定输出的像素格式</td></tr>
+      <tr><td><code>setsar</code></td><td>画面</td><td>设置像素宽高比</td></tr>
+      <tr><td><code>fps</code></td><td>画面</td><td>通过重复或丢弃帧，转成固定帧率</td></tr>
+      <tr><td><code>transpose</code></td><td>画面</td><td>旋转 90°，可同时翻转</td></tr>
+      <tr><td><code>hflip</code> / <code>vflip</code></td><td>画面</td><td>水平、垂直翻转</td></tr>
+      <tr><td><code>aresample</code></td><td>声音</td><td>重采样、采样格式转换。依赖 <code>libswresample</code></td></tr>
+      <tr><td><code>aformat</code></td><td>声音</td><td>限定输出的采样格式、采样率、声道布局</td></tr>
+      <tr><td><code>null</code> / <code>anull</code></td><td>画面 / 声音</td><td>原样通过。滤镜图里某一路不需要处理时用来占位</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>点名的和实际启用的不一样</h3>
+  <p>构建日志摘要里比脚本多出三个组件，都是 <code>mp4</code> 封装器带进来的。configure 源码里写着依赖关系：</p>
+<pre><code>mp4_muxer_select="mov_muxer"
+mov_muxer_select="iso_media iso_writer riffenc rtpenc_chain vp9_superframe_bsf aac_adtstoasc_bsf ac3_parser"</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>多出来的</th><th>类别</th><th>原因</th></tr></thead>
+    <tbody>
+      <tr><td><code>mov</code></td><td>muxer</td><td><code>mp4</code> 封装器只是 <code>mov</code> 封装器的一种模式</td></tr>
+      <tr><td><code>ac3</code></td><td>parser</td><td><code>mov</code> 封装器写 AC-3 音轨时要解析它的头</td></tr>
+      <tr><td><code>vp9_superframe</code></td><td>bsf</td><td><code>mov</code> 封装器写 VP9 视频时要用</td></tr>
+    </tbody>
+  </table></div>
+  <p>依赖声明有三种，在 configure 里搜 <code>组件名_类别_</code> 就能看到：<code>_deps</code> 是必须满足的前提，不满足这个组件就被关掉；<code>_select</code> 是它会强制带上的；<code>_suggest</code> 是有就用、没有也行的。</p>
+</section>
+
+<section id="defaults">
+  <h2><span class="n">11</span>没写但生效的默认值</h2>
+  <p>脚本没写的参数都按默认值走。构建日志开头的摘要把它们全列出来了，下面是值得知道的几项，以及想改时用哪个参数。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>摘要里的一行</th><th>含义</th><th>想改用</th></tr></thead>
+    <tbody>
+      <tr><td><code>runtime cpu detection  yes</code></td><td>运行时检测手机 CPU 支持哪些指令集，选最快的实现</td><td><code>--disable-runtime-cpudetect</code>，体积略小但失去这层优化</td></tr>
+      <tr><td><code>NEON enabled  yes</code> 等</td><td>ARM 的汇编优化全部编进去，运行时按上一条选择</td><td><code>--disable-neon</code>、<code>--disable-asm</code>。只在排查汇编相关问题时关，解码会明显变慢</td></tr>
+      <tr><td><code>optimizations  yes</code></td><td>开编译器优化</td><td><code>--disable-optimizations</code>，调试 FFmpeg 本身时用</td></tr>
+      <tr><td><code>optimize for size  no</code></td><td>按速度优化，不按体积</td><td><code>--enable-small</code>，体积更小、速度更慢</td></tr>
+      <tr><td><code>debug symbols  yes</code><br><code>strip symbols  yes</code></td><td>编译时带调试符号，安装时再去掉。所以 <code>ffmpeg/build</code> 里的 <code>.so</code> 比 <code>ffmpeg/out</code> 里的大得多</td><td><code>--disable-debug</code> 编译更快；<code>--disable-stripping</code> 保留符号以便看崩溃堆栈</td></tr>
+      <tr><td><code>threading support  pthreads</code></td><td>多线程解码可用</td><td><code>--disable-pthreads</code>，一般不改</td></tr>
+      <tr><td><code>network support  yes</code></td><td>网络基础代码编进去了，但没有打开任何网络协议，实际用不上</td><td><code>--disable-network</code> 可以省一点体积</td></tr>
+      <tr><td><code>v4l2_m2m</code></td><td>自动探测到的 Linux 视频硬件接口。Android 内核是 Linux，所以探测通过；没有点名相关组件，不起作用</td><td><code>--disable-v4l2-m2m</code>，或用 <code>--disable-autodetect</code> 关掉所有自动探测</td></tr>
+      <tr><td><code>C library  bionic</code></td><td>探测到的 C 库是 Android 的。这一行不是 bionic 说明编译器或 sysroot 指错了</td><td>不是参数，是检查点</td></tr>
+    </tbody>
+  </table></div>
+  <h3>许可证相关的三个开关</h3>
+  <p>这三个脚本都没写，产物是 LGPL 2.1+，<code>config.h</code> 里的 <code>FFMPEG_LICENSE</code> 可以确认。它们不能随手打开：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>参数</th><th>打开后</th></tr></thead>
+    <tbody>
+      <tr><td><code>--enable-gpl</code></td><td>允许编入 GPL 代码（如接 x264），整个产物变成 GPL，链接它的 App 也受 GPL 约束</td></tr>
+      <tr><td><code>--enable-version3</code></td><td>许可证升级到 (L)GPL v3</td></tr>
+      <tr><td><code>--enable-nonfree</code></td><td>允许编入不可再分发的代码，产物不能对外发布</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="lookup">
+  <h2><span class="n">12</span>去哪里查参数</h2>
+  <p>按"想知道什么"来找。路径都相对工程根目录，源码在 <code>ffmpeg/src</code>（由 <code>build_android.sh</code> 下载），构建结果在 <code>ffmpeg/build/&lt;abi&gt;</code>。</p>
+  <h3>查有哪些参数</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>想知道</th><th>去哪查</th></tr></thead>
+    <tbody>
+      <tr><td>全部参数和默认值</td><td><code>ffmpeg/src/configure --help</code>，483 行，分 13 组，见下表</td></tr>
+      <tr><td>某类组件有哪些名字</td><td><code>ffmpeg/src/configure --list-decoders</code>，同理 <code>--list-encoders</code>、<code>--list-demuxers</code>、<code>--list-muxers</code>、<code>--list-parsers</code>、<code>--list-bsfs</code>、<code>--list-protocols</code>、<code>--list-filters</code>、<code>--list-hwaccels</code></td></tr>
+      <tr><td>某个名字存不存在</td><td><code>ffmpeg/src/configure --list-decoders | tr -s ' ' '\n' | grep opus</code></td></tr>
+    </tbody>
+  </table></div>
+  <h3><code>configure --help</code> 的 13 个分组</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>分组（帮助里的标题）</th><th>内容</th><th>脚本用到的</th></tr></thead>
+    <tbody>
+      <tr><td>Help options</td><td><code>--help</code> 和各个 <code>--list-*</code></td><td>查名字时用</td></tr>
+      <tr><td>Standard options</td><td>安装目录、日志文件</td><td><code>--prefix</code></td></tr>
+      <tr><td>Licensing options</td><td>GPL、v3、nonfree</td><td>无</td></tr>
+      <tr><td>Configuration options</td><td>静态或动态、体积优化、运行时 CPU 检测、自动探测</td><td><code>--enable-shared</code>、<code>--disable-static</code></td></tr>
+      <tr><td>Program options</td><td>命令行程序</td><td><code>--disable-programs</code></td></tr>
+      <tr><td>Documentation options</td><td>文档</td><td><code>--disable-doc</code></td></tr>
+      <tr><td>Component options</td><td>六个库的开关、线程、网络</td><td><code>--disable-avdevice</code></td></tr>
+      <tr><td>Individual component options</td><td>逐个组件的开关</td><td><code>--disable-everything</code> 和所有 <code>--enable-类别=</code></td></tr>
+      <tr><td>External library support</td><td>外部库和硬件加速接口，约 190 行，最长的一组</td><td><code>--enable-jni</code>、<code>--enable-mediacodec</code>、<code>--enable-zlib</code></td></tr>
+      <tr><td>Toolchain options</td><td>架构、编译器、各种工具、sysroot、<code>--extra-*</code></td><td>第 ② ③ ④ 组全部，加 <code>--enable-pic</code>、<code>--extra-ldflags</code></td></tr>
+      <tr><td>Advanced options</td><td>内存分配器、符号版本等</td><td>无</td></tr>
+      <tr><td>Optimization options</td><td>逐个指令集的汇编优化开关</td><td>无</td></tr>
+      <tr><td>Developer options</td><td>调试符号、strip、断言、测试</td><td>无</td></tr>
+    </tbody>
+  </table></div>
+  <h3>查某个组件是什么、有什么依赖</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>想知道</th><th>去哪查</th></tr></thead>
+    <tbody>
+      <tr><td>解码器、编码器名字对应哪个实现</td><td><code>ffmpeg/src/libavcodec/allcodecs.c</code>，在线文档 <a href="https://ffmpeg.org/ffmpeg-codecs.html">ffmpeg-codecs</a></td></tr>
+      <tr><td>解封装、封装器</td><td><code>ffmpeg/src/libavformat/allformats.c</code>，<a href="https://ffmpeg.org/ffmpeg-formats.html">ffmpeg-formats</a></td></tr>
+      <tr><td>滤镜的作用和参数</td><td><code>ffmpeg/src/libavfilter/allfilters.c</code>，<a href="https://ffmpeg.org/ffmpeg-filters.html">ffmpeg-filters</a></td></tr>
+      <tr><td>码流过滤器</td><td><code>ffmpeg/src/libavcodec/bitstream_filters.c</code>，<a href="https://ffmpeg.org/ffmpeg-bitstream-filters.html">ffmpeg-bitstream-filters</a></td></tr>
+      <tr><td>协议</td><td><code>ffmpeg/src/libavformat/protocols.c</code>，<a href="https://ffmpeg.org/ffmpeg-protocols.html">ffmpeg-protocols</a></td></tr>
+      <tr><td>解析器</td><td><code>ffmpeg/src/libavcodec/parsers.c</code></td></tr>
+      <tr><td>一个组件依赖谁、会带上谁</td><td><code>grep -n '^mov_muxer_' ffmpeg/src/configure</code>，看 <code>_deps</code>、<code>_select</code>、<code>_suggest</code></td></tr>
+      <tr><td>某个目标系统被特殊处理了什么</td><td>在 <code>ffmpeg/src/configure</code> 里搜 <code>android)</code></td></tr>
+      <tr><td>支持哪些外部库、各自的许可证</td><td><code>ffmpeg/src/doc/general_contents.texi</code>，在线 <a href="https://ffmpeg.org/general.html">general</a></td></tr>
+    </tbody>
+  </table></div>
+  <h3>查这次构建实际用了什么</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>想知道</th><th>去哪查</th></tr></thead>
+    <tbody>
+      <tr><td>configure 为什么失败</td><td><code>ffmpeg/build/&lt;abi&gt;/ffbuild/config.log</code> 的末尾：最后一个测试程序和编译器的报错</td></tr>
+      <tr><td>配置结果一览</td><td><code>ffmpeg/build/&lt;abi&gt;/build.log</code> 开头的摘要</td></tr>
+      <tr><td>某个组件到底开没开</td><td><code>grep H264 ffmpeg/build/&lt;abi&gt;/config_components.h</code></td></tr>
+      <tr><td>实际的编译和链接参数</td><td><code>ffmpeg/build/&lt;abi&gt;/ffbuild/config.mak</code> 里的 <code>CC</code>、<code>CFLAGS</code>、<code>LDFLAGS</code>、<code>SHFLAGS</code></td></tr>
+      <tr><td>平台探测结果</td><td><code>ffmpeg/build/&lt;abi&gt;/config.h</code> 里的 <code>ARCH_*</code>、<code>HAVE_*</code></td></tr>
+      <tr><td>某个 <code>.so</code> 是用什么参数编的</td><td><code>config.h</code> 里的 <code>FFMPEG_CONFIGURATION</code>；App 运行时调 <code>avcodec_configuration()</code> 得到同一个字符串</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Android 和 NDK 这一侧</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>想知道</th><th>去哪查</th></tr></thead>
+    <tbody>
+      <tr><td>三元组、API 级别、在非 CMake 构建系统里用 NDK</td><td><a href="https://developer.android.com/ndk/guides/other_build_systems">NDK 文档：Use the NDK with other build systems</a></td></tr>
+      <tr><td>各 ABI 的指令集和约定</td><td><a href="https://developer.android.com/ndk/guides/abis">NDK 文档：Android ABIs</a></td></tr>
+      <tr><td>16 KB 页的要求和检查方法</td><td><a href="https://developer.android.com/guide/practices/page-sizes">Android 文档：Support 16 KB page sizes</a></td></tr>
+      <tr><td>手机系统公开提供哪些原生库</td><td>NDK 的 <code>sysroot/usr/lib/&lt;triple&gt;/&lt;api&gt;/</code> 目录</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="az">
+  <h2><span class="n">13</span>参数速查索引</h2>
+  <p>脚本里出现的每个参数，以及它在本文的位置。</p>
+  <ul class="az">
+    <li><a href="#g3">--ar</a><span>③ 工具链</span></li>
+    <li><a href="#g2">--arch</a><span>② 目标平台</span></li>
+    <li><a href="#g3">--cc</a><span>③ 工具链</span></li>
+    <li><a href="#g2">--cpu</a><span>② 目标平台</span></li>
+    <li><a href="#g5">--disable-avdevice</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g5">--disable-doc</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g7">--disable-everything</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g5">--disable-programs</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g5">--disable-static</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g7">--enable-bsf</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g2">--enable-cross-compile</a><span>② 目标平台</span></li>
+    <li><a href="#g7">--enable-decoder</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g7">--enable-demuxer</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g7">--enable-encoder</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g7">--enable-filter</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g6">--enable-jni</a><span>⑥ Android 能力</span></li>
+    <li><a href="#g6">--enable-mediacodec</a><span>⑥ Android 能力</span></li>
+    <li><a href="#g7">--enable-muxer</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g7">--enable-parser</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g5">--enable-pic</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g7">--enable-protocol</a><span>⑦ 组件裁剪</span></li>
+    <li><a href="#g5">--enable-shared</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g6">--enable-zlib</a><span>⑥ Android 能力</span></li>
+    <li><a href="#g5">--extra-ldflags</a><span>⑤ 产物形态</span></li>
+    <li><a href="#g3">--nm</a><span>③ 工具链</span></li>
+    <li><a href="#g1">--prefix</a><span>① 安装位置</span></li>
+    <li><a href="#g3">--ranlib</a><span>③ 工具链</span></li>
+    <li><a href="#g3">--strip</a><span>③ 工具链</span></li>
+    <li><a href="#g4">--sysroot</a><span>④ sysroot</span></li>
+    <li><a href="#g2">--target-os</a><span>② 目标平台</span></li>
+  </ul>
+  <p>没写进脚本、但本文提到的：<code>--cross-prefix</code>、<code>--host-cc</code> 在 <a href="#g3">第 ③ 组</a>；<code>--sysinclude</code> 在 <a href="#g4">第 ④ 组</a>；<code>--extra-cflags</code>、<code>--extra-ldsoflags</code>、<code>--extra-libs</code> 在 <a href="#g5">第 ⑤ 组</a>；优化、调试、网络、许可证相关的在 <a href="#defaults">第 11 节</a>。</p>
+</section>
+
+<section id="change">
+  <h2><span class="n">14</span>改参数的流程</h2>
+  <ol class="plain">
+    <li><strong>先确认名字存在。</strong>用 <code>ffmpeg/src/configure --list-*</code> 或 <code>--help</code> 查，组件名写错只有一行警告，容易漏看。</li>
+    <li><strong>改 <code>ffmpeg/configure_android.sh</code> 的 <code>ARGS</code>。</strong>放进对应的组，组件类参数保持在 <code>--disable-everything</code> 之后。</li>
+    <li><strong>重跑 <code>ffmpeg/build_android.sh</code>。</strong>它会删掉旧的构建目录从头来，两个 ABI 都重编，避免新旧配置混在一起。只想快速试一个 ABI 时在后面加 ABI 名。</li>
+    <li><strong>看摘要。</strong>打开 <code>ffmpeg/build/&lt;abi&gt;/build.log</code>，确认要的组件出现在 <code>Enabled …</code> 列表里，再搜一下有没有 <code>WARNING</code>。</li>
+    <li><strong>验证产物并重编 App。</strong>检查架构、依赖和页对齐的三条命令见 <a href="ffmpeg-android.html#verify">验证产物</a>。头文件有变化时，桥接库的 C 代码要跟着核对。</li>
+  </ol>
+  <div class="key">新增一种格式最常见的遗漏：只加了 decoder，没加 parser 或 demuxer。按 <a href="#g7">第 ⑦ 组</a>的那条链逐环检查。</div>
+  <p class="foot">默认值和分组取自 FFmpeg n8.1.3 的 <code>configure --help</code>；组件总数取自 <code>--list-*</code> 的输出；实际启用的组件和编译参数取自本工程 arm64-v8a 的构建结果。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

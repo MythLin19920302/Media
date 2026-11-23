@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>YUV 与像素格式</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../../assets/kb.css?v=6">
+<style>
+/* 本页独有：色块、2×2 抽样示意 */
+.sw{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid var(--rule);vertical-align:-2px;margin-right:6px}
+.sub{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:4px 0 18px}
+.sub .lane{display:grid;gap:8px;align-content:start}
+.sub .g{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;max-width:150px}
+.sub .g i{aspect-ratio:1;border-radius:3px;background:var(--accent);opacity:.85}
+.sub .g i.o{background:transparent;border:1.5px dashed var(--muted);opacity:.6}
+.sub p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.6}
+@media (max-width:700px){.sub{grid-template-columns:minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← YUV 与像素格式</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#size">一帧画面有多大</a></li>
+    <li><a href="#why">为什么不是 RGB</a></li>
+    <li><a href="#subsample">色度抽样</a></li>
+    <li><a href="#layout">平面怎么排</a></li>
+    <li><a href="#linesize">linesize 不等于宽度</a></li>
+    <li><a href="#matrix">换算成 RGB</a></li>
+    <li><a href="#range">有限范围与全范围</a></li>
+    <li><a href="#meta">颜色信息从哪来</a></li>
+    <li><a href="#depth">位深</a></li>
+    <li><a href="#project">落到 music_demo</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+    <li><a href="#demos">交互演示</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">音视频 · YUV 与像素格式</div>
+  <h1>YUV 与像素格式</h1>
+  <p class="lede">视频解码器吐出来的不是屏幕用的 RGB，而是 YUV：一份亮度加两份缩小过的颜色。这份笔记讲一帧 YUV 在内存里怎么排、每个数代表什么、怎么换算成 RGB，以及换算时最容易弄错的两件事：用哪套系数，数值范围是多少。</p>
+  <div class="journey" aria-label="一个像素的旅程">
+    <div class="step"><span class="k">解码器输出的三个字节</span><span class="v hex">Y 219 · U 16 · V 138</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">减零点、拉伸、乘矩阵</span><span class="v">BT.709 有限范围</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">屏幕上的 RGB</span><span class="v">254 · 255 · 0</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">看到的</span><span class="v"><span class="sw" style="background:#feff00"></span>黄色</span></div>
+  </div>
+  <p class="caption">示例数据来自工程里 <code>landscape_720p.mp4</code>（H.264、1280×720、<code>yuv420p</code>、BT.709、有限范围）的第一帧，一张彩条测试图。这是画面正中间 (640, 360) 的像素，数值用 ffmpeg 导出原始帧后读出。</p>
+</header>
+
+<section id="size">
+  <h2><span class="n">01</span>一帧画面有多大</h2>
+  <p>一帧画面是一个二维数组，每个像素若干个字节。解码后的数据量非常大：</p>
+<pre><code>RGB       1280 × 720 × 3 字节   = 2,764,800 字节 ≈ 2.76 MB
+yuv420p   1280 × 720 × 1.5 字节 = 1,382,400 字节 ≈ 1.38 MB
+一秒 30 帧的 yuv420p            ≈ 41 MB</code></pre>
+  <p>示例视频 8 秒共 240 帧，解码后是 332 MB，而文件里的视频轨只有 84 KB。视频压缩比音频狠得多，所以解码后的帧不能攒着，只能解一帧、显示一帧、马上复用这块内存。</p>
+</section>
+
+<section id="why">
+  <h2><span class="n">02</span>为什么不是 RGB</h2>
+  <p>RGB 把一个像素拆成红、绿、蓝三份。YUV 换了一种拆法：一份<strong>亮度</strong> Y，加两份<strong>色度</strong> U、V。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>分量</th><th>别名</th><th>含义</th><th>取值</th></tr></thead>
+    <tbody>
+      <tr><td>Y</td><td>luma</td><td>这个像素有多亮。只看 Y 就是一张黑白照片</td><td>16 是黑，235 是白</td></tr>
+      <tr><td>U</td><td>Cb</td><td>蓝色偏离亮度多少</td><td>128 是"不偏"，大于 128 偏蓝，小于偏黄</td></tr>
+      <tr><td>V</td><td>Cr</td><td>红色偏离亮度多少</td><td>128 是"不偏"，大于 128 偏红，小于偏青</td></tr>
+    </tbody>
+  </table></div>
+  <p>U = V = 128 时没有颜色，画面是灰阶。示例帧里黑色是 <code>(16, 128, 128)</code>，白色是 <code>(235, 128, 128)</code>。</p>
+  <p>这样拆有两个好处：</p>
+  <ul>
+    <li><strong>眼睛对亮度敏感，对颜色迟钝。</strong>把亮度和颜色分开后，颜色可以存得粗一些，眼睛看不出来。这是下一节色度抽样的前提，也是视频压缩的第一步。</li>
+    <li><strong>历史原因。</strong>彩色电视要兼容黑白电视：黑白机只收 Y，彩色机多收两路颜色。这套拆法一直沿用到今天的视频编码里。</li>
+  </ul>
+  <p>Y 是 R、G、B 按固定权重相加：<code>Y = Kr·R + Kg·G + Kb·B</code>。绿色的权重最大，因为眼睛对绿色最敏感。权重具体是多少有几套标准，见第 06 节。</p>
+</section>
+
+<section id="subsample">
+  <h2><span class="n">03</span>色度抽样</h2>
+  <p>既然眼睛对颜色不敏感，就让几个相邻像素共用一份颜色。Y 每个像素一个，U、V 少存一些。三种常见的存法：</p>
+  <div class="sub">
+    <div class="lane"><div class="who">4:4:4</div><div class="g"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><p>每个像素都有自己的 U、V。每像素 3 字节，和 RGB 一样大。</p></div>
+    <div class="lane"><div class="who">4:2:2</div><div class="g"><i></i><i class="o"></i><i></i><i class="o"></i><i></i><i class="o"></i><i></i><i class="o"></i></div><p>横向每 2 个像素共用一份。每像素 2 字节。</p></div>
+    <div class="lane"><div class="who">4:2:0</div><div class="g"><i></i><i class="o"></i><i></i><i class="o"></i><i class="o"></i><i class="o"></i><i class="o"></i><i class="o"></i></div><p>每个 2×2 方块共用一份。每像素 1.5 字节。</p></div>
+  </div>
+  <p class="caption">实心格子是存了色度的位置，虚线格子借用旁边的。</p>
+  <p>手机拍的视频、网上的视频几乎都是 4:2:0。它的 U、V 平面宽和高各是画面的一半，面积是四分之一：</p>
+<pre><code>Y 平面   1280 × 720 = 921,600 字节
+U 平面    640 × 360 = 230,400 字节
+V 平面    640 × 360 = 230,400 字节
+合计                  1,382,400 字节 = 宽 × 高 × 1.5</code></pre>
+  <p>示例帧里 (640, 360) 所在的 2×2 方块，四个像素各有一个 Y，共用一个 U 和一个 V：</p>
+<pre><code>Y[360][640] = 219   Y[360][641] = 219        U[180][320] = 16
+Y[361][640] = 219   Y[361][641] = 219        V[180][320] = 138</code></pre>
+  <p>宽或高是奇数时，色度平面向上取整：<code>(宽 + 1) / 2</code>。工程里 <code>YuvFrame</code> 的 <code>chromaWidth</code> 就是这么算的。</p>
+</section>
+
+<section id="layout">
+  <h2><span class="n">04</span>平面怎么排</h2>
+  <p>同样是 4:2:0，三份数据在内存里的摆放方式有好几种。名字不同，数据量相同：</p>
+<pre><code>yuv420p（也叫 I420）   三个平面，各自连续
+  YYYYYYYY
+  YYYYYYYY
+  UU
+  VV
+
+NV12                    两个平面，U 和 V 交错放在一起
+  YYYYYYYY
+  YYYYYYYY
+  UVUV
+
+NV21                    和 NV12 一样，只是 V 在前
+  YYYYYYYY
+  YYYYYYYY
+  VUVU</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>格式</th><th>常见出处</th><th>FFmpeg 里的名字</th></tr></thead>
+    <tbody>
+      <tr><td>yuv420p</td><td>软件解码器的输出</td><td><code>AV_PIX_FMT_YUV420P</code></td></tr>
+      <tr><td>NV12</td><td>硬件解码器（MediaCodec）的常见输出</td><td><code>AV_PIX_FMT_NV12</code></td></tr>
+      <tr><td>NV21</td><td>Android 旧相机接口的默认预览格式</td><td><code>AV_PIX_FMT_NV21</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>名字末尾的 <code>p</code> 是 planar，和音频采样格式里的 <code>fltp</code> 是同一个意思：每个分量各占一个数组。</p>
+  <h3>按坐标取一个像素</h3>
+<pre><code>// yuv420p，每个平面紧密排列（每行正好是宽度那么多字节）
+val y = Y[row * width + col]
+val u = U[(row / 2) * chromaWidth + col / 2]
+val v = V[(row / 2) * chromaWidth + col / 2]</code></pre>
+  <p>同一个 2×2 方块里的四个像素，<code>row / 2</code> 和 <code>col / 2</code> 相同，所以取到的是同一个 U 和 V。</p>
+</section>
+
+<section id="linesize">
+  <h2><span class="n">05</span>linesize 不等于宽度</h2>
+  <p>上面的下标公式有个前提：每行正好是"宽度"那么多字节。解码器给出的 <code>AVFrame</code> 不保证这一点。为了让 SIMD 指令能整块处理，它会把每行补齐到 16、32 或 64 的倍数，每行的实际字节数记在 <code>linesize</code> 里：</p>
+<pre><code>frame-&gt;data[0]       Y 平面的起始地址
+frame-&gt;linesize[0]   Y 平面每行占多少字节，可能大于 width
+
+正确的下标：Y = data[0][row * linesize[0] + col]</code></pre>
+  <p>把带填充的数据当成紧密排列来用，每一行都会错开几个字节，画面变成一条条斜纹，或者右边多出一条绿边。</p>
+  <p>工程里的做法是在 C 层就把填充去掉：逐行拷贝，每行只拷"宽度"那么多字节，Kotlin 拿到的三个缓冲区都是紧密排列的。</p>
+<pre><code>// app/src/main/cpp/video_decoder.c
+// 源数据每行 linesize 字节（可能大于宽度），目标每行正好是宽度，所以必须逐行拷
+av_image_copy_plane(dst[0], d-&gt;width, f-&gt;data[0], f-&gt;linesize[0], d-&gt;width, d-&gt;height);
+av_image_copy_plane(dst[1], chroma_w, f-&gt;data[1], f-&gt;linesize[1], chroma_w, chroma_h);
+av_image_copy_plane(dst[2], chroma_w, f-&gt;data[2], f-&gt;linesize[2], chroma_w, chroma_h);</code></pre>
+  <div class="callout"><b>不能用一次 <code>memcpy</code> 拷整个平面。</b>除非确认 <code>linesize</code> 正好等于宽度。App 的播放页会显示解码器输出的像素格式和三个平面的"每行字节数"，可以直接看到实际的 <code>linesize</code> 是多少。</div>
+</section>
+
+<section id="matrix">
+  <h2><span class="n">06</span>换算成 RGB</h2>
+  <p>屏幕只认 RGB，显示前必须换算。分三步：减去零点，把有限范围拉伸到满幅，乘一个 3×3 矩阵。写成归一化到 0–1 的形式就是一行：</p>
+<pre><code>rgb = matrix × (yuv − offset)</code></pre>
+  <p>矩阵里的数由两个权重 Kr、Kb 决定（<code>Kg = 1 − Kr − Kb</code>），它们就是第 02 节里红、蓝在亮度中所占的比例。不同标准的权重不同：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>标准</th><th class="num">Kr</th><th class="num">Kb</th><th>用在哪</th><th>FFmpeg <code>color_space</code></th></tr></thead>
+    <tbody>
+      <tr><td>BT.601</td><td class="num">0.299</td><td class="num">0.114</td><td>标清</td><td><code>bt470bg</code>（5）、<code>smpte170m</code>（6）</td></tr>
+      <tr><td>BT.709</td><td class="num">0.2126</td><td class="num">0.0722</td><td>高清，今天最常见</td><td><code>bt709</code>（1）</td></tr>
+      <tr><td>BT.2020</td><td class="num">0.2627</td><td class="num">0.0593</td><td>4K、HDR</td><td><code>bt2020nc</code>（9）、<code>bt2020c</code>（10）</td></tr>
+    </tbody>
+  </table></div>
+  <p>把 BT.709、有限范围的数代进去，就是常见的这组公式（Y、U、V 是 0–255 的原始字节）：</p>
+<pre><code>R = 1.164 × (Y − 16)                      + 1.793 × (V − 128)
+G = 1.164 × (Y − 16) − 0.213 × (U − 128) − 0.533 × (V − 128)
+B = 1.164 × (Y − 16) + 2.112 × (U − 128)
+
+其中  1.164 = 255 ÷ 219          把 Y 的 16–235 拉伸到 0–255
+      1.793 = 2 × (1 − Kr) × 255 ÷ 224
+      2.112 = 2 × (1 − Kb) × 255 ÷ 224</code></pre>
+  <h3>系数用错会怎样</h3>
+  <p>示例帧的彩条，同一组 YUV 分别按两套标准换算：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>位置</th><th>Y, U, V</th><th>按 BT.709（正确）</th><th>按 BT.601（用错）</th></tr></thead>
+    <tbody>
+      <tr><td>(270, 360)</td><td class="num">188, 154, 16</td><td><span class="sw" style="background:rgb(0,254,255)"></span>0, 254, 255</td><td><span class="sw" style="background:rgb(22,255,253)"></span>22, 255, 253</td></tr>
+      <tr><td>(450, 360)</td><td class="num">78, 214, 230</td><td><span class="sw" style="background:rgb(255,0,254)"></span>255, 0, 254</td><td><span class="sw" style="background:rgb(235,0,246)"></span>235, 0, 246</td></tr>
+      <tr><td>(640, 360)</td><td class="num">219, 16, 138</td><td><span class="sw" style="background:rgb(254,255,0)"></span>254, 255, 0</td><td><span class="sw" style="background:rgb(252,255,10)"></span>252, 255, 10</td></tr>
+      <tr><td>(810, 360)</td><td class="num">173, 42, 26</td><td><span class="sw" style="background:rgb(0,255,1)"></span>0, 255, 1</td><td><span class="sw" style="background:rgb(20,255,9)"></span>20, 255, 9</td></tr>
+      <tr><td>(990, 360)</td><td class="num">63, 102, 240</td><td><span class="sw" style="background:rgb(255,1,0)"></span>255, 1, 0</td><td><span class="sw" style="background:rgb(233,0,2)"></span>233, 0, 2</td></tr>
+    </tbody>
+  </table></div>
+  <p>用错标准不会花屏，只是颜色偏一点：红色从 255 掉到 233，绿色里混进了红。黑、白、灰不受影响，因为它们的 U、V 都是 128，矩阵里和颜色有关的项全是零。这种偏差单看不明显，和别的播放器并排对比才看得出来，所以很容易漏掉。</p>
+</section>
+
+<section id="range">
+  <h2><span class="n">07</span>有限范围与全范围</h2>
+  <p>8 位能表示 0–255，但视频通常只用中间一段：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>范围</th><th>Y</th><th>U、V</th><th>别名</th><th>常见出处</th></tr></thead>
+    <tbody>
+      <tr><td>有限范围</td><td class="num">16–235</td><td class="num">16–240</td><td>limited、tv、video range</td><td>绝大多数视频文件</td></tr>
+      <tr><td>全范围</td><td class="num">0–255</td><td class="num">0–255</td><td>full、pc、jpeg range</td><td>JPEG 图片、部分手机录像</td></tr>
+    </tbody>
+  </table></div>
+  <p>两头留出的空间来自模拟电视时代，用来容纳信号的过冲。换算时要把 16–235 拉伸回 0–255，这就是公式里 <code>Y − 16</code> 和 <code>× 1.164</code> 的来历。全范围则不减 16、不拉伸。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>数据实际是</th><th>却按…换算</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>有限范围</td><td>全范围</td><td>画面发灰：黑色是 (16,16,16) 的深灰，白色是 (235,235,235) 的浅灰</td></tr>
+      <tr><td>全范围</td><td>有限范围</td><td>对比度过强：暗部一片死黑，亮部一片死白，细节丢失</td></tr>
+    </tbody>
+  </table></div>
+  <p>FFmpeg 里有一个旧的像素格式 <code>yuvj420p</code>，就是全范围的 <code>yuv420p</code>，数据排列完全相同，只是名字里带了范围信息。</p>
+</section>
+
+<section id="meta">
+  <h2><span class="n">08</span>颜色信息从哪来</h2>
+  <p>YUV 数组本身不带"我是哪套标准、什么范围"，和 PCM 不带采样率是一回事。这些信息写在视频流的参数里：</p>
+<pre><code>$ ffprobe -show_streams landscape_720p.mp4
+pix_fmt=yuv420p
+color_range=tv          ← 有限范围
+color_space=bt709       ← 换算矩阵用 BT.709
+color_transfer=unknown
+color_primaries=unknown</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>字段</th><th>决定什么</th><th><code>AVCodecParameters</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>color_space</code></td><td>YUV 和 RGB 之间用哪个矩阵</td><td><code>color_space</code></td></tr>
+      <tr><td><code>color_range</code></td><td>有限范围还是全范围</td><td><code>color_range</code>（1 = 有限，2 = 全范围）</td></tr>
+      <tr><td><code>color_primaries</code></td><td>红、绿、蓝三原色的具体色度</td><td><code>color_primaries</code></td></tr>
+      <tr><td><code>color_transfer</code></td><td>数值和实际亮度的曲线（伽马、HDR）</td><td><code>color_trc</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>前两个决定换算公式，本文只处理这两个。后两个涉及色域映射和 HDR，SDR 视频在普通屏幕上可以先不管。</p>
+  <p>很多文件根本没有标注，字段是 <code>unknown</code>。这时只能猜，通行的规则是按分辨率：高清用 BT.709，标清用 BT.601；范围按有限范围处理。工程里是这样写的：</p>
+<pre><code>// app/src/main/java/com/example/music/player/YuvColorMatrix.kt
+fun fromFFmpeg(colorSpace: Int, height: Int): YuvStandard = when (colorSpace) {
+  1 -&gt; BT709
+  5, 6 -&gt; BT601
+  9, 10 -&gt; BT2020
+  else -&gt; if (height &gt;= 720) BT709 else BT601     // 没标注：按高度猜
+}</code></pre>
+</section>
+
+<section id="depth">
+  <h2><span class="n">09</span>位深</h2>
+  <p>上面说的都是 8 位：每个分量一个字节。HDR 和一部分高质量视频是 10 位，每个分量 0–1023，渐变更平滑。内存里每个分量占 2 个字节（低 10 位有效），所以同样分辨率的一帧大一倍：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>格式</th><th>每个分量</th><th>1280×720 一帧</th></tr></thead>
+    <tbody>
+      <tr><td><code>yuv420p</code></td><td>8 位，1 字节</td><td class="num">1.38 MB</td></tr>
+      <tr><td><code>yuv420p10le</code></td><td>10 位，2 字节，小端</td><td class="num">2.76 MB</td></tr>
+    </tbody>
+  </table></div>
+  <p>工程的渲染只接受 8 位 <code>yuv420p</code>。解码器输出别的格式时，C 层先用 <code>libswscale</code> 转成 8 位 <code>yuv420p</code> 再交给 Kotlin，代价是每帧多一次 CPU 转换，10 位视频的额外精度也丢掉了。</p>
+</section>
+
+<section id="project">
+  <h2><span class="n">10</span>落到 music_demo</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>文件</th><th>和本文对应的部分</th></tr></thead>
+    <tbody>
+      <tr><td><code>app/src/main/cpp/video_decoder.c</code></td><td>解码出 <code>AVFrame</code>；不是 8 位 <code>yuv420p</code> 就用 swscale 转；按 <code>linesize</code> 逐行拷成紧密排列；把 <code>color_space</code>、<code>color_range</code> 回调给 Kotlin</td></tr>
+      <tr><td><code>player/YuvFrame.kt</code></td><td>一帧的三个平面，各一块 direct ByteBuffer；色度宽高向上取整；帧池复用</td></tr>
+      <tr><td><code>player/YuvColorMatrix.kt</code></td><td>三套标准的 Kr、Kb；由标准和范围算出矩阵与零点；没标注时按高度猜</td></tr>
+      <tr><td><code>player/YuvColorMatrixTest.kt</code></td><td>单元测试：BT.709 有限范围的结果与 ffmpeg 一致，全范围保持黑白不变，没标注时的猜测规则</td></tr>
+      <tr><td><code>player/YuvGlRenderer.kt</code></td><td>把矩阵和零点交给着色器，在 GPU 上逐像素换算</td></tr>
+    </tbody>
+  </table></div>
+  <p>换算公式只写了一份：GPU 着色器用的矩阵和单元测试里 CPU 算的是同一个 <code>YuvColorMatrix</code>，所以测试验证过的颜色就是屏幕上的颜色。画到屏幕上的过程见 <a href="../opengl/yuv-gl-render.html">用 OpenGL 把 YUV 画到屏幕</a>。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">11</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>整个画面偏绿</td><td>U、V 全是 0（缓冲区没填，或者只拷了 Y）。U = V = 0 换算出来是绿色</td><td>检查三个平面是否都拷了、大小是否正确</td></tr>
+      <tr><td>整个画面偏紫或偏粉</td><td>U、V 全是 255，或越界读到了别的数据</td><td>同上</td></tr>
+      <tr><td>红蓝互换：人脸发蓝</td><td>U 和 V 弄反了，常见于 NV12 当 NV21，或平面顺序传错</td><td>核对格式名和平面顺序</td></tr>
+      <tr><td>斜纹，或画面向一侧倾斜</td><td>把带填充的数据当紧密排列用</td><td>按 <code>linesize</code> 逐行拷贝</td></tr>
+      <tr><td>画面发灰，黑不够黑</td><td>有限范围的数据按全范围换算</td><td>读 <code>color_range</code>，没标注时按有限范围</td></tr>
+      <tr><td>颜色略偏，红色不够红</td><td>BT.709 的数据用了 BT.601 的矩阵</td><td>读 <code>color_space</code>，没标注时按分辨率猜</td></tr>
+      <tr><td>画面下方三分之一是花的</td><td>把 <code>yuv420p</code> 当 NV12 读，色度平面错位</td><td>核对像素格式</td></tr>
+      <tr><td>奇数宽高时最右一列或最下一行颜色不对</td><td>色度尺寸用了 <code>宽 / 2</code> 而不是 <code>(宽 + 1) / 2</code></td><td>向上取整</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="demos">
+  <h2><span class="n">12</span>交互演示</h2>
+  <div class="demos">
+    <a class="demo" href="demos/yuv-to-rgb.html"><span class="t">YUV → RGB 换算器</span><span class="d">拖动 Y、U、V，切换标准和范围，看同一组数换算出的颜色差多少；带示例帧彩条的预设。</span></a>
+  </div>
+  <p class="foot">像素值取自 music_demo 工程 <code>landscape_720p.mp4</code> 的第一帧，用 ffmpeg 导出 <code>yuv420p</code> 原始数据后读出；RGB 结果按文中公式计算，与工程里 <code>YuvColorMatrix</code> 的实现一致。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

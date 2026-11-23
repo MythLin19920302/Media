@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>特征和样本：模型吃进去的是什么</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=6">
+<style>
+/* 本页独有：图里的格子和数值文字、宽数据表 */
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+.fig text.sm{font-size:11.5px}
+.fig text.v{font-family:var(--font-mono);font-size:11.5px}
+.fig text.big{font-family:var(--font-mono);font-size:20px;font-weight:500}
+.fig .q{fill:var(--accent);stroke:var(--accent);stroke-width:1.2}
+.fig .bad{fill:var(--warn);fill-opacity:.22;stroke:var(--warn);stroke-width:1.5}
+.fig .cut{fill:none;stroke:currentColor;stroke-opacity:.45;stroke-width:1.2;stroke-dasharray:4 4}
+.tbl.dense table{font-size:13.5px}
+.tbl.dense th,.tbl.dense td{padding-right:10px}
+.nums td+td{white-space:nowrap;font-variant-numeric:tabular-nums}
+td.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+.caption+ul{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="../index.html#ml">← 机器学习</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#three">样本、特征、标签</a></li>
+    <li><a href="#logs">样本从哪来</a></li>
+    <li><a href="#label">标签怎么定</a></li>
+    <li><a href="#imbalance">正样本只占 22.6%</a></li>
+    <li><a href="#downsample">负样本降采样和校正</a></li>
+    <li><a href="#types">数值、类别和 one-hot</a></li>
+    <li><a href="#time-id">时间、计数和 ID</a></li>
+    <li><a href="#cross">交叉特征</a></li>
+    <li><a href="#scale">标准化</a></li>
+    <li><a href="#missing">缺失值和异常值</a></li>
+    <li><a href="#leak">数据泄漏</a></li>
+    <li><a href="#split">按时间切分</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI · 机器学习</div>
+  <h1>特征和样本：模型吃进去的是什么</h1>
+  <p class="lede">模型不认识用户，也不认识歌。它吃进去的是一张表：每一行是一次曝光，每一列是描述这次曝光的一个数，最后一列是结果。这份笔记从日志讲起，看这张表是怎么来的：一行样本怎么拼出来，结果怎么算正、怎么算负，原始字段怎么变成数，以及哪些做法会让离线指标好看、上线却不灵。</p>
+  <div class="journey" aria-label="这一页用的数据和一个结果">
+    <div class="step"><span class="k">样本</span><span class="v">3000 次曝光</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">每次变成</span><span class="v hex">15 个特征</span></div>
+    <span class="arrow" aria-hidden="true">+</span>
+    <div class="step"><span class="k">标签是 1 的</span><span class="v">22.6%</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">加一个交叉特征，测试 AUC</span><span class="v">0.7175 → 0.7715</span></div>
+  </div>
+  <p class="caption">数据是一个脚本按固定随机种子生成的示意数据，不是真实日志：一个音乐 App 首页推荐 30 天里的 3000 次曝光，300 个用户，400 首歌。正样本是"点开并播放超过 30 秒"。文中的比例和指标都是在这份数据上算的，每个实验的做法写在该节和页尾。这一页是<a href="prediction.html#s2">AI 是怎么预测的</a>第 2 站"特征"的展开。</p>
+</header>
+
+<section id="three">
+  <h2><span class="n">01</span>样本、特征、标签</h2>
+  <p>首页给一位用户展示了一首歌，他会不会点开听下去？这类预测问题都能摊成同一种表（预测到底在预测什么，见<a href="prediction.html#s1">第 1 站</a>）：</p>
+  <ul>
+    <li><strong>一行是一个样本（sample）。</strong>这里是一次曝光（exposure）：某天某个时刻，给某位用户展示了某首歌。</li>
+    <li><strong>每一列是一个特征（feature）。</strong>描述这次曝光的一个量，比如这位用户最近 7 天听了几次这个曲风、这首歌有多热、当时几点。</li>
+    <li><strong>最后一列是标签（label），也就是答案。</strong>1 是正样本：点开并播放超过 30 秒；0 是负样本：没点、划走，或者播放不到 30 秒。</li>
+  </ul>
+  <p>示例数据一共 3000 行，每天 100 行，共 30 天，其中 678 行是正样本。<code>samples.csv</code> 的前 8 行，都在第 1 天：</p>
+  <div class="tbl dense nums"><table>
+    <thead><tr><th class="num">行</th><th class="num">用户</th><th class="num">歌</th><th>曲风</th><th class="num">偏好</th><th class="num">热度</th><th class="num">关注</th><th class="num">时刻</th><th class="num">时长</th><th>网络</th><th class="num">新用户</th><th class="num">标签</th><th class="num">true_p</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>68</td><td>183</td><td>摇滚</td><td>1</td><td>0.043</td><td>0</td><td>19 点</td><td>2.6</td><td>wifi</td><td>0</td><td>0</td><td>0.053</td></tr>
+      <tr><td>2</td><td>184</td><td>253</td><td>流行</td><td>2</td><td>0.925</td><td>0</td><td>11 点</td><td>4.2</td><td>5g</td><td>0</td><td>1</td><td>0.1801</td></tr>
+      <tr><td>3</td><td>26</td><td>110</td><td>民谣</td><td>0</td><td>0.501</td><td>0</td><td>8 点</td><td>5.4</td><td>wifi</td><td>0</td><td>0</td><td>0.0725</td></tr>
+      <tr><td>4</td><td>210</td><td>85</td><td>流行</td><td>5</td><td>0.401</td><td>0</td><td>12 点</td><td>5.1</td><td>wifi</td><td>0</td><td>0</td><td>0.1522</td></tr>
+      <tr><td>5</td><td>251</td><td>298</td><td>摇滚</td><td>2</td><td>0.584</td><td>0</td><td>18 点</td><td>2.8</td><td>5g</td><td>0</td><td>0</td><td>0.1236</td></tr>
+      <tr><td>6</td><td>88</td><td>237</td><td>古典</td><td>1</td><td>0.011</td><td>0</td><td>20 点</td><td>4.1</td><td>wifi</td><td>1</td><td>1</td><td>0.1166</td></tr>
+      <tr><td>7</td><td>246</td><td>139</td><td>摇滚</td><td>0</td><td>0.525</td><td>0</td><td>18 点</td><td>5.1</td><td>wifi</td><td>0</td><td>0</td><td>0.2465</td></tr>
+      <tr><td>8</td><td>119</td><td>344</td><td>流行</td><td>12</td><td>0.838</td><td>1</td><td>14 点</td><td>4.8</td><td>4g</td><td>0</td><td>0</td><td>0.4401</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">偏好（<code>affinity</code>）是这位用户最近 7 天听这个曲风的次数；热度（<code>heat</code>）在 0 到 1 之间；关注（<code>follow</code>）是有没有关注这首歌的歌手；时长的单位是分钟。最后一列 <code>true_p</code> 是生成数据时按一条藏起来的规律算出的概率，标签就是按这个概率掷出来的。模型看不到这一列，它只用来核对。</p>
+  <p>看第 6 行和第 8 行。第 8 行的用户最近 7 天听了 12 次流行，关注了歌手，歌也热，被点的概率是 0.44，结果没点；第 6 行几样都不占，概率 0.12，结果点了。同样的特征不保证同样的结果，标签里有运气。模型能学到的只是概率，学不到运气。</p>
+  <p>所以预测再准也有上限。拿真实概率当打分，去排测试集的 600 行，AUC 是 0.7834。AUC 的意思是：随便抽一个正样本和一个负样本，正样本得分更高的概率；0.5 等于乱猜，1 是全对，详见 <a href="evaluation.html">评估</a>。只看特征的模型，在这个测试集上做不到明显比 0.7834 好，第 11 节会用到这条线。</p>
+  <p>下文反复用一个参考模型做对比：逻辑回归（logistic regression）。它给每个特征一个权重，乘起来加在一起，再加一个常数（偏置），最后把结果压到 0 到 1 之间当作概率，见<a href="prediction.html#s3">第 3 站：加权求和</a>。用第 06 节的 15 个特征，它在测试集上的 AUC 是 0.7175。</p>
+</section>
+
+<section id="logs">
+  <h2><span class="n">02</span>样本从哪来</h2>
+  <p>线上没有人直接交给你这张表。App 记的是两份日志：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>日志</th><th>什么时候写</th><th>记什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">曝光日志</td><td>一首歌出现在用户的屏幕上</td><td>时间、用户、歌、在列表里的位置、网络</td></tr>
+      <tr><td class="nw">行为日志</td><td>用户点开、播放、划走</td><td>时间、用户、歌、动作、播放了多久</td></tr>
+    </tbody>
+  </table></div>
+  <p>把两份日志按"用户 + 歌 + 时间"对上，曝光日志的每一行就有了结果，成为一个样本。用户和歌的属性，比如听过几次这个曲风、关注了谁、歌的热度和时长，在别的表里，再按用户 ID 和歌 ID 拼进来。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 316" role="img" aria-label="曝光日志的一行和行为日志的一行按用户、歌、时间对上，拼成一个样本，里面有用户、歌、场景三组字段和一个标签；再编码成 15 个数和 1 个标签">
+      <defs><marker id="fs-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="ghost" x="10" y="10" width="280" height="80" rx="8"/>
+      <rect class="ghost" x="310" y="10" width="280" height="80" rx="8"/>
+      <text x="24" y="33" class="a">曝光日志</text>
+      <text x="24" y="57">第 1 天 11 点，5G 网络</text>
+      <text x="24" y="78">给用户 184 展示了歌 253</text>
+      <text x="324" y="33" class="a">行为日志</text>
+      <text x="324" y="57">用户 184 点开了歌 253</text>
+      <text x="324" y="78">播放超过 30 秒</text>
+      <g marker-end="url(#fs-arrow)"><path class="lead" d="M150 90V124"/><path class="lead" d="M450 90V124"/></g>
+      <text x="300" y="112" text-anchor="middle" class="m">按用户、歌、时间对上</text>
+      <rect class="band" x="10" y="126" width="580" height="100" rx="8"/>
+      <g class="lead"><path d="M178 138V214"/><path d="M328 138V214"/><path d="M458 138V214"/></g>
+      <text x="26" y="149" class="m">用户</text><text x="194" y="149" class="m">歌</text><text x="344" y="149" class="m">场景</text><text x="474" y="149" class="m">标签</text>
+      <text x="26" y="173">7 天听流行 2 次</text><text x="26" y="194">没关注这位歌手</text><text x="26" y="215">老用户</text>
+      <text x="194" y="173">流行</text><text x="194" y="194">热度 0.925</text><text x="194" y="215">4.2 分钟</text>
+      <text x="344" y="173">11 点</text><text x="344" y="194">5G</text>
+      <text x="474" y="190" class="big a">1</text><text x="474" y="215" class="m">正样本</text>
+      <g marker-end="url(#fs-arrow)"><path class="lead" d="M300 226V252"/></g>
+      <text x="312" y="244" class="m">编码成 15 个数</text>
+      <rect class="hot" x="8" y="254" width="36" height="30" rx="4"/><rect class="hot" x="45" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="82" y="254" width="36" height="30" rx="4"/><rect class="hot" x="119" y="254" width="36" height="30" rx="4"/><rect class="hot" x="156" y="254" width="36" height="30" rx="4"/>
+      <rect class="ghost" x="193" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="230" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="267" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="304" y="254" width="36" height="30" rx="4"/><rect class="hot" x="341" y="254" width="36" height="30" rx="4"/>
+      <rect class="hot" x="378" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="415" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="452" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="489" y="254" width="36" height="30" rx="4"/><rect class="ghost" x="526" y="254" width="36" height="30" rx="4"/>
+      <rect class="band" x="570" y="254" width="26" height="30" rx="4"/>
+      <g text-anchor="middle">
+        <text x="26" y="274" class="v">0.07</text><text x="63" y="274" class="v">0.93</text><text x="100" y="274" class="v">0</text><text x="137" y="274" class="v">0.48</text><text x="174" y="274" class="v">0.55</text>
+        <text x="211" y="274" class="v">0</text><text x="248" y="274" class="v">0</text><text x="285" y="274" class="v">0</text><text x="322" y="274" class="v">0</text><text x="359" y="274" class="v">1</text>
+        <text x="396" y="274" class="v">1</text><text x="433" y="274" class="v">0</text><text x="470" y="274" class="v">0</text><text x="507" y="274" class="v">0</text><text x="544" y="274" class="v">0</text>
+        <text x="583" y="274" class="v a">1</text>
+        <text x="26" y="305" class="m sm">偏好</text><text x="63" y="305" class="m sm">热度</text><text x="100" y="305" class="m sm">关注</text><text x="137" y="305" class="m sm">小时</text><text x="174" y="305" class="m sm">时长</text><text x="211" y="305" class="m sm">晚上</text><text x="248" y="305" class="m sm">新用户</text>
+        <text x="322" y="305" class="m sm">网络</text><text x="470" y="305" class="m sm">曲风</text><text x="583" y="305" class="m sm">标签</text>
+      </g>
+      <g class="lead"><path d="M269 292H375"/><path d="M380 292H560"/></g>
+    </svg>
+    </div>
+    <figcaption>示例数据的第 2 行是怎么来的。模型最后看到的只有下面这 16 个数：15 个特征和 1 个标签（图里保留两位小数），深色的格子是不为 0 的特征。每一列怎么算见第 06 节。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>以曝光为单位。</strong>每展示一次就是一行，不管点没点。负样本就是这么来的：曝光了、却没对上正向行为的那些行。同一个用户在不同的日子看到同一首歌，是两个样本。</li>
+    <li><strong>拼属性时要取曝光那一刻的值。</strong>"有没有关注歌手"要取曝光时的状态，不能取今天的。用户可能是听完这首歌才关注的，取今天的值就把结果混进了特征，见第 11 节。</li>
+    <li><strong>曝光要在屏幕上真的露出来才记。</strong>服务器返回一整页，屏幕上只露出前几首，没露出来的用户根本没看见，记成曝光就多出一批假的负样本。露出多少、停留多久才算一次曝光，由客户端和算法一起约定，并且各个版本保持一致。</li>
+  </ul>
+</section>
+
+<section id="label">
+  <h2><span class="n">03</span>标签怎么定</h2>
+  <h3>定义决定模型学什么</h3>
+  <p>"正样本"没有天然的定义，是人定的。同一批曝光，换一个定义就是另一份数据，模型学到的东西也跟着变：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>正样本的定义</th><th>会被算成正的</th><th>模型会偏向</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">点开</td><td>所有点击，包括误触、点开马上退出</td><td>让人想点的封面和标题，不管听不听得下去</td></tr>
+      <tr><td class="nw">播放超过 30 秒（本页）</td><td>点开并且没有很快划走</td><td>用户愿意听下去的歌</td></tr>
+      <tr><td class="nw">听完</td><td>一直播到最后</td><td>短歌：2 分钟的歌比 6 分钟的容易听完得多</td></tr>
+    </tbody>
+  </table></div>
+  <p>三个定义一个比一个严，正样本也一个比一个少。30 秒是一条人为的线：播放 29 秒和 31 秒，在标签上是完全相反的两个结果。选哪个定义是产品的决定，模型只负责把给定的定义学好。想同时照顾几个目标，就给每个目标各准备一个标签，常见的做法是一个模型同时预测几个，见<a href="ctr-recommendation.html">推荐和点击率预估</a>。</p>
+  <h3>等多久才算负样本</h3>
+  <p>标签要等结果出来才知道。"播放超过 30 秒"最早也要在点开 30 秒之后才能确定；用户也可能先划走，几分钟后翻回来再点。所以拼日志时要定一个等待窗口：曝光后这段时间内满足条件的算正，过了窗口还没有的算负。窗口之外才到的正样本，就被错记成了负样本。这叫延迟反馈（delayed feedback）。</p>
+  <p>示例数据里没有点击的时间，没法算窗口该定多长，但可以看错记的后果。把训练集 454 个正样本随机挑 20% 改成 0，模拟窗口太短，其余和参考模型完全一样：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th></th><th>训练集的正样本比例</th><th>测试集上的平均预测</th><th class="num">测试 AUC</th></tr></thead>
+    <tbody>
+      <tr><td>标签正确</td><td>22.7%</td><td>22.6%</td><td>0.7175</td></tr>
+      <tr><td>91 个正样本被记成负</td><td>18.2%</td><td>18.1%</td><td>0.7190</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">测试集实际的正样本比例是 23.7%。随机挑选用的是 mulberry32 种子 101；换成种子 102、103，测试 AUC 是 0.7188 和 0.7073。</p>
+  <p>错记的正样本如果是随机的，排序几乎不受影响，受影响的是概率：平均预测 18.1%，实际 23.7%，模型整体低估。如果晚到的正样本集中在某一类曝光上，比如晚上，模型会以为那类曝光不受欢迎，排序也跟着错。窗口越长，标签越准，样本也出来得越晚。按天训练的模型多等几个小时问题不大；几分钟更新一次的模型就要权衡，有的系统先把曝光当负样本用，等正向行为到了再补一条修正。</p>
+  <h3>没展示过的，不算负样本</h3>
+  <p>负样本的意思是"看到了，没选"。从没展示过的歌没有标签，用户根本不知道它存在。把它们当负样本，等于告诉模型用户不喜欢这些歌，可是没人问过他。</p>
+  <p>更隐蔽的一层是：能被展示的歌，是上一版模型挑出来的。新模型只能从上一版挑过的范围里学，上一版从来不推的那类歌永远没有样本，新模型也就一直学不会它们。这叫选择偏差（selection bias）。常见的缓解办法是留一小部分流量随机展示，专门收集没被模型挑过的样本。展示的位置也有类似的问题：排在第一位的歌更容易被点，这和歌好不好无关。</p>
+  <p>示例数据没有这两个问题：脚本给每次曝光随机挑用户和歌，相当于全部流量都是随机展示，也没有位置。真实日志不能这样假设。</p>
+</section>
+
+<section id="imbalance">
+  <h2><span class="n">04</span>正样本只占 22.6%</h2>
+  <p>3000 行里有 678 行是正样本，占 22.6%。按时间切成三段之后（切法见第 12 节）：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>段</th><th class="num">行数</th><th class="num">正样本</th><th class="num">比例</th></tr></thead>
+    <tbody>
+      <tr><td>训练（第 1–20 天）</td><td>2000</td><td>454</td><td>22.7%</td></tr>
+      <tr><td>验证（第 21–24 天）</td><td>400</td><td>82</td><td>20.5%</td></tr>
+      <tr><td>测试（第 25–30 天）</td><td>600</td><td>142</td><td>23.7%</td></tr>
+      <tr><td>全部</td><td>3000</td><td>678</td><td>22.6%</td></tr>
+    </tbody>
+  </table></div>
+  <p>正负样本的数量差得多，叫类别不平衡（class imbalance）。22.6% 还算轻的，真实业务里点击、购买这类标签，正样本往往少得多。不平衡带来两件事：</p>
+  <ul>
+    <li><strong>准确率会骗人。</strong>测试集 600 行里 458 行是负样本，全部猜 0，准确率就有 76.3%。参考逻辑回归按"概率 ≥ 0.5 算正"去判，准确率是 75.8%，还不如全猜 0。它并不是没用，AUC 是 0.7175，只是很少有样本的概率超过 0.5。所以这类问题看 AUC 和对数损失，不看准确率，见<a href="evaluation.html">评估</a>。</li>
+    <li><strong>大部分训练时间花在负样本上</strong>，而其中很多一看就不会被点。下一节的降采样就是为了这个。</li>
+  </ul>
+  <p>不要为了"平衡"随手复制正样本或者加大正样本的权重：那样做模型输出的概率会整体变高。真要改，就要知道怎么改回来，下一节的公式做的就是这件事。</p>
+  <p>负样本也有难易之分。难负样本（hard negative）是模型容易误判成正样本的负样本。测试集 458 个负样本里，有 22 个被参考逻辑回归打到 0.4 以上；按藏起来的规律，它们被点的概率平均是 0.40，这一次只是碰巧没点，所以别指望模型把难负样本全分对。反过来，曝光过、没被点的歌，本来就比从曲库里随手抽的歌难：在真实系统里，它们是上一版模型觉得用户会喜欢才展示的。先从整个曲库里粗选出一小批的召回阶段，常用随手抽的歌当负样本，学得快，但只学会分辨"完全不相干"的歌，所以还要掺进一部分难负样本，见<a href="ctr-recommendation.html">推荐和点击率预估</a>。</p>
+</section>
+
+<section id="downsample">
+  <h2><span class="n">05</span>负样本降采样和校正</h2>
+  <p>负样本降采样（negative down-sampling）：正样本全部留下，每个负样本按一个概率 r 决定留不留。在训练集上取 r = 0.3，负样本逐个掷一次（mulberry32 种子 1），1546 个里留下了 451 个：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 222" role="img" aria-label="降采样前训练集有 454 个正样本、1546 个负样本，正样本占 22.7%；降采样后负样本只剩 451 个，正样本占 50.2%。在测试集上，不校正的模型平均预测 48.0%，校正后 23.3%，实际是 23.7%">
+      <text x="10" y="18" class="m">训练集：正样本全留，负样本按 0.3 的概率保留</text>
+      <text x="500" y="18" class="m">正样本比例</text>
+      <g text-anchor="end"><text x="82" y="54">降采样前</text><text x="82" y="92">降采样后</text></g>
+      <rect class="hot" x="90" y="36" width="90.8" height="26"/><rect class="ghost" x="180.8" y="36" width="309.2" height="26"/>
+      <rect class="hot" x="90" y="74" width="90.8" height="26"/><rect class="ghost" x="180.8" y="74" width="90.2" height="26"/><rect class="cut" x="271" y="74" width="219" height="26"/>
+      <g text-anchor="middle">
+        <text x="135.4" y="54" class="sm">正 454</text><text x="335.4" y="54" class="sm">负 1546</text>
+        <text x="135.4" y="92" class="sm">正 454</text><text x="225.9" y="92" class="sm">负 451</text><text x="380.5" y="92" class="m">丢掉 1095 个</text>
+      </g>
+      <text x="500" y="54" class="mn">22.7%</text><text x="500" y="92" class="mn">50.2%</text>
+      <text x="10" y="136" class="m">测试集：模型的平均预测</text>
+      <g text-anchor="end"><text x="82" y="169">不校正</text><text x="82" y="205">校正后</text></g>
+      <rect class="ghost" x="90" y="152" width="320" height="24"/>
+      <rect class="hot" x="90" y="188" width="155" height="24"/>
+      <text x="418" y="169" class="mn">48.0%</text><text x="254" y="205" class="mn">23.3%</text>
+      <path class="lim" d="M247.8 142V218"/>
+      <text x="253" y="146" class="sm a">实际 23.7%</text>
+    </svg>
+    </div>
+    <figcaption>降采样后的训练集里正样本占了一半，模型学到的就是"一半会点"，在测试集上平均预测 48.0%。用下面的公式校正后是 23.3%，测试集实际是 23.7%。</figcaption>
+  </figure>
+  <p>为什么会偏高、该怎么改回来，推一遍就清楚。设某一类曝光（特征完全相同）有 N 条，真实被点的概率是 p'：</p>
+<pre><code>             正样本         负样本
+降采样前     p' × N         (1 − p') × N
+降采样后     p' × N         (1 − p') × N × r
+
+模型学到的   p  = p' / (p' + (1 − p') × r)
+反过来解出   p' = p / (p + (1 − p) / r)</code></pre>
+  <p>p 是模型在降采样数据上给出的概率，p' 是校正后、也就是真实世界里的概率。r = 0.3 时，模型说 0.5，代进去：</p>
+<pre><code>p' = 0.5 / (0.5 + 0.5 / 0.3) = 0.5 / 2.1667 = 0.2308</code></pre>
+  <p>模型说"一半会点"，真实情况是 23.1%。换成对数几率看更简单。几率（odds）是"会点"和"不会点"的比值 p / (1 − p)，对数几率（logit）是它取自然对数。降采样后负样本只剩 r，每一类曝光的几率都放大了 1 / r 倍，所以校正就是在对数几率上加 ln r。r = 0.3 时 ln r = −1.204：logit(0.5) = 0，加上 −1.204，再变回概率，正好是 0.2308。逻辑回归和神经网络的最后一步都是 sigmoid（把任意数压到 0 到 1 之间的函数），对它们来说，校正就是把最后那个偏置减去 1.204，其余参数一个都不用动。</p>
+  <p>在示例数据上实际做一遍。降采样后的 905 行按参考模型的做法训练，标准化用的均值和标准差取自这 905 行：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th></th><th>训练行数</th><th>训练集正样本比例</th><th class="num">测试 AUC</th><th>测试集平均预测</th><th>测试对数损失</th></tr></thead>
+    <tbody>
+      <tr><td>全量（参考模型）</td><td>2000</td><td>22.7%</td><td>0.7175</td><td>22.6%</td><td>0.4985</td></tr>
+      <tr><td>降采样，不校正</td><td>905</td><td>50.2%</td><td>0.7078</td><td>48.0%</td><td>0.6389</td></tr>
+      <tr><td>降采样，校正后</td><td>905</td><td>50.2%</td><td>0.7078</td><td>23.3%</td><td>0.5031</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">对数损失（logloss）衡量概率给得准不准：取模型给真实结果的那个概率，求对数、取负，再对所有行求平均，越小越好，概率给得越离谱罚得越重。</p>
+  <ul>
+    <li><strong>校正不改变排序。</strong>公式是单调的，原来分高的校正后还是高，AUC 一个数都不变。只有用到概率本身的地方才需要校正，比如和别的分数相乘、跟一条固定的线比较。</li>
+    <li><strong>降采样丢了数据。</strong>AUC 从 0.7175 变成 0.7078；换种子 2、3 是 0.7126 和 0.7264。三次平均 0.7156，和全量差不多，单次的结果要看运气，因为训练只剩 905 行。真实系统的数据多得多，降采样主要是为了省训练时间。</li>
+    <li><strong>线上只校正一次。</strong>降采样只发生在训练时，线上打分不降采样。校正要么写进模型（改偏置），要么放在打分之后，不能两处都做，也不能都不做。</li>
+  </ul>
+</section>
+
+<section id="types">
+  <h2><span class="n">06</span>数值、类别和 one-hot</h2>
+  <p>模型只会做乘法和加法，所以每个特征最后都得是一个数。原始字段大致有三种：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>类型</th><th>例子</th><th>怎么变成数</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">数值</td><td>热度 0.925、时长 4.2 分钟、偏好 2 次</td><td>直接用，一般再缩放到相近的范围（第 09 节）</td></tr>
+      <tr><td class="nw">二值</td><td>关注、新用户</td><td>是记 1，否记 0</td></tr>
+      <tr><td class="nw">类别</td><td>曲风（5 种）、网络（3 种）</td><td>one-hot：每种取值一列</td></tr>
+    </tbody>
+  </table></div>
+  <p>类别不能直接编号。把流行、摇滚、民谣、电子、古典记成 1 到 5，线性模型只能给这一列一个权重，等于断定"古典的作用是流行的 5 倍，摇滚正好在流行和民谣中间"。这没有道理。示例数据里各曲风的正样本比例，高低和任何编号顺序都对不上：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>曲风</th><th class="num">流行</th><th class="num">摇滚</th><th class="num">民谣</th><th class="num">电子</th><th class="num">古典</th></tr></thead>
+    <tbody>
+      <tr><td>曝光</td><td>1208</td><td>430</td><td>527</td><td>504</td><td>331</td></tr>
+      <tr><td>正样本比例</td><td>22.1%</td><td>20.9%</td><td>26.6%</td><td>22.0%</td><td>21.2%</td></tr>
+    </tbody>
+  </table></div>
+  <p>one-hot（独热编码）给每种曲风单独一列，属于这个曲风的那一列是 1，其余是 0，每种曲风各有各的权重。参考逻辑回归里权重最大的曲风是民谣（0.1236），和藏起来的规律对得上：民谣在晚上会多加一点分。</p>
+  <p>参考模型的 15 个特征，以及图里那一行（第 2 行）算出来的值：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">#</th><th>特征</th><th>怎么算</th><th>第 2 行</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td><code>aff_n</code></td><td>偏好次数 ÷ 30</td><td>2 ÷ 30 = 0.067</td></tr>
+      <tr><td class="num">2</td><td><code>heat</code></td><td>原样</td><td>0.925</td></tr>
+      <tr><td class="num">3</td><td><code>follow</code></td><td>原样</td><td>0</td></tr>
+      <tr><td class="num">4</td><td><code>hour_n</code></td><td>小时 ÷ 23</td><td>11 ÷ 23 = 0.478</td></tr>
+      <tr><td class="num">5</td><td><code>len_n</code></td><td>(时长 − 2) ÷ 4</td><td>(4.2 − 2) ÷ 4 = 0.55</td></tr>
+      <tr><td class="num">6</td><td><code>night</code></td><td>18 点及以后、或 2 点以前记 1</td><td>0</td></tr>
+      <tr><td class="num">7</td><td><code>new_user</code></td><td>原样</td><td>0</td></tr>
+      <tr><td class="num">8–10</td><td><code>net_wifi</code>、<code>net_4g</code>、<code>net_5g</code></td><td>网络的 one-hot</td><td>0、0、1</td></tr>
+      <tr><td class="num">11–15</td><td><code>g_流行</code> … <code>g_古典</code></td><td>曲风的 one-hot</td><td>1、0、0、0、0</td></tr>
+    </tbody>
+  </table></div>
+  <p>前几个的除法只是把范围大致缩到 0 到 1：偏好次数按上限 30 算，小时最大是 23，时长在 2 到 6 分钟之间。第 6 个 <code>night</code> 是从小时里加工出来的，原因在下一节。</p>
+</section>
+
+<section id="time-id">
+  <h2><span class="n">07</span>时间、计数和 ID</h2>
+  <h3>时间</h3>
+  <p>小时直接除以 23 有两个问题。一是首尾断开：23 点和 0 点只隔一小时，<code>hour_n</code> 却差 1.0，是能差出的最大值，而 22 点和 23 点只差 0.043。二是"晚上"并不是数越大越晚：18 到 23 点和 0、1 点算晚上，中间不算，一个权重乘在 <code>hour_n</code> 上，只能表达"越晚越好"或者"越早越好"。常见的处理有两种：</p>
+  <ul>
+    <li><strong>分桶（bucketing）。</strong>按经验切成几段，每段一个 0/1 特征。<code>night</code> 就是这样来的。</li>
+    <li><strong>周期编码。</strong>把 24 小时当成钟面上的角度（2π × 小时 ÷ 24），取它的 sin 和 cos 两个数。这样 23 点和 0 点挨在一起：任意相邻两个小时之间的距离都是 0.261，正对着的 0 点和 12 点距离是 2。星期几、月份也是这种首尾相接的量。</li>
+  </ul>
+  <div class="tbl nums"><table>
+    <thead><tr><th class="num">小时</th><th class="num">hour_n</th><th class="num">sin</th><th class="num">cos</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+      <tr><td>6</td><td>0.261</td><td>1</td><td>0</td></tr>
+      <tr><td>12</td><td>0.522</td><td>0</td><td>−1</td></tr>
+      <tr><td>18</td><td>0.783</td><td>−1</td><td>0</td></tr>
+      <tr><td>23</td><td>1</td><td>−0.259</td><td>0.966</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">在示例数据里把 <code>hour_n</code> 换成 sin、cos 两列，测试 AUC 从 0.7175 变成 0.7206，几乎没变：这份数据里小时只通过"是不是晚上"起作用，而且要和歌的长短合起来才看得出来（下一节）。</p>
+  <h3>计数和比率</h3>
+  <p>偏好是一个计数。它的分布很偏：913 行（30.4%）是 0，训练集里从小到大排，第 99% 位置上的值（99 分位）是 13，最大是 17。按次数分档看正样本比例：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>偏好次数</th><th class="num">0</th><th class="num">1–2</th><th class="num">3–5</th><th class="num">6–9</th><th class="num">10–17</th></tr></thead>
+    <tbody>
+      <tr><td>行数</td><td>913</td><td>928</td><td>626</td><td>401</td><td>132</td></tr>
+      <tr><td>正样本比例</td><td>14.2%</td><td>18.6%</td><td>30.5%</td><td>32.9%</td><td>39.4%</td></tr>
+    </tbody>
+  </table></div>
+  <p>前几次的作用大，越往后加得越少。计数类特征常取 log(1 + 次数)，把前面拉开、后面压扁：0、2、13 次分别变成 0、1.10、2.64。在示例数据里把"偏好 ÷ 30"换成 log(1 + 偏好)，测试 AUC 从 0.7175 变成 0.7210，提升很小。藏起来的规律里，偏好的作用是 1.7 × (1 − e<sup>−偏好/6</sup>)，本来就是越往后越平。</p>
+  <p>比率是两个计数相除，比如一首歌的正样本率 = 正样本数 ÷ 曝光数。它的问题是分母常常很小：训练集里平均每首歌只曝光 5 次；正好曝光 5 次的 75 首歌里，23 首一次都没被点，3 首被点了 4 次。正样本率从 0 到 80%，大半是运气。常用的办法是平滑，把它往全局比例上拉：</p>
+<pre><code>平滑后 = (正样本数 + m × 全局比例) / (曝光数 + m)
+m = 5，全局比例 22.7%：
+
+0 / 5   →  11.4%
+4 / 5   →  51.4%
+0 / 0   →  22.7%        没有历史</code></pre>
+  <p>这类用标签统计出来的特征最好用，也最容易泄漏，第 11 节专门讲。</p>
+  <h3>ID</h3>
+  <p>用户 ID 和歌 ID 也是类别，只是取值很多：示例里 300 个用户、400 首歌，one-hot 就是 700 列。训练集里平均每首歌只有 5 行，9 首歌只有 1 行，靠这么几行给一首歌定一个专属的权重，大半是噪声。真实系统里的用户和歌以百万计，每天还有新的。</p>
+  <p>常见的做法是嵌入（embedding）：每个 ID 对应一小串数，也就是一个向量，和模型的其余权重一起训练出来。训练好之后，口味相近的用户、风格相近的歌，向量往往靠在一起。模型读这串数，而不是一个巨大的 one-hot。细节见<a href="ctr-recommendation.html">推荐和点击率预估</a>。新出现的 ID 还没被训练过，要靠曲风、热度这类属性特征兜底。示例里的参考模型没有用 ID：藏起来的规律里没有"某首歌、某个人"专属的部分，属性已经够了。</p>
+</section>
+
+<section id="cross">
+  <h2><span class="n">08</span>交叉特征</h2>
+  <p>把 3000 行按两件事分成四组：是不是晚上（18 点到次日 2 点前），歌长不长（4 分钟以上）。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 280" role="img" aria-label="四个格子的正样本比例：白天短歌 34.7%，白天长歌 12.0%，晚上短歌 12.0%，晚上长歌 31.6%。只看早晚是 23.1% 和 22.1%，只看长短是 24.2% 和 21.1%">
+      <g text-anchor="middle">
+        <text x="235" y="24">短歌</text><text x="235" y="42" class="m">不到 4 分钟</text>
+        <text x="391" y="24">长歌</text><text x="391" y="42" class="m">4 分钟以上</text>
+        <text x="535" y="42" class="m">只看早晚</text>
+      </g>
+      <g text-anchor="end">
+        <text x="148" y="92">白天</text><text x="148" y="112" class="m">2–17 点</text>
+        <text x="148" y="178">晚上</text><text x="148" y="198" class="m">18 点–次日 1 点</text>
+        <text x="148" y="264" class="m">只看长短</text>
+      </g>
+      <rect class="q" x="160" y="56" width="150" height="80" rx="6" fill-opacity=".49"/>
+      <rect class="q" x="316" y="56" width="150" height="80" rx="6" fill-opacity=".17"/>
+      <rect class="q" x="160" y="142" width="150" height="80" rx="6" fill-opacity=".17"/>
+      <rect class="q" x="316" y="142" width="150" height="80" rx="6" fill-opacity=".44"/>
+      <g class="lead"><path d="M480 56V222"/><path d="M160 238H466"/></g>
+      <g text-anchor="middle">
+        <text x="235" y="99" class="big">34.7%</text><text x="235" y="121" class="sm">784 次曝光</text>
+        <text x="391" y="99" class="big">12.0%</text><text x="391" y="121" class="sm">825 次</text>
+        <text x="235" y="185" class="big">12.0%</text><text x="235" y="207" class="sm">675 次</text>
+        <text x="391" y="185" class="big">31.6%</text><text x="391" y="207" class="sm">716 次</text>
+        <text x="535" y="101" class="mn">23.1%</text><text x="535" y="187" class="mn">22.1%</text>
+        <text x="235" y="264" class="mn">24.2%</text><text x="391" y="264" class="mn">21.1%</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>格子之间差了近 3 倍（34.7% 对 12.0%）；只看早晚或只看长短，两边只差 1 到 3 个百分点。白天配短歌、晚上配长歌的容易被点，反过来的不容易。</figcaption>
+  </figure>
+  <p>结果取决于两件事是否一致，这种关系叫异或（XOR）。线性模型看不见它。线性模型只能给"晚上"一个固定的加减分 b，给"长歌"一个固定的加减分 c，四个格子的分数只能是：</p>
+<pre><code>          短歌        长歌
+白天      a           a + c
+晚上      a + b       a + b + c</code></pre>
+  <p>要让白天短歌比白天长歌高，c 得是负的；要让白天短歌比晚上短歌高，b 得是负的；要让晚上长歌比白天长歌高，b 又得是正的。三个条件凑不齐。参考逻辑回归能做的只是把两个权重都压到接近 0：<code>night</code> 是 −0.0631，<code>len_n</code> 是 −0.1642。</p>
+  <p>交叉特征（feature cross）把组合直接做成一列：<code>night_long_match</code>，"晚上"和"长歌"一致（都是或者都不是）时记 1。只加这一列，其余不变，再看测试集四个格子的平均预测：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>测试集 600 行</th><th class="num">白天·短歌</th><th class="num">白天·长歌</th><th class="num">晚上·短歌</th><th class="num">晚上·长歌</th></tr></thead>
+    <tbody>
+      <tr><td>行数</td><td>153</td><td>167</td><td>119</td><td>161</td></tr>
+      <tr><td>实际正样本比例</td><td>32.7%</td><td>12.6%</td><td>10.9%</td><td>36.0%</td></tr>
+      <tr><td>15 个特征的平均预测</td><td>25.8%</td><td>22.5%</td><td>21.5%</td><td>20.5%</td></tr>
+      <tr><td>加交叉特征后</td><td>36.1%</td><td>12.5%</td><td>10.8%</td><td>32.9%</td></tr>
+    </tbody>
+  </table></div>
+  <p>测试 AUC 从 0.7175 升到 0.7715，离上限 0.7834 只差 0.012；对数损失从 0.4985 降到 0.4592。图里那一行（第 2 行）是白天的长歌，真实概率 0.18，参考模型给 0.31，加了交叉特征后给 0.16。</p>
+  <p>这一列学到的权重是 0.7208，那是标准化之后的；换回 0/1 的单位要除以它的标准差 0.5，等于 1.44，也就是"一致"比"不一致"的对数几率高 1.44。生成数据的规律里，这个差是 0.8 − (−0.6) = 1.4。</p>
+  <p>一个对的交叉特征可以比换一个复杂的模型还管用：同样 15 个特征，参考脚本里的神经网络测试 AUC 是 0.731，梯度提升树是 0.7499，它们都能自己学到一部分组合，但在只有 2000 行训练数据时，都没到 0.7715。难处在于事先不知道该交叉哪两个：15 个特征两两组合就有 105 对。人工交叉靠业务经验和上图这样的分组统计；树和神经网络的用处之一，就是自己找组合，见<a href="trees-gbdt.html">决策树和 GBDT</a>、<a href="neural-network.html">神经网络</a>。</p>
+</section>
+
+<section id="scale">
+  <h2><span class="n">09</span>标准化</h2>
+  <p>梯度下降（gradient descent）训练时，每一轮把每个权重往让损失变小的方向挪一步，步子多大由一个共同的学习率决定，见<a href="gradient-descent.html">梯度下降</a>。某个权重该挪多少，和这一列数的大小成正比：逻辑回归里第 j 个权重的梯度，是所有样本的 (p − y) × x<sub>j</sub> 的平均，p 是预测，y 是标签。</p>
+  <p>如果直接用原始单位，小时在 0 到 23 之间，关注只有 0 和 1。第一轮时小时那一列的梯度是 4.093，关注那一列是 0.0123，差了 333 倍。一个学习率对小时合适，对关注就太小；对关注合适，小时那一步就跨过了头。同样 15 列，三种尺度，各训一遍：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>特征的尺度</th><th class="num">学习率</th><th>第 1 轮后的损失</th><th>600 轮后的训练损失</th><th class="num">测试 AUC</th></tr></thead>
+    <tbody>
+      <tr><td>原始单位：偏好 0–17、小时 0–23、时长 2–6</td><td>0.5</td><td>5.62</td><td>4.84</td><td>0.5756</td></tr>
+      <tr><td>原始单位</td><td>0.02</td><td>0.555</td><td>0.5162</td><td>0.6280</td></tr>
+      <tr><td>除以上限，大致缩到 0–1</td><td>0.5</td><td>0.609</td><td>0.5033</td><td>0.7088</td></tr>
+      <tr><td>标准化</td><td>0.5</td><td>0.651</td><td>0.4999</td><td>0.7175</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">损失是训练集上的对数损失，起点都是 0.6931（权重全为 0，每行都预测 0.5）。用这 15 个特征，逻辑回归在训练集上能达到的最低损失是 0.4999，标准化的版本 50 轮左右就到了。原始单位那一组试了 0.5 到 0.001 七档学习率，0.02 是 600 轮后训练损失最低的一档；0.05 及以上，第 1 轮的损失不降反升。</p>
+  <p>原始单位用 0.02 训了 600 轮，偏好的权重已经到了收敛值附近（0.108，收敛值 0.110），热度和关注却只走到 0.14 和 0.16，收敛值是 1.09 和 0.77。尺度小的列还没怎么动，测试 AUC 只有 0.628。</p>
+  <p>标准化（standardization）把每一列换成"离平均值几个标准差"：</p>
+<pre><code>z = (x − 均值) / 标准差</code></pre>
+  <p>换完之后每一列的均值是 0、标准差是 1，各列梯度的大小差不多，一个学习率就能照顾所有权重。均值和标准差只用训练的那 20 天算。参考模型里的值，以及第 2 行标准化之后的样子：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>特征</th><th>训练集均值</th><th>训练集标准差</th><th class="num">第 2 行</th><th class="num">标准化后</th></tr></thead>
+    <tbody>
+      <tr><td><code>aff_n</code></td><td>0.0898</td><td>0.104</td><td>0.067</td><td>−0.22</td></tr>
+      <tr><td><code>heat</code></td><td>0.3775</td><td>0.3031</td><td>0.925</td><td>1.81</td></tr>
+      <tr><td><code>follow</code></td><td>0.1185</td><td>0.3232</td><td>0</td><td>−0.37</td></tr>
+      <tr><td><code>hour_n</code></td><td>0.6449</td><td>0.2558</td><td>0.478</td><td>−0.65</td></tr>
+      <tr><td><code>len_n</code></td><td>0.4803</td><td>0.3049</td><td>0.55</td><td>0.23</td></tr>
+      <tr><td><code>night</code></td><td>0.461</td><td>0.4985</td><td>0</td><td>−0.92</td></tr>
+      <tr><td><code>new_user</code></td><td>0.156</td><td>0.3629</td><td>0</td><td>−0.43</td></tr>
+      <tr><td><code>net_5g</code></td><td>0.151</td><td>0.358</td><td>1</td><td>2.37</td></tr>
+      <tr><td><code>g_流行</code></td><td>0.405</td><td>0.4909</td><td>1</td><td>1.21</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">0/1 列的均值就是取 1 的比例：训练集里 15.1% 的曝光在 5G 下。第 2 行恰好是 5G，这个少见的 1 标准化后是 2.37。另外 6 个 one-hot 列略去。</p>
+  <ul>
+    <li><strong>为什么只用训练的日子。</strong>测试的日子代表"将来"，线上算特征时也只有过去的数据。均值和标准差是模型的一部分，要和权重一起保存，线上用同一组数，见<a href="prediction.html#s8">第 8 站：学完的模型就是一堆数</a>。线上换一组均值，同一行的特征就变了，模型等于在看别的东西。</li>
+    <li><strong>树模型不需要。</strong>树只问"热度是否 ≤ 0.722"这种问题，把一列整体缩放，切分点跟着缩放，结果不变。参考脚本里的梯度提升树就是直接用没标准化的 15 个特征训的，见<a href="trees-gbdt.html">决策树和 GBDT</a>。</li>
+  </ul>
+</section>
+
+<section id="missing">
+  <h2><span class="n">10</span>缺失值和异常值</h2>
+  <p>示例数据的 3000 行每一列都有值，缺失是加工特征时出来的。拿第 07 节的歌曲正样本率来说，按规矩只能用这一行之前的日子去算（第 11 节），而第 1 天所有歌都还没有历史：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>第几天</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">5</th><th class="num">10</th><th class="num">20</th><th class="num">25 以后</th></tr></thead>
+    <tbody>
+      <tr><td>当天 100 行里歌没有历史的</td><td>100</td><td>76</td><td>57</td><td>34</td><td>11</td><td>1</td><td>0</td></tr>
+    </tbody>
+  </table></div>
+  <p>训练集 2000 行里有 450 行算不出这个特征，测试集一行都没有。用户的正样本率也一样，训练集缺 347 行。</p>
+  <ul>
+    <li><strong>数值缺失：填一个值，再加一列"是不是填的"。</strong>填全局比例 22.7%，同时加一列 0/1，让模型能把真有历史和填出来的行分开对待。第 07 节的平滑公式在曝光数为 0 时正好给出 22.7%，等于自带了填充。</li>
+    <li><strong>不要拿 0 填。</strong>0 常常是一个真实的值：偏好为 0 是"最近 7 天没听过这个曲风"，占 30.4% 的行。正样本率缺失填 0，模型看到的是"这首歌没人喜欢"。</li>
+    <li><strong>类别缺失单独成一类。</strong>拿不到网络类型，就记成"未知"，one-hot 多一列。</li>
+    <li><strong>训练和线上的缺失比例要接近。</strong>上面训练集缺 22.5%，测试集缺 0%，模型从训练集学到的"缺了怎么办"，到测试集用不上。常见做法是在训练窗口之前多留一段日志，只用来攒统计。</li>
+  </ul>
+  <p>有的树模型实现（例如 XGBoost）在每次切分时会给缺失值学一个默认方向，不填也能用。</p>
+  <p>异常值的麻烦出在标准化。训练集的偏好次数均值 2.69、标准差 3.12。假设日志出了错，混进一行 3000，均值变成 4.19，标准差被撑到 67.06：</p>
+  <div class="tbl nums"><table>
+    <thead><tr><th>偏好次数</th><th class="num">0</th><th class="num">2</th><th class="num">7</th><th class="num">17</th><th class="num">3000（错误值）</th></tr></thead>
+    <tbody>
+      <tr><td>标准化后（正常）</td><td>−0.86</td><td>−0.22</td><td>1.38</td><td>4.58</td><td></td></tr>
+      <tr><td>混进 3000 之后</td><td>−0.06</td><td>−0.03</td><td>0.04</td><td>0.19</td><td>44.67</td></tr>
+    </tbody>
+  </table></div>
+  <p>正常的 0 到 17 全挤进了 −0.06 到 0.19 这一小段，模型几乎分不出它们。办法是标准化之前先截断，比如超过训练集 99 分位（13 次）的一律记成 13，或者先取对数。明显不可能的值，比如负的播放时长、25 点，当缺失处理。</p>
+</section>
+
+<section id="leak">
+  <h2><span class="n">11</span>数据泄漏</h2>
+  <p>泄漏（leakage）是特征里混进了预测那一刻还拿不到的信息：答案本身，或者答案之后才发生的事。离线评估时这些信息都在表里，指标很好看；上线以后拿不到，效果就塌了。</p>
+  <p>最直白的例子是把"这次播放了多少秒"当特征。标签本来就是"超过 30 秒"，这一列一放进去，AUC 就是 1。没人会故意这么做，但它常常换个不那么明显的样子出现。下面这个实验用的是一种很常见的写法。</p>
+  <p>给每首歌算正样本率，正样本数 ÷ 曝光数。泄漏的写法图省事，用全部 30 天的日志一次算好，再拼回每一行；诚实的写法对每一行只统计这一行之前的日子，没有历史时填 22.7%。用户的正样本率同样两种算法。把它们当作第 16、17 列加进参考逻辑回归，其余不变：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 192" role="img" aria-label="30 天切成训练 1 到 20 天、验证 21 到 24 天、测试 25 到 30 天。要预测第 26 天的一行，诚实的统计窗口是第 1 到 25 天；泄漏的窗口是全部 30 天，多出这一行自己和之后的 4 天">
+      <rect class="band" x="40" y="16" width="340" height="28"/><rect class="ghost" x="380" y="16" width="68" height="28"/><rect class="hot" x="448" y="16" width="102" height="28"/>
+      <g text-anchor="middle"><text x="210" y="35">训练</text><text x="414" y="35">验证</text><text x="507" y="35">测试</text></g>
+      <text x="40" y="62" class="m sm">第 1 天</text>
+      <g text-anchor="end"><text x="380" y="62" class="t">20</text><text x="448" y="62" class="t">24</text><text x="550" y="62" class="t">30</text></g>
+      <rect class="hot" x="40" y="80" width="425" height="24"/>
+      <rect class="band" x="40" y="118" width="425" height="24"/><rect class="bad" x="465" y="118" width="85" height="24"/>
+      <text x="50" y="97">诚实：只用第 1–25 天</text>
+      <text x="50" y="135">泄漏：用了全部 30 天，含这一行自己和之后 4 天</text>
+      <path class="snap" d="M473.5 20V160"/>
+      <circle class="dot" cx="473.5" cy="30" r="4"/>
+      <text x="473.5" y="180" text-anchor="middle" class="m">要预测的一行：第 26 天</text>
+    </svg>
+    </div>
+    <figcaption>预测第 26 天的一次曝光时，诚实的统计只能用到第 25 天为止；泄漏的写法用了全部 30 天，里面有这一行自己的标签，也有之后 4 天的。</figcaption>
+  </figure>
+  <div class="tbl nums"><table>
+    <thead><tr><th>加进去的特征</th><th class="num">训练 AUC</th><th>离线测试 AUC</th><th class="num">上线后</th></tr></thead>
+    <tbody>
+      <tr><td>不加（参考模型）</td><td>0.6738</td><td>0.7175</td><td>0.7175</td></tr>
+      <tr><td>歌曲正样本率，用全部 30 天算</td><td>0.7978</td><td>0.7755</td><td>0.5531</td></tr>
+      <tr><td>歌曲和用户的正样本率，全部 30 天</td><td>0.8560</td><td>0.8290</td><td>0.5430</td></tr>
+      <tr><td>同样两列，只用之前的日子算</td><td>0.6744</td><td>0.7151</td><td>0.7151</td></tr>
+      <tr><td>上限：真实概率</td><td>—</td><td>0.7834</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">"上线后"是同一个模型在测试集上再评一次，但新加的列换成只用之前日子算的值，因为线上只能这样算，见<a href="prediction.html#s10">第 10 站：上线</a>。诚实的版本离线和上线是同一个数。</p>
+  <ul>
+    <li><strong>0.8290 超过了上限 0.7834。</strong>拿藏起来的真实规律去排都做不到，只能是特征里带着答案。30 天里每首歌平均曝光 7.5 次、每个用户 10 次，这一行自己的标签在歌的平均值里约占 1/7.5，在用户的平均值里占 1/10。</li>
+    <li><strong>上线后比不加还差。</strong>模型发现泄漏的那一列特别好用，把热度的权重从 0.3299 降到了 0.0015。上线后那一列不再带着答案，热度的权重又几乎是 0，AUC 掉到 0.5531。</li>
+    <li><strong>诚实的版本没有提升。</strong>藏起来的规律里没有"某首歌、某个人"专属的部分，历史正样本率带不来新信息，0.7151 和不加差不多。</li>
+    <li><strong>这里漏的主要是"自己"。</strong>同样用全部 30 天，只把这一行自己的标签扣掉，歌曲那一列的测试 AUC 是 0.7159，和不加一样：这份数据的规律 30 天不变，之后几天的数据没多带什么。真实日志不是这样，一首歌第 28 天突然火了，"之后的日子"本身就是答案的一部分。</li>
+  </ul>
+  <p>怎么发现：单独一列就好得出奇时先查它。泄漏的歌曲正样本率单独拿来排序，测试 AUC 就有 0.7257，比 15 个特征合起来还高；同一列的诚实版单独只有 0.4749，和乱猜差不多。离线涨了很多、上线不涨甚至下跌，也是同一个信号。</p>
+  <div class="key">对每一个特征问一句：曝光的那一刻，这个数算得出来吗？统计用到了哪一天为止？属性取的是哪个时刻的值？</div>
+</section>
+
+<section id="split">
+  <h2><span class="n">12</span>按时间切分</h2>
+  <p>模型要拿没见过的数据来考（<a href="prediction.html#s9">第 9 站</a>）。示例数据按天切成三段：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>段</th><th>天</th><th class="num">行数</th><th>用来做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">训练集</td><td class="nw">第 1–20 天</td><td class="num">2000</td><td>学权重。均值、标准差、统计特征也只从这里算</td></tr>
+      <tr><td class="nw">验证集</td><td class="nw">第 21–24 天</td><td class="num">400</td><td>挑设置：学习率、训练几轮、用哪些特征。参考脚本里神经网络训 12 轮、梯度提升树用 103 棵，都是按验证集挑的</td></tr>
+      <tr><td class="nw">测试集</td><td class="nw">第 25–30 天</td><td class="num">600</td><td>最后看一次，用来报告。拿它挑设置，它就不再代表将来</td></tr>
+    </tbody>
+  </table></div>
+  <p>为什么按时间切，而不是把 3000 行打乱了随机分：</p>
+  <ul>
+    <li><strong>线上永远是拿过去预测将来。</strong>离线评估要模仿这一点：用前面的日子训练，用后面的日子测试。随机切分时，训练集里有第 28 天的行，测试集里有第 3 天的行，模型等于先看了将来。</li>
+    <li><strong>真实日志里的规律会变。</strong>新歌上架，某首歌突然火了，节假日的作息不一样。随机切分把将来的这些变化混进了训练集，离线指标会比上线后好看。</li>
+    <li><strong>统计特征的"过去"说不清。</strong>按时间切，每一行的统计只用它之前的日子，和线上一模一样；随机切分时，"只用训练集统计"里就混着测试那一行之后的日子。</li>
+  </ul>
+  <p>示例数据演示不出前两条的害处：生成数据的规律 30 天没变，将来和过去一个样。随机切 10 次（每次 2000 行训练、600 行测试，种子 1 到 10），测试 AUC 在 0.632 到 0.7003 之间，差别全来自哪些行碰巧分进了测试集。这也说明 600 行的测试集不算大。按时间切出的这 600 行恰好比较好猜：拿真实概率去排，测试集上的 AUC 是 0.7834，验证集只有 0.723，训练集是 0.7503。前面几张表里测试 AUC 比训练 AUC 还高，就是这个缘故。</p>
+  <p>同一个用户会同时出现在训练集和测试集里。推荐要预测的正是老用户的下一次，这没有问题；如果要评估模型对新用户好不好使，就要按用户切，让测试集里的用户在训练时一个都没出现过。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">13</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>离线 AUC 好得出奇，上线后不涨反跌</td><td>泄漏：统计特征用了全部日期，含着这一行自己的标签</td><td>每一行只用它之前的数据；单独一列就很准时先查它</td></tr>
+      <tr><td>某一列单独就能把正负样本分得很开</td><td>这一列是结果之后才有的，比如播放时长、事后才发生的关注</td><td>所有字段取曝光那一刻的值</td></tr>
+      <tr><td>模型输出的概率整体偏高</td><td>负样本降采样之后没有校正</td><td><code>p' = p / (p + (1 − p) / r)</code>，或者给偏置加上 ln r</td></tr>
+      <tr><td>模型整体低估</td><td>等待窗口太短，晚到的正样本被记成了负</td><td>加长窗口；正向行为到了再补一条修正</td></tr>
+      <tr><td>准确率很高，模型却没用</td><td>类别不平衡，全猜 0 就有 76.3%</td><td>看 AUC 和对数损失</td></tr>
+      <tr><td>训练损失不降，或者来回跳</td><td>特征尺度差太多，同一个学习率对大尺度的列太大</td><td>标准化；先确认第 1 轮的损失在降</td></tr>
+      <tr><td>同一行线上和线下打分不一样</td><td>线上用了另一组均值和标准差，或者 one-hot 的列顺序不同</td><td>均值、标准差、列顺序和模型一起保存，线上线下用同一份特征代码</td></tr>
+      <tr><td>加了明显有用的特征，线性模型没反应</td><td>它的作用要看另一个特征（异或）</td><td>交叉特征，或者换树、神经网络</td></tr>
+      <tr><td>标准化后一列的值几乎都一样</td><td>个别异常值把标准差撑大了</td><td>先截断到分位数，或者取对数</td></tr>
+      <tr><td>缺失的行被当成"很差"</td><td>用 0 填了缺失</td><td>填全局值，加一列缺失标记</td></tr>
+      <tr><td>23 点和 0 点被当成差得最远</td><td>小时按 0–23 直接用</td><td>分桶，或者 sin、cos 两列</td></tr>
+      <tr><td>新歌一直推不出去</td><td>只认 ID，新 ID 没有样本；没展示过就永远没有标签</td><td>属性特征兜底；留一部分随机展示的流量</td></tr>
+      <tr><td>改了标签定义，推荐明显偏向短歌</td><td>正样本定义成了"听完"</td><td>标签要和想要的结果一致</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">数据和参考结果来自脚本 <code>ml_reference.mjs</code>（Node 20，mulberry32 种子 20261123）生成的 <code>samples.csv</code> 和 <code>reference.json</code>，是示意数据。比例、分布、标准化用的均值和标准差，以及参考逻辑回归、加交叉特征的逻辑回归、神经网络和梯度提升树的指标都直接取自这两个文件。参考逻辑回归的做法：15 个特征用训练集的均值和标准差标准化，权重从 0 开始，全量梯度下降，学习率 0.5，600 轮。另外几组实验是在同一份数据上用同样的逻辑回归重跑的：降采样是训练集负样本逐个按 0.3 的概率保留（种子 1，另看了 2、3），标准化取自降采样后的数据；延迟反馈是训练集正样本随机 20% 改成 0（种子 101，另看了 102、103）；缩放比较了原始单位、除以上限、标准化三种尺度，原始单位试了 0.5、0.1、0.05、0.02、0.01、0.005、0.001 七档学习率；泄漏实验加入歌曲和用户的正样本率，泄漏版用全部 30 天（含本行），诚实版只用本行之前的日子、没有历史填 22.7%，"上线后"是测试时换成诚实版的值；随机切分用种子 1 到 10 各打乱一次，取前 2000 行训练、最后 600 行测试；log(1 + 偏好) 和小时的 sin、cos 各替换一列；异常值那一组是假设在训练集的偏好次数里加入一个 3000，重算均值和标准差。各节里的计数、分档比例、单独一列的 AUC、分组的平均预测，都是用 <code>samples.csv</code> 和上述模型直接算的。AUC 按秩计算，并列取平均秩，所有随机数都用 mulberry32。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">机器学习 · 阅读顺序第 1 篇，共 7 篇 · <a href="../index.html#ml">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="prediction.html"><span class="t">← 上一篇：一次预测</span><span class="d">AI 是怎么预测的</span></a>
+    <a class="demo" href="gradient-descent.html"><span class="t">下一篇：损失和梯度下降 →</span><span class="d">数据备好了。最简单的模型只有一组权重，看它怎么从全是 0 一步步调出来。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

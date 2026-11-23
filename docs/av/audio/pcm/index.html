@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PCM · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../../assets/kb.css?v=6">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../../../index.html">知识库</a><span class="sep">/</span><a href="../../index.html">音视频</a><span class="sep">/</span><a href="../../index.html#audio">音频</a><span class="sep">/</span>PCM</nav>
+  <header class="hero">
+    <div class="eyebrow">音视频 · 音频</div>
+    <h1>PCM</h1>
+    <p class="lede">未压缩的声音数据：它是什么、怎么播、怎么加工。</p>
+  </header>
+
+  <div class="label">文章<span class="c">1</span></div>
+  <div class="topics">
+    <a class="topic" href="pcm-to-speaker.html">
+      <span class="t">从 PCM 到喇叭</span>
+      <span class="d">PCM 是一串按时间排列的数字。采样率、位深、声道数怎么决定它的含义，AudioTrack 怎么把它播出来，以及在哪里、按什么规则加工它。</span>
+      <span class="m">15 节 · 4 个交互演示</span>
+    </a>
+  </div>
+
+  <div class="label">交互演示<span class="c">4</span></div>
+  <div class="demos">
+    <a class="demo" href="demos/sampling.html"><span class="t">采样成数组</span><span class="d">拖音高和音量看数组怎么变，听同一个数组按不同采样率播放。</span></a>
+    <a class="demo" href="demos/playback.html"><span class="t">AudioTrack 播放过程</span><span class="d">慢放写入、阻塞、缓冲区和喇叭输出，看 underrun 怎么发生。</span></a>
+    <a class="demo" href="demos/sample-rate.html"><span class="t">采样率决定最高音</span><span class="d">把振动调到超过采样率一半，看混叠出的假低频。</span></a>
+    <a class="demo" href="demos/frequency.html"><span class="t">PCM 里的频率变化</span><span class="d">do、mi、sol 和和弦的时频图，边听边看。</span></a>
+  </div>
+
+  <div class="label">前一步</div>
+  <div class="demos">
+    <a class="demo" href="../codec/index.html"><span class="t">← 音频解码</span><span class="d">文件里的压缩数据是什么，怎么解成 PCM。</span></a>
+  </div>
+</main>
+</body>
+</html>

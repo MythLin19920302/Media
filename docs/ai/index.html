@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../assets/kb.css?v=6">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../index.html">知识库</a><span class="sep">/</span>AI</nav>
+  <header class="hero">
+    <h1>AI</h1>
+    <p class="lede">AI 是怎么预测的：从一行数据算到一个概率。先看能动手的那一页把整件事走一遍，再按下面的顺序往下读：每一篇都接着上一篇，前面讲过的，后面直接拿来用。</p>
+  </header>
+
+  <!-- AI 这个领域的目录页。现在只有机器学习一个分类；以后加分类，就在下面再加一个 <h2 class="kind"> 和它的几段。
+       按知识的先后排：先看地图（ml/prediction.html）；第一段讲模型怎么学会预测（数据 → 学习 → 神经网络 → 树）；
+       第二段讲准不准、怎么用到线上；第三段是大模型。卡片之间的 .bridge 是承接句。
+       所有页面共用一份示例数据：音乐 App 首页推荐的 3000 次曝光，正样本是"点开并听满 30 秒"，由脚本按固定种子生成。
+       新增子页时插到它的前提知识之后，补上前后两句承接，并跟着改每篇末尾的"上一篇、下一篇"。 -->
+  <div class="label">先看地图</div>
+  <div class="topics path">
+    <a class="topic" href="ml/prediction.html">
+      <span class="no" aria-hidden="true">0</span>
+      <span class="t">AI 是怎么预测的</span>
+      <span class="d">一次预测从一行数据算到一个概率：特征怎么变成数字，加权求和怎么压成概率，模型怎么从样本里学，神经网络怎么一层层算、错了怎么往回分，准不准怎么量。每一步都能动手试。</span>
+      <span class="m">11 站 · 7 个可以动手的小实验 · 示例数据用脚本生成</span>
+    </a>
+  </div>
+
+  <h2 class="kind" id="ml">机器学习<span class="n">7 篇</span></h2>
+  <div class="label">第一段 · 模型怎么学会预测<span class="c">4</span></div>
+  <div class="topics path">
+    <p class="bridge">地图有了。先看模型吃进去的是什么：一行样本、一串特征、一个正或负的标签。</p>
+    <a class="topic" href="ml/features-samples.html">
+      <span class="no" aria-hidden="true">1</span>
+      <span class="t">特征和样本：模型吃进去的是什么</span>
+      <span class="d">模型吃进去的是一张表：一行样本怎么从日志拼出来，正样本、负样本怎么定，负样本太多怎么降采样再校正，原始字段怎么变成数，交叉特征、标准化，以及让离线指标好看、上线却不灵的数据泄漏。</span>
+      <span class="m">13 节 · 4 张图</span>
+    </a>
+    <p class="bridge">数据备好了。最简单的模型只有一组权重，看它怎么从全是 0 一步步调出来。</p>
+    <a class="topic" href="ml/gradient-descent.html">
+      <span class="no" aria-hidden="true">2</span>
+      <span class="t">损失和梯度下降：模型是怎么学的</span>
+      <span class="d">16 个参数从全是 0 开始：差多少怎么量（对数损失），往哪挪（梯度），一步挪多大（学习率），600 轮之后权重变成了什么，正则化和优化器各管什么。</span>
+      <span class="m">14 节 · 4 张图</span>
+    </a>
+    <p class="bridge">一组加权和画不出"晚上爱听长歌、白天爱听短歌"这种规律。神经网络把加权和叠成几层，学的办法还是同一个。</p>
+    <a class="topic" href="ml/neural-network.html">
+      <span class="no" aria-hidden="true">3</span>
+      <span class="t">神经网络：一层一层算出来</span>
+      <span class="d">一个 21 个参数的小网络，把一次预测和一次学习里的每个乘法、加法都写出来：前向传播、反向传播、死掉的单元；再看 401 个参数的网络学到了什么，什么时候开始背答案。</span>
+      <span class="m">15 节 · 4 张图</span>
+    </a>
+    <p class="bridge">不做加权求和也能预测：决策树问一串是非题，GBDT 把很多棵小树一棵接一棵地加起来。</p>
+    <a class="topic" href="ml/trees-gbdt.html">
+      <span class="no" aria-hidden="true">4</span>
+      <span class="t">决策树和 GBDT：另一类常用算法</span>
+      <span class="d">不做加权求和，改问一串是非题：一棵树怎么切，为什么会背答案，随机森林，GBDT 怎么一棵棵修前面的错，一条样本的分数怎么加出来，什么时候该用树。</span>
+      <span class="m">14 节 · 4 张图</span>
+    </a>
+  </div>
+
+  <div class="label">第二段 · 准不准，怎么用<span class="c">2</span></div>
+  <div class="topics path">
+    <p class="bridge">几个模型都有了，各给一个概率。拿没见过的数据考一考：谁准，准多少，差别是不是真的。</p>
+    <a class="topic" href="ml/evaluation.html">
+      <span class="no" aria-hidden="true">5</span>
+      <span class="t">评估：模型准不准</span>
+      <span class="d">准确率为什么会骗人，混淆矩阵、精确率和召回率，ROC 和 AUC，校准，训练、验证、测试怎么切，过拟合，600 条样本能分出多大的差别，离线和线上为什么对不上。</span>
+      <span class="m">14 节 · 4 张图</span>
+    </a>
+    <p class="bridge">放到线上：用户上亿、歌上千万，一次刷新只有一百来毫秒，同样的想法要怎么搭起来。</p>
+    <a class="topic" href="ml/ctr-recommendation.html">
+      <span class="no" aria-hidden="true">6</span>
+      <span class="t">推荐和点击率预估：工业界怎么预测</span>
+      <span class="d">同样的想法放到上亿用户：召回、粗排、精排分几段，样本从哪来，ID 怎么变成向量，FM、Wide & Deep、双塔这些模型各解决了什么，概率怎么变成排序，模型怎么上线。</span>
+      <span class="m">14 节 · 4 张图</span>
+    </a>
+  </div>
+
+  <div class="label">第三段 · 大模型<span class="c">1</span></div>
+  <div class="topics path">
+    <p class="bridge">最后换一个问题：不问这首歌会不会被听完，而是问下一个字是什么。大模型用的还是同一套办法，只是规模大得多。</p>
+    <a class="topic" href="ml/llm.html">
+      <span class="no" aria-hidden="true">7</span>
+      <span class="t">大语言模型：一个字一个字地预测</span>
+      <span class="d">换一个问题：预测下一个字。先用这个知识库自己的文字数出一个最简单的语言模型，再换成神经网络，手算一遍自注意力，看大模型怎么训练、怎么生成、为什么会说得通顺却错。</span>
+      <span class="m">14 节 · 4 张图</span>
+    </a>
+  </div>
+
+  <div class="label">接着读</div>
+  <div class="demos">
+    <a class="demo" href="../av/index.html"><span class="t">音视频 →</span><span class="d">另一个领域：一个视频文件怎么变成画面和声音。</span></a>
+    <a class="demo" href="../network/index.html"><span class="t">网络 →</span><span class="d">一个请求从连上 Wi-Fi 到页面回来的十二步。</span></a>
+  </div>
+</main>
+</body>
+</html>
