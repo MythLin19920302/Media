@@ -225,6 +225,9 @@ h3{margin:26px 0 0;font-size:16.5px;font-weight:700}
 .peel div{display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:12px;align-items:center;border-radius:16px;padding:10px 16px;background:var(--tint);font-size:14.5px}
 .peel .k{font-weight:700;color:var(--tone)}
 .peel .to{font-family:var(--mono);font-size:12px;color:var(--tone);white-space:nowrap}
+.peel a{font-weight:700;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:4px;white-space:nowrap}
+.peel a:hover{text-decoration-color:currentColor}
+a.btn{display:inline-block;padding:9px 20px;font-size:15px}
 
 /* 入门：设备卡片、领到的配置、代码块 */
 .devs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}
@@ -428,7 +431,7 @@ h1 span{animation:sheen 7s linear infinite}
         </tbody>
       </table>
     </div>
-    <div class="more"><span class="k">细看</span><a href="physical-layer.html">物理层：比特怎么变成电、光和无线电</a></div>
+    <div class="more"><span class="k">细看</span><a href="physical-layer.html">物理层：比特怎么变成电、光和无线电</a><a href="isp-access.html">宽带接入：你家怎么连进运营商</a><a href="isp-backbone.html">运营商内部：地址怎么分、包怎么跨网</a><a href="mobile-network.html">移动网络：用流量时怎么走</a></div>
   </section>
 
   <!-- ============ 七层和实际的分法 ============ -->
@@ -482,6 +485,8 @@ h1 span{animation:sheen 7s linear infinite}
       <div><span class="k">ANDROID</span>系统自动完成。Wi-Fi 的详情页里能看到这四样，<code>adb shell ip addr</code> 也能看到地址和掩码</div>
       <div><span class="k">领不到会怎样</span>一直停在"正在获取 IP 地址"，后面所有步骤都无从谈起</div>
     </div>
+    <p>手机领到的是家里这个小网里的地址。路由器自己也要入网：它向运营商拨号，领一个外面用的地址，那一套流程在运营商那一侧。用流量上网时没有这一步，手机的地址由运营商的核心网直接分配。</p>
+    <div class="more"><span class="k">细看</span><a href="isp-access.html#pppoe">宽带接入：路由器怎么拨号领地址</a><a href="mobile-network.html#session">移动网络：手机怎么领地址</a></div>
   </section>
 
   <div class="flow" aria-hidden="true"><i class="c3"></i><span>有了 IP、掩码、网关、DNS</span></div>
@@ -733,12 +738,13 @@ h1 span{animation:sheen 7s linear infinite}
     </ul>
     <h3>家里那台多做一件：换地址（NAT）</h3>
     <p><code>192.168.1.23</code> 是私有地址，出不了门。家里的路由器把源 IP 换成自己的公网地址，源端口换成一个它自己挑的号，并记一笔："40001 这个端口对应 192.168.1.23 的 51234"。服务器的回信发到公网地址的 40001，路由器查到这一笔，再换回来交给手机。全家的设备就这样共用一个公网地址。</p>
+    <p>这里假设路由器领到的就是公网地址。很多家庭领到的是 <code>100.64</code> 开头的地址，运营商那边还要再换一次，几百户共用一个公网地址，这叫 CGNAT。</p>
     <p class="note">副作用是外面的机器没法主动连进来，因为路由器的账本里没有对应的记录。视频通话、联机游戏要"打洞"，就是在想办法先让账本里出现这一笔。</p>
     <h3>路由表是谁填的</h3>
     <p>家里的路由器只有两三行，是它开机后和运营商商量出来的。运营商的路由器有几十万到上百万行，靠路由协议自动维护：相邻的路由器不停地互相通告"哪些网段从我这里走得通"，各自算出去往每个网段最好的下一跳。运营商之间用的协议叫 BGP。哪条线路断了，通告一变，表跟着变，包就自动绕路走。</p>
     <h3>出了问题谁来通知：ICMP</h3>
     <p>IP 自己不保证送达，但路由器丢包时可以回一条 ICMP 消息说明原因，比如"TTL 用完了""这个地址去不了""包太大又不许分片"。<code>ping</code> 用的也是 ICMP：发一个"回显请求"，对方回一个"回显应答"，量出来的就是一个来回的时间。</p>
-    <div class="more"><span class="k">细看</span><a href="physical-layer.html">物理层：每一段路上是什么信号</a><a href="vpn.html">VPN：这条路上再套一层</a></div>
+    <div class="more"><span class="k">细看</span><a href="isp-access.html">宽带接入：第 2 台路由器怎么认出你家</a><a href="isp-access.html#cgnat">CGNAT：运营商再换一次地址</a><a href="isp-backbone.html">运营商内部：中间几台怎么转</a><a href="physical-layer.html">物理层：每一段路上是什么信号</a><a href="vpn.html">VPN：这条路上再套一层</a></div>
   </section>
 
   <div class="flow" aria-hidden="true"><i class="c3"></i><span>10 毫秒后到达对方</span></div>
@@ -907,7 +913,9 @@ cache-control: max-age=600
     <ul>
       <li><strong>这个 IP 后面不是一台机器。</strong>大网站的同一个地址在全世界很多机房同时存在，路由器把你送到最近的那个。所以同一个网址，不同地方的人连上的不是同一台机器。</li>
       <li><strong>回程走的是同一套流程，方向反过来。</strong>服务器发回的包，目的地址是你家路由器的公网地址和它挑的那个端口。路由器查到第 6 步记的那一笔，把地址和端口换回手机的，再用手机的 MAC 装帧发过去。</li>
+      <li><strong>回到你家之前，运营商那边也查了一路的表。</strong>骨干网按目的地址找到你家所在城市的那台接入服务器，接入服务器按地址查到你家的拨号会话和线路标签，光纤那头的设备再按标签找到你家的光猫。每一台都是"拿一个号码，查出下一个号码"。</li>
     </ul>
+    <div class="more"><span class="k">细看</span><a href="isp-access.html#return">回程：一路查表找回你家</a><a href="mobile-network.html#gtp">用流量时：隧道和隧道号</a></div>
   </section>
 
   <div class="flow" aria-hidden="true"><i class="c4"></i><span>页面收完了</span></div>
@@ -1014,7 +1022,19 @@ cache-control: max-age=600
         </tbody>
       </table>
     </div>
-    <div class="more"><span class="k">子页</span><a href="physical-layer.html">物理层</a><a href="dns.html">DNS</a><a href="tls.html">TLS 握手</a><a href="http2-http3.html">HTTP/2 与 HTTP/3</a><a href="tcp-congestion.html">拥塞控制</a><a href="vpn.html">VPN</a><a href="streaming-protocols.html">流媒体协议</a></div>
+  </section>
+
+  <!-- ============ 接着读 ============ -->
+  <section class="panel" id="next">
+    <h2>接着读：按这个顺序</h2>
+    <p class="one">这一页是地图。下面十篇分三段，每一篇都接着上一篇往下讲，前面讲过的后面直接拿来用。</p>
+    <div class="peel">
+      <div class="L3"><span class="k">第一段</span><span>包怎么送到对方：<a href="physical-layer.html">1 物理层</a> → <a href="isp-access.html">2 宽带接入</a> → <a href="mobile-network.html">3 移动网络</a> → <a href="isp-backbone.html">4 运营商内部</a></span><span class="to">由近及远</span></div>
+      <div class="L4"><span class="k">第二段</span><span>两端怎么对话：<a href="dns.html">5 DNS</a> → <a href="tcp-congestion.html">6 拥塞控制</a> → <a href="tls.html">7 TLS 握手</a> → <a href="http2-http3.html">8 HTTP/2 与 HTTP/3</a></span><span class="to">从下往上</span></div>
+      <div class="L7"><span class="k">第三段</span><span>拼起来用：<a href="vpn.html">9 VPN</a> → <a href="streaming-protocols.html">10 流媒体协议</a></span><span class="to">综合</span></div>
+    </div>
+    <p><a class="btn go" href="physical-layer.html">从第 1 篇读起：物理层 →</a></p>
+    <p class="note">每篇末尾都有上一篇和下一篇。各篇讲什么、为什么排在这个位置，见<a href="index.html" style="text-decoration:underline;text-underline-offset:3px">网络主题页</a>。</p>
   </section>
 
   <div class="foot"><span>docs/general/network/journey.html</span><span>耗时实测 · 地址为示意值 · 示例帧按规范构造</span></div>

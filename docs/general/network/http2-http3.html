@@ -56,7 +56,7 @@ pre+.caption,.tbl+.caption{margin-top:-8px}
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 音视频学习笔记</div>
+  <div class="eyebrow">通用 · 网络</div>
   <h1>HTTP/2 与 HTTP/3：一条连接上怎么跑很多请求</h1>
   <p class="lede"><a href="journey.html#s8">全流程的第 8 步</a>里，手机把一个 HTTP 请求交给连接，一个来回之后页面就回来了。这份笔记把那一步放大：请求和响应在连接上长什么样，HTTP/1.1 为什么一次只能跑一个，HTTP/2 怎么把一条连接分给很多个请求，HTTP/3 又为什么连 TCP 都换掉了。</p>
   <div class="journey" aria-label="实测：三个请求的耗时，和响应头的大小">
@@ -653,6 +653,13 @@ val player = ExoPlayer.Builder(context)
   </table></div>
   <p class="foot">2026-11-20 对 <code>https://mythlin19920302.github.io/Media/</code> 实测。请求和响应的文本、状态码、缓存和 Range 的行为来自 curl 8.7.1：<code>curl -v --http1.1 --compressed</code>、<code>curl -v --http2 --compressed</code>，以及 <code>curl -s -D -</code> 加上 <code>-r 0-99</code>、<code>-H 'If-None-Match: …'</code> 等参数。帧的顺序和长度、HPACK 的字节数、65,535 字节处的停顿、PING 的往返时间，来自一个用 Python 的 ssl 模块直接收发 HTTP/2 帧的脚本（TLS 1.2，ALPN 选 <code>h2</code>），头的压缩和解压调用的是系统自带的 nghttp2，和 curl 用的是同一个库。三个请求的耗时是这个脚本对两种协议各测 12 次的中位数，不含握手。Alt-Svc 用 <code>curl -sI</code> 查，HTTPS 记录用 <code>dig TYPE65</code> 查，<code>www.cloudflare.com</code> 的协议版本取自它的 <code>/cdn-cgi/trace</code>。本机的 curl 没有编译 HTTP/3，所以没有 HTTP/3 的耗时数据；QUIC 和 HTTP/3 的内容依据 RFC 9000、9114、9204，HTTP/2 依据 RFC 9113 和 7541。</p>
 </section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 8 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="tls.html"><span class="t">← 上一篇：TLS 握手</span><span class="d">TLS 握手：加密的连接是怎么建起来的</span></a>
+    <a class="demo" href="vpn.html"><span class="t">下一篇：VPN →</span><span class="d">十二步都细看过了。VPN 把整条路再套一层，正好用它把前面每一篇串起来复习一遍。</span></a>
+  </div>
+</nav>
 </main>
 </div>
 </body>

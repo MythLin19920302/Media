@@ -54,7 +54,7 @@
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 音视频学习笔记</div>
+  <div class="eyebrow">通用 · 网络</div>
   <h1>TLS 握手：加密的连接是怎么建起来的</h1>
   <p class="lede">总览里说，TCP 连上之后还要再握一次手，花了 15 毫秒，之后的内容路上就没人看得懂了。这份笔记把这 15 毫秒拆开：两边各发了哪几条消息、每条多大、证书凭什么可信、密钥是怎么当着所有人的面商量出来的。</p>
   <div class="journey" aria-label="一次 TLS 1.3 握手两边各发了多少字节">
@@ -598,6 +598,13 @@ Root YR        sha256/fk6IOKit1ild5647BH06ujSIq5XbCgqlbYl6ANhhi88=</code></pre>
   </table></div>
   <p class="foot">握手的消息、字节数、证书字段和各种协商结果，是 2026-11-20 用 OpenSSL 3.6.1 连 <code>mythlin19920302.github.io:443</code> 得到的：主要是 <code>openssl s_client -connect … -servername … -alpn h2,http/1.1 -groups X25519 -trace</code>，另外换用 <code>-msg</code>、<code>-tls1_2</code>、<code>-ciphersuites</code>、<code>-sess_out</code> 和 <code>-sess_in</code>、<code>-status</code>，以及不加 <code>-groups</code> 的默认配置。证书用 <code>openssl x509 -text</code> 解析，四项检查的报错来自对存下来的证书链跑 <code>openssl verify</code>。耗时是 <code>curl -w</code> 两种版本各 20 次的中位数（curl 8.7.1，TLS 库是 LibreSSL 3.3.6）。加密速度来自 <code>openssl speed</code>。消息的含义、记录层的格式和 0-RTT 的重放问题依据 RFC 8446。Android 一节依据平台文档和 OkHttp 的行为，没有在真机上实测。</p>
 </section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 7 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="tcp-congestion.html"><span class="t">← 上一篇：拥塞控制</span><span class="d">拥塞控制：TCP 怎么决定发多快</span></a>
+    <a class="demo" href="http2-http3.html"><span class="t">下一篇：HTTP/2 与 HTTP/3 →</span><span class="d">加密的连接建好，HTTP 才开始要页面。HTTP/3 更进一步，把 TCP 和 TLS 合成了一层。</span></a>
+  </div>
+</nav>
 </main>
 </div>
 </body>

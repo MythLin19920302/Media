@@ -39,7 +39,7 @@
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 音视频学习笔记</div>
+  <div class="eyebrow">通用 · 网络</div>
   <h1>拥塞控制：TCP 怎么决定发多快</h1>
   <p class="lede"><a href="journey.html">全流程</a>那一页用几句话带过了这件事：发送方先只发 10 段，没丢就翻倍，丢了就降下来。这份笔记把这几句话展开。拥塞窗口是什么，按什么规则涨和降，丢包是怎么发现的，超时要等多久，CUBIC 和 BBR 各换了什么思路，最后落到边下边播的视频上。</p>
   <div class="journey" aria-label="拥塞窗口的四个关键数">
@@ -652,6 +652,13 @@ net.inet.tcp.rexmt_slop: 200</code></pre>
   </table></div>
   <p class="foot">两张窗口随时间变化的图不是抓包。第一张按 RFC 5681 的规则逐个来回模拟：初始窗口 10 段，一个来回 10 ms，路径上限 60 段，超过上限每次丢 1 段并减半，第 440 ms 整轮丢失，RTO 取 210 ms。第二张按 RFC 9438 的窗口函数（C = 0.4，β = 0.7）和 Reno 的规则算：丢包前 500 段，一个来回 100 ms。各表里的来回数、速率、K 值、超时的累计时间，都是按文中写出的公式用脚本算的。标了"实测"的数来自一台 macOS 15.7.5 的机器：<code>sysctl net.inet.tcp</code> 的默认值，和用 <code>getsockopt(TCP_CONNECTION_INFO)</code> 读的三条到公共 HTTP 服务器的连接（握手后的窗口、ssthresh、SRTT、RTTVAR；请求在途时的 RTO 读了 12 次，和 SRTT + 4 × RTTVAR + 200 相差 0 到 3 ms）。Linux 的默认值取自内核文档，没有在 Linux 或 Android 设备上实测。</p>
 </section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 6 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="dns.html"><span class="t">← 上一篇：DNS</span><span class="d">DNS：域名是怎么查到 IP 的</span></a>
+    <a class="demo" href="tls.html"><span class="t">下一篇：TLS 握手 →</span><span class="d">TCP 送的是明文，路上谁都看得见。TLS 在它上面再握一次手，把内容加密。</span></a>
+  </div>
+</nav>
 </main>
 </div>
 </body>

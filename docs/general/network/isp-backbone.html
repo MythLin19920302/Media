@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>运营商内部：地址怎么分下来，包怎么跨城跨网</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+<style>
+/* 本页独有：按位拆开的字段、较宽的图 */
+.bits{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;font-family:var(--font-mono);font-size:13px}
+.bits div{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:7px 10px;line-height:1.5}
+.bits b{display:block;color:var(--accent);font-weight:500;letter-spacing:.04em}
+.bits span{font-family:var(--font-body);font-size:12.5px;color:var(--muted)}
+figure.fig svg.wide{max-width:700px;min-width:640px}
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+.fig .node{fill:var(--surface);stroke:var(--accent);stroke-width:1.5}
+.fig .dash{stroke-dasharray:4 3}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw,code.nw,.tbl code{white-space:nowrap}
+.caption+p{margin-top:14px}
+.caption+ul{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 网络</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#layers">运营商的网分几层</a></li>
+    <li><a href="#allocation">地址是怎么分下来的</a></li>
+    <li><a href="#whois">查一个地址归谁</a></li>
+    <li><a href="#asn">自治系统和 AS 号</a></li>
+    <li><a href="#bgp">BGP：网和网怎么交换路由</a></li>
+    <li><a href="#igp">一张网内部怎么找路</a></li>
+    <li><a href="#mpls">MPLS：骨干网里按标签转发</a></li>
+    <li><a href="#hop">每一跳都换一个新帧</a></li>
+    <li><a href="#peering">运营商之间怎么连</a></li>
+    <li><a href="#cdn">CDN 和运营商</a></li>
+    <li><a href="#reassign">地址会被收回和转手</a></li>
+    <li><a href="#lookup">自己能查到什么</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">通用 · 网络</div>
+  <h1>运营商内部：地址怎么分下来，包怎么跨城跨网</h1>
+  <p class="lede">全流程那一页里，包从家里出去要过 6 台路由器，中间 4 台是运营商的。这一页把它们展开：运营商的网怎么分层，地址从哪来、怎么一级级分到你家，别的网怎么知道这些地址在这里，包在骨干网里怎么按标签转发，又怎么从一家运营商交到另一家。</p>
+  <div class="journey" aria-label="IPv4 地址一级级分下来的数量">
+    <div class="step"><span class="k">IANA 管的 IPv4</span><span class="v">256 个 /8</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">APNIC 从 IANA 领到</span><span class="v">45 个 /8</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">APNIC 分给中国大陆</span><span class="v">342,941,440</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">AS4134 宣告的</span><span class="v hex">110,663,168</span></div>
+  </div>
+  <p class="caption">前三个数来自 IANA 的 IPv4 登记表和 APNIC 的分配统计，第四个是 RIPEstat 看到中国电信 163 骨干网（AS4134）宣告的 IPv4 地址数，都是 2026-11-23 查的。运营商内部的设备、地址、MAC 和标签是示意，用的是文档专用的地址段。这一页展开的是 <a href="journey.html#s6">一个请求是怎么送到的</a> 里"转发"那一步的中间几台。</p>
+</header>
+
+<section id="layers">
+  <h2><span class="n">01</span>运营商的网分几层</h2>
+  <p>运营商（ISP，给你接网的公司）的网按覆盖范围分层：越靠近用户，设备越多、每台管的户越少；越往里，设备越少、链路越粗。</p>
+  <figure class="fig">
+    <div class="card"><svg class="wide" viewBox="0 0 700 222" role="img" aria-label="七个区域从左到右：家里（第 1 台）、接入网（光猫、OLT）、汇聚（交换机），这三台设备不减 TTL；城域网（第 2 台 BRAS、第 3 台核心）、骨干网（第 4 台）、互联（第 5 台）、对方的网（第 6 台机房路由器）。">
+      <defs><marker id="bb-a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker></defs>
+      <g class="band"><rect x="6" y="40" width="72" height="128" rx="8"/><rect x="84" y="40" width="132" height="128" rx="8"/><rect x="222" y="40" width="60" height="128" rx="8"/><rect x="288" y="40" width="148" height="128" rx="8"/><rect x="442" y="40" width="88" height="128" rx="8"/><rect x="536" y="40" width="74" height="128" rx="8"/><rect x="616" y="40" width="78" height="128" rx="8"/></g>
+      <g text-anchor="middle"><text x="42" y="28">家里</text><text x="150" y="28">接入网</text><text x="252" y="28">汇聚</text><text x="362" y="28">城域网</text><text x="486" y="28">骨干网</text><text x="573" y="28">互联</text><text x="655" y="28">对方的网</text></g>
+      <line class="out" x1="42" y1="88" x2="688" y2="88" marker-end="url(#bb-a1)"/>
+      <g class="ghost"><rect x="105" y="77" width="22" height="22" rx="4"/><rect x="173" y="77" width="22" height="22" rx="4"/><rect x="241" y="77" width="22" height="22" rx="4"/></g>
+      <g class="node"><circle cx="42" cy="88" r="14"/><circle cx="324" cy="88" r="14"/><circle cx="398" cy="88" r="14"/><circle cx="486" cy="88" r="14"/><circle cx="573" cy="88" r="14"/><circle cx="655" cy="88" r="14"/></g>
+      <g text-anchor="middle">
+        <text class="a" x="42" y="93">1</text><text class="a" x="324" y="93">2</text><text class="a" x="398" y="93">3</text><text class="a" x="486" y="93">4</text><text class="a" x="573" y="93">5</text><text class="a" x="655" y="93">6</text>
+        <text x="42" y="126">家里的</text><text x="42" y="144">路由器</text>
+        <text class="m" x="116" y="126">光猫</text><text class="m" x="184" y="126">OLT</text>
+        <text class="m" x="252" y="126">汇聚</text><text class="m" x="252" y="144">交换机</text>
+        <text x="324" y="126">BRAS</text>
+        <text x="398" y="126">城域网</text><text x="398" y="144">核心</text>
+        <text x="486" y="126">骨干网</text><text x="486" y="144">路由器</text>
+        <text x="573" y="126">出口</text><text x="573" y="144">互联点</text>
+        <text x="655" y="126">机房</text><text x="655" y="144">路由器</text>
+      </g>
+      <path class="lead" d="M105 180V186H263V180M310 180V186H587V180" fill="none"/>
+      <g text-anchor="middle"><text class="m" x="184" y="206">这三台不减 TTL</text><text class="m" x="448" y="206">运营商的路由器，全流程里的第 2 到第 5 台</text></g>
+    </svg></div>
+    <figcaption>示意。圆圈是全流程那一页的 6 台路由器，方块是只转发帧、不查 IP 路由表的设备。第 3 到第 5 台实际落在哪一层，要看运营商怎么建网、目的地在哪；同城两户之间的流量到城域网就可能折返。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>层</th><th>在哪，做什么</th><th>全流程里</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">接入网</td><td>你家到最近的运营商机房：光猫、光纤、OLT（光线路终端），把一户户的线收进来</td><td>不算跳数</td></tr>
+      <tr><td class="nw">汇聚</td><td>区县机房里的交换机，把很多台 OLT 的上行并到几根粗光纤上</td><td>不算跳数</td></tr>
+      <tr><td class="nw">城域网</td><td>一个城市的核心机房。BRAS 认出你家、发地址；核心路由器收拢全城的流量，交给骨干网</td><td class="nw">第 2、3 台</td></tr>
+      <tr><td class="nw">骨干网</td><td>省级骨干网连起一个省的各个城市，国家骨干网连起各省</td><td class="nw">第 4 台</td></tr>
+      <tr><td class="nw">互联和出口</td><td>少数几个城市，和别的运营商、数据中心交换流量，出境（第 09 节）</td><td class="nw">第 5 台</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>BRAS 在城域网的边上。</strong>BRAS（宽带接入服务器，新的叫法是 BNG）是你家拨号的另一头：核对账号，发公网地址，按套餐限速。它是去程的第一台、回程的最后一台运营商路由器，细节见 <a href="isp-access.html">宽带接入</a>。</li>
+    <li><strong>光猫、OLT、汇聚交换机只转发帧</strong>，不查 IP 路由表，不减 TTL，traceroute 里看不到。它们线上的信号见 <a href="physical-layer.html#chain">物理层</a>。</li>
+    <li><strong>每一层只需要知道下一层的大概。</strong>骨干网只知道"这段地址在哪个城市"，城域网知道"在哪台 BRAS 上"，只有 BRAS 知道每个地址给了哪一户。这要求地址按地区成块地分，下一节讲。</li>
+    <li><strong>用手机流量时，前两层换成基站和移动核心网</strong>，见 <a href="mobile-network.html">移动网络</a>。</li>
+  </ul>
+</section>
+
+<section id="allocation">
+  <h2><span class="n">02</span>地址是怎么分下来的</h2>
+  <p>你家拨号拿到的公网地址（例子里是 203.0.113.7）不是运营商自己编的。全世界的 IP 地址只有一个源头：IANA（互联网号码分配机构）把大块分给 5 个 RIR（地区互联网注册机构：亚太的 APNIC、北美的 ARIN、欧洲中东的 RIPE NCC、拉美的 LACNIC、非洲的 AFRINIC），RIR 再分给会员。会员叫 LIR（本地注册机构），一般是运营商、云厂商，它们再往下分。亚太还有国家一级的 NIR，比如中国大陆的 CNNIC，国内单位可以经它申请。每一级只能在上一级给它的那块里再分。</p>
+  <p><code>185.199.108.0/22</code> 这种写法叫前缀，也叫网段：前 22 位固定，后 10 位随便变，共 2<sup>10</sup> = 1024 个地址。斜杠后的数越小块越大：/24 是 256 个，/16 是 65,536 个，/8 是 16,777,216 个，正好是整个 IPv4（2<sup>32</sup> 个）的 1/256。</p>
+  <h3>IANA：256 个 /8</h3>
+  <p>IANA 的 IPv4 登记表把 256 个 /8 一个个列了出来。129 个分给了 RIR：APNIC 45、ARIN 36、RIPE NCC 35、LACNIC 9、AFRINIC 4。92 个是 RIR 出现之前直接分给机构的，例如 17/8 给了 Apple，19/8 给了 Ford，214/8 和 215/8 给了美国国防部，其中 75 个现在由各 RIR 代管。剩下 35 个保留：0/8、10/8（私有地址）、127/8（本机）、224/8 到 239/8（组播）、240/8 到 255/8（留作将来）。</p>
+  <h3>APNIC 分给了谁</h3>
+  <p>每个 RIR 每天发布一个分配统计文件，一行一块：哪个经济体、什么类型、从哪开始、多大、哪天分的。把 APNIC 2026-11-23 的文件按经济体加起来（IPv6 折成 /32 来数）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>经济体</th><th class="num">IPv4 地址</th><th class="num">折合 /8</th><th class="num">IPv6（折合 /32）</th><th class="num">AS 号</th></tr></thead>
+    <tbody>
+      <tr><td>中国大陆</td><td class="num">342,941,440</td><td class="num">20.44</td><td class="num">68,539</td><td class="num">6,399</td></tr>
+      <tr><td>日本</td><td class="num">188,593,920</td><td class="num">11.24</td><td class="num">10,158</td><td class="num">1,267</td></tr>
+      <tr><td>韩国</td><td class="num">112,474,944</td><td class="num">6.70</td><td class="num">5,272</td><td class="num">1,149</td></tr>
+      <tr><td>澳大利亚</td><td class="num">45,814,528</td><td class="num">2.73</td><td class="num">9,622</td><td class="num">2,955</td></tr>
+      <tr><td>印度</td><td class="num">41,825,280</td><td class="num">2.49</td><td class="num">6,336</td><td class="num">6,271</td></tr>
+      <tr><td>APNIC 合计，89 个经济体</td><td class="num">889,094,336</td><td class="num">52.99</td><td class="num">141,182</td><td class="num">31,518</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>中国大陆占了 APNIC 分出的 38.6% 的 IPv4 和 48.5% 的 IPv6</strong>，经 CNNIC 申请的也算在里面。</li>
+    <li><strong>APNIC 分出去的比 IANA 给它的多。</strong>45 个 /8 里分出了 44.6 个；另有 4.0 个 /8 在它代管的早年地址里，4.3 个 /8 落在 IANA 记在别的 RIR 名下的 /8 里，是从别的 RIR 转过来的，其中 IPv4 分完以后经转让转入的约 1.65 个 /8（第 11 节）。</li>
+  </ul>
+  <h3>分完以后</h3>
+  <p>2011 年 2 月 3 日，IANA 把最后 5 个 /8 一家一个分了出去：102/8 给 AFRINIC，103/8 给 APNIC，104/8 给 ARIN，179/8 给 LACNIC，185/8 给 RIPE NCC。185.199.108.153 就在最后这批的 185/8 里。</p>
+  <p>2011 年 4 月 15 日，APNIC 只剩最后一个 /8（103/8），此后每家会员最多从里面领一个 /22（1024 个地址），2019 年起减到 /23。如今 103/8 已分出 93.6%，拆成了 23,113 条记录。RIPE NCC 在 2012 年 9 月 14 日也只剩最后一个 /8，2019 年 11 月 25 日发出了最后一块 /22。</p>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 0 600 372" role="img" aria-label="地址分配的树：IANA 的 256 个 /8 里 APNIC 领到 45 个；APNIC 分给中国大陆 342,941,440 个地址；AS4134 宣告其中 110,663,168 个；再往下是城市、一台 BRAS 的地址池 203.0.113.0/24、一户 203.0.113.7，这三级是示意。每一级右边是同级的其他几家。">
+      <path class="lead" fill="none" d="M138 50V64M138 57H538V64M250 57V64M346 57V64M442 57V64M138 102V116M138 109H538V116M250 109V116M346 109V116M442 109V116M138 154V168M138 161H442V168M250 161V168M346 161V168M138 206V220M138 213H250V220M138 258V272M138 265H250V272M138 310V324M138 317H250V324"/>
+      <g class="hot"><rect x="82" y="12" width="112" height="38" rx="6"/><rect x="82" y="64" width="112" height="38" rx="6"/><rect x="82" y="116" width="112" height="38" rx="6"/><rect x="82" y="168" width="112" height="38" rx="6"/></g>
+      <g class="hot dash"><rect x="82" y="220" width="112" height="38" rx="6"/><rect x="82" y="272" width="112" height="38" rx="6"/><rect x="82" y="324" width="112" height="38" rx="6"/></g>
+      <g class="ghost"><rect x="206" y="64" width="88" height="38" rx="6"/><rect x="302" y="64" width="88" height="38" rx="6"/><rect x="398" y="64" width="88" height="38" rx="6"/><rect x="494" y="64" width="88" height="38" rx="6"/><rect x="206" y="116" width="88" height="38" rx="6"/><rect x="302" y="116" width="88" height="38" rx="6"/><rect x="398" y="116" width="88" height="38" rx="6"/><rect x="494" y="116" width="88" height="38" rx="6"/><rect x="206" y="168" width="88" height="38" rx="6"/><rect x="302" y="168" width="88" height="38" rx="6"/><rect x="398" y="168" width="88" height="38" rx="6"/></g>
+      <g class="ghost dash"><rect x="206" y="220" width="88" height="38" rx="6"/><rect x="206" y="272" width="88" height="38" rx="6"/><rect x="206" y="324" width="88" height="38" rx="6"/></g>
+      <g><text class="m" x="6" y="36">IANA</text><text class="m" x="6" y="88">RIR</text><text class="m" x="6" y="140">经济体</text><text class="m" x="6" y="192">运营商</text><text class="m" x="6" y="244">城市</text><text class="m" x="6" y="296">BRAS</text><text class="m" x="6" y="348">一户</text></g>
+      <g text-anchor="middle">
+        <text x="138" y="27">全部 IPv4</text><text class="mn" x="138" y="45">256 个 /8</text>
+        <text x="138" y="79">APNIC</text><text class="mn" x="138" y="97">45 个 /8</text>
+        <text x="138" y="131">中国大陆</text><text class="mn" x="138" y="149">342,941,440</text>
+        <text x="138" y="183">AS4134 宣告</text><text class="mn" x="138" y="201">110,663,168</text>
+        <text x="138" y="235">一个城市</text><text class="m" x="138" y="253">示意</text>
+        <text x="138" y="287">一台 BRAS</text><text class="mn" x="138" y="305">203.0.113.0/24</text>
+        <text x="138" y="339">一户</text><text class="mn" x="138" y="357">203.0.113.7</text>
+        <text x="250" y="79">ARIN</text><text class="t" x="250" y="97">36</text><text x="346" y="79">RIPE NCC</text><text class="t" x="346" y="97">35</text><text x="442" y="79">LACNIC</text><text class="t" x="442" y="97">9</text><text x="538" y="79">AFRINIC</text><text class="t" x="538" y="97">4</text>
+        <text x="250" y="131">日本</text><text class="t" x="250" y="149">188,593,920</text><text x="346" y="131">韩国</text><text class="t" x="346" y="149">112,474,944</text><text x="442" y="131">澳大利亚</text><text class="t" x="442" y="149">45,814,528</text><text x="538" y="131">印度</text><text class="t" x="538" y="149">41,825,280</text>
+        <text x="250" y="183">AS4837</text><text class="t" x="250" y="201">57,732,864</text><text x="346" y="183">AS9808</text><text class="t" x="346" y="201">36,552,960</text><text x="442" y="183">其他</text><text class="t" x="442" y="201">…</text>
+        <text class="m" x="250" y="244">别的城市</text><text class="m" x="250" y="296">别的 BRAS</text><text class="m" x="250" y="348">同池别的户</text>
+      </g>
+      <text class="m" x="206" y="36">另有 92 个早年分出，35 个保留</text>
+    </svg></div>
+    <figcaption>前两层是 IANA 登记表里的 /8 个数；经济体一层是 APNIC 分配统计里的 IPv4 地址数；运营商一层是 RIPEstat 看到几个 AS 宣告的地址数，宣告出来的不一定等于手里有的。虚线框是示意：运营商内部怎么切，没有公开的登记。</figcaption>
+  </figure>
+  <p>运营商以下没有公开的登记。常见做法是按省、按城市切开，最后切成一台台 BRAS 的地址池，拨号时从池里拿一个发给你，断开时收回，见 <a href="isp-access.html">宽带接入</a>。地址不够时，家里拿到的是 100.64 开头的内部地址，几百户共用一个公网地址，见 <a href="isp-access.html#cgnat">CGNAT</a>。</p>
+</section>
+
+<section id="whois">
+  <h2><span class="n">03</span>查一个地址归谁</h2>
+  <p>每个 RIR 都有一个公开的数据库，记着每块地址给了谁、哪天给的、出了问题找谁。查它有两种协议：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>whois（RFC 3912）</th><th>RDAP（RFC 9082、9083）</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">怎么问</td><td>连 TCP 43 端口，发一行文字</td><td>HTTPS，GET 一个网址</td></tr>
+      <tr><td class="nw">回答</td><td>纯文本，每家格式不同</td><td>JSON，字段名统一</td></tr>
+      <tr><td class="nw">该问谁</td><td>自己判断，或者跟着对方的转介</td><td>IANA 的引导文件（RFC 9224）写着每个 /8 该问哪台服务器</td></tr>
+    </tbody>
+  </table></div>
+  <p>引导文件说 185.0.0.0/8 归 RIPE NCC，于是去问它：</p>
+<pre><code>$ curl -s https://rdap.db.ripe.net/ip/185.199.108.153            只摘几行
+  "handle" : "185.199.108.0 - 185.199.111.255",
+  "name" : "US-GITHUB-20170413",
+  "type" : "ALLOCATED-ASSIGNED PA",
+  "country" : "US",
+    "handle" : "ORG-GI58-RIPE",
+    … [ "fn", { }, "text", "GitHub, Inc." ] …
+    "roles" : [ "registrant" ],
+    "eventAction" : "registration",
+    "eventDate" : "2017-04-13T15:36:35Z"</code></pre>
+  <p>另外两个常见的地址也这样查了一遍：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>地址</th><th>谁回答</th><th>所在的块</th><th>登记名</th><th>持有者</th><th>国家</th><th>登记日期</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">185.199.108.153</td><td>RIPE NCC</td><td class="nw">185.199.108.0/22</td><td>US-GITHUB-20170413</td><td>GitHub, Inc.</td><td>US</td><td class="nw">2017-04-13</td></tr>
+      <tr><td class="nw">1.1.1.1</td><td>APNIC</td><td class="nw">1.1.1.0/24</td><td>APNIC-LABS</td><td>APNIC Research and Development</td><td>AU</td><td class="nw">2011-08-10</td></tr>
+      <tr><td class="nw">8.8.8.8</td><td>ARIN</td><td class="nw">8.8.8.0/24</td><td>GOGL</td><td>Google LLC</td><td>US</td><td class="nw">2023-12-28</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>登记在哪个 RIR，不代表在哪用。</strong>GitHub 是美国公司，这块 /22 是 2017 年从欧洲的 RIPE NCC 领的。国家一栏写的是持有者的国家，不是机器所在的国家。</li>
+    <li><strong>持有地址的和宣告地址的可以不是一家。</strong>1.1.1.1 归 APNIC 的研究部门，备注写着 <code>Routed globally by AS13335/Cloudflare</code>。185.199.108.153 也是这样，见第 10 节。</li>
+    <li><strong>8.8.8.8 所在的 8/8 是 1992 年分出的早年地址</strong>，现在由 ARIN 代管，这个 /24 直接分给了 Google。</li>
+    <li><strong>还有一种库叫 IRR（路由登记库）</strong>，记的是"哪个 AS 会宣告这个前缀"。查 8.8.8.8 时一起出来一条 RADB 里的记录：<code>route: 8.8.8.0/24</code>、<code>origin: 15169</code>。上游运营商常按它过滤客户的宣告。</li>
+  </ul>
+  <h3>归属地是怎么来的</h3>
+  <p>App 里显示的"IP 归属地"来自商业或开源的地理位置库，是几种数据拼起来的：RIR 登记的国家（只到国家，而且是持有者的国家，按它算 185.199.108.153 在美国）；运营商自己发布的位置表，叫 geofeed（RFC 8805 格式的 CSV，一行一段，例如 RFC 里的 <code>192.0.2.5,US,US-AL,Alabaster,</code>）；从已知地点测延迟；带定位的 App 回传"我在这里，用的是这个 IP"。</p>
+  <p>所以国家一级大体可靠，城市一级要打折扣：地址池会在城市之间调动（第 11 节）；一个省的手机流量可能从同一处出网（<a href="mobile-network.html">移动网络</a>）；CGNAT 让几百户共用一个地址；任播地址同时在很多城市。</p>
+</section>
+
+<section id="asn">
+  <h2><span class="n">04</span>自治系统和 AS 号</h2>
+  <p>上一节问的是地址归谁，路由问的是另一件事：去这个地址，该交给哪张网。互联网上每张自己做路由决定的网叫一个自治系统（AS，Autonomous System）。运营商、云厂商、大学，各自是一个或几个 AS。每个 AS 有一个号码，叫 AS 号（ASN），也是 IANA 分给 RIR、RIR 再分下去。</p>
+  <p>AS 号原来是 16 位（0 到 65535），不够用后扩成 32 位（RFC 6793），写法不变，例如 AS131072。64496 到 64511、65536 到 65551 留给文档举例，64512 到 65534、4200000000 到 4294967294 留给内部私用。APNIC 的统计里中国大陆有 6,399 个 AS 号；全球路由表里看得到 80,046 个（第 06 节）。三家主要运营商的几个 AS，在 RIPEstat 里是这样：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>AS</th><th>RIPEstat 里的登记名</th><th>是谁</th><th class="num">IPv4 前缀</th><th class="num">IPv4 地址</th><th class="num">IPv6 前缀</th><th class="num">邻居 AS</th></tr></thead>
+    <tbody>
+      <tr><td>4134</td><td>CHINANET-BACKBONE</td><td>中国电信 163 骨干网</td><td class="num">726</td><td class="num">110,663,168</td><td class="num">633</td><td class="num">300</td></tr>
+      <tr><td>4809</td><td>CHINATELECOM-CORE-WAN-CN2</td><td>中国电信 CN2</td><td class="num">232</td><td class="num">582,656</td><td class="num">197</td><td class="num">69</td></tr>
+      <tr><td>4837</td><td>CHINA169-Backbone</td><td>中国联通 169 骨干网</td><td class="num">1,511</td><td class="num">57,732,864</td><td class="num">652</td><td class="num">163</td></tr>
+      <tr><td>9929</td><td>CUII</td><td>中国联通工业互联网骨干网</td><td class="num">228</td><td class="num">733,952</td><td class="num">147</td><td class="num">23</td></tr>
+      <tr><td>9808</td><td>CHINAMOBILE-CN</td><td>中国移动</td><td class="num">14,108</td><td class="num">36,552,960</td><td class="num">7,186</td><td class="num">60</td></tr>
+      <tr><td>58453</td><td>CMI-INT-HK</td><td>中国移动国际</td><td class="num">67</td><td class="num">196,864</td><td class="num">5</td><td class="num">711</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">RIS 数据时间 2026-11-22 16:00（UTC）。只数至少 10 个 RIS 对等体看得到的前缀，地址数把重叠的前缀合并后再数。"邻居 AS"是在路径里和它直接相邻出现过的 AS 个数。</p>
+  <ul>
+    <li><strong>一家运营商有好几个 AS。</strong>电信的 163 骨干网和 CN2 是两张网，联通、移动也各有一个以上，分工不同。</li>
+    <li><strong>前缀数说明切得多碎，不说明网多大。</strong>AS9808 宣告了 14,108 条，地址只有 AS4134 的三分之一。</li>
+    <li><strong>有的 AS 主要替别人运流量。</strong>AS4809 和 AS58453 自己起源的地址很少，RIS 看到经它们转手的 IPv4 前缀却分别有 89,565 条和 150,339 条。</li>
+    <li><strong>口径一变，数字差好几倍。</strong>连只在小范围看得到的也算上，AS4134 起源的 IPv4 前缀是 2,250 条，不是 726 条。引用这类数字要带上来源、时间和口径。</li>
+  </ul>
+</section>
+
+<section id="bgp">
+  <h2><span class="n">05</span>BGP：网和网怎么交换路由</h2>
+  <p>AS 之间用 BGP（Border Gateway Protocol，边界网关协议，RFC 4271）互相告诉对方：哪些前缀经我能到。两台路由器之间建一条 TCP 连接（179 端口），叫一个 BGP 会话。不同 AS 之间的叫 eBGP，同一个 AS 内部的叫 iBGP（第 06 节）。</p>
+  <p>一条宣告（announcement）就是"这个前缀经我能到"，带着几个属性；不再提供这条路时，发一条撤销（withdrawal）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>属性</th><th>是什么</th><th>拿来做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">前缀</td><td>比如 <code>185.199.108.0/24</code></td><td>按最长匹配查表时用的就是它</td></tr>
+      <tr><td class="nw">AS_PATH</td><td>经过的 AS 列表，每传一次在最左边加上自己的号</td><td>看到自己的号就丢掉，防止绕圈；比长短</td></tr>
+      <tr><td class="nw">NEXT_HOP</td><td>下一跳：去这个前缀，包交给哪个地址</td><td>查出从哪个口发、发给谁</td></tr>
+      <tr><td class="nw">LOCAL_PREF</td><td>本地优先级，只在一个 AS 内部传</td><td>按生意关系赋值，见下面</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 0 620 186" role="img" aria-label="宣告从 AS54113（Fastly）传到 AS9002（RETN）、AS3333（RIPE NCC）、RIS 的 rrc00，收到的 AS_PATH 依次是 54113、9002 54113、3333 9002 54113；包沿反方向走。">
+      <defs>
+        <marker id="bb-a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+        <marker id="bb-a3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker>
+      </defs>
+      <text class="a" x="8" y="22">宣告的方向 →</text>
+      <rect class="hot" x="8" y="36" width="116" height="48" rx="8"/>
+      <g class="ghost"><rect x="172" y="36" width="116" height="48" rx="8"/><rect x="336" y="36" width="116" height="48" rx="8"/><rect x="500" y="36" width="116" height="48" rx="8"/></g>
+      <g class="out" marker-end="url(#bb-a2)"><path d="M124 60H170"/><path d="M288 60H334"/><path d="M452 60H498"/></g>
+      <g text-anchor="middle">
+        <text class="mn" x="66" y="56">AS54113</text><text class="m" x="66" y="74">Fastly，起源</text>
+        <text class="mn" x="230" y="56">AS9002</text><text class="m" x="230" y="74">RETN</text>
+        <text class="mn" x="394" y="56">AS3333</text><text class="m" x="394" y="74">RIPE NCC</text>
+        <text class="mn" x="558" y="56">rrc00</text><text class="m" x="558" y="74">RIS 采集点</text>
+        <text class="mn a" x="230" y="110">54113</text><text class="mn a" x="394" y="110">9002 54113</text><text class="mn a" x="558" y="110">3333 9002 54113</text>
+      </g>
+      <text class="m" x="8" y="110">收到的 AS_PATH：</text>
+      <path class="ghostline" d="M394 142H72" marker-end="url(#bb-a3)"/>
+      <text class="m" x="232" y="168" text-anchor="middle">从 AS3333 发往 185.199.108.153 的包，沿反方向走</text>
+    </svg></div>
+    <figcaption>宣告从起源往外传，每过一个 AS，路径左边多一个号；包沿相反的方向走。这是 RIS 的 rrc00 采集点 2026-11-22 看到的真实路径之一。</figcaption>
+  </figure>
+  <h3>RIS 看到的真实路径</h3>
+  <p>RIPE NCC 的 RIS（Routing Information Service）在世界各地的交换中心放了路由收集器，和几百个网络建 BGP 会话，只收不发。2026-11-22 它对 <code>185.199.108.0/24</code> 收到 342 条路由，挑 4 条（rrc00 在阿姆斯特丹，rrc06 在东京）：</p>
+<pre><code>采集点  AS_PATH（左边是采集点的邻居，最右边是起源）
+rrc00   3333 9002 54113
+rrc00   7018 54113
+rrc06   2500 4713 2914 54113
+rrc00   4608 4826 54113</code></pre>
+  <p>54113 是 Fastly；3333 是 RIPE NCC 自己的网，9002 是 RETN；7018 是 AT&amp;T，和 Fastly 直接相连；2500 是 WIDE，4713 是 NTT 的 OCN，2914 是 NTT America；4608 是 APNIC 自己的网，4826 是 Vocus。342 条里，路径长 2 个 AS 的 161 条，3 个的 146 条，4 个的 32 条，5 个的 3 条：九成的路径里，采集点的邻居和起源之间只隔 0 到 1 张网。</p>
+  <h3>选哪条：先看生意，再看长短</h3>
+  <p>同一个前缀常常从几个邻居各收到一条，只能用一条。按固定的顺序比，前一项分出高下就不往下比：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">顺序</th><th>比什么</th><th>意思</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>LOCAL_PREF 大的优先</td><td>运营商按生意定：客户给的路 &gt; 对等方给的路 &gt; 上游给的路。走客户的路收钱，走对等方的不花钱，走上游的要付钱</td></tr>
+      <tr><td class="num">2</td><td>AS_PATH 短的优先</td><td>经过的网越少越好，不管每张网多大、多远</td></tr>
+      <tr><td class="num">3</td><td>eBGP 学来的优先于 iBGP</td><td>能直接交出去，就不在自己网里绕</td></tr>
+      <tr><td class="num">4</td><td>到 NEXT_HOP 的内部距离近的优先</td><td>从最近的出口把包交出去</td></tr>
+      <tr><td class="num">5</td><td>其余</td><td>MED（邻居希望你从它的哪个入口进）、路由器 ID 等，用来打破平局</td></tr>
+    </tbody>
+  </table></div>
+  <p>第 4 条让每张网都尽早把包交出去，所以去程和回程常常走不同的路。全流程那一页用回来的包数出 6 台路由器，数的是回程。</p>
+  <p>宣告往哪传也有规矩：从客户学来的路告诉所有人，从对等方和上游学来的只告诉客户，免得替两个不付钱的邻居白运流量。违反它，叫路由泄漏（route leak，RFC 7908）：流量被引到一张本不该承载它的网上，常常把它挤爆。</p>
+  <h3>劫持：2008 年的 YouTube</h3>
+  <p>BGP 本身不检查宣告的人是不是地址的主人。宣告别人的地址叫劫持（hijack）。RIPE NCC 用 RIS 的数据复盘过 2008 年 2 月 24 日这一次（时间是 UTC）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="nw">时间</th><th>发生了什么</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">之前</td><td>YouTube（AS36561）宣告 <code>208.65.152.0/22</code></td></tr>
+      <tr><td class="nw">18:47</td><td>巴基斯坦电信（AS17557）宣告 <code>208.65.153.0/24</code>，本意是在国内封掉 YouTube。它的上游 PCCW Global（AS3491）把它传给了全世界。/24 比 /22 长，各地按最长匹配都选了它，YouTube 的流量被引到巴基斯坦</td></tr>
+      <tr><td class="nw">20:07</td><td>YouTube 也宣告这个 /24。两条一样长，只能比 AS_PATH，仍有一部分流量去巴基斯坦</td></tr>
+      <tr><td class="nw">20:18</td><td>YouTube 宣告更长的两个 /25，靠最长匹配抢回流量</td></tr>
+      <tr><td class="nw">21:01</td><td>PCCW 撤掉 AS17557 起源的这些前缀，劫持结束，前后约 2 小时 14 分</td></tr>
+    </tbody>
+  </table></div>
+  <h3>RPKI：给"谁能宣告"签名</h3>
+  <p>RPKI 让地址的主人签一份 ROA（Route Origin Authorization，RFC 9582）：这个前缀、最长允许拆到多长（maxLength）、由哪个 AS 宣告；RIR 发的证书证明签名的人确实持有这块地址。路由器按 ROA 给每条路由打上 Valid、Invalid 或 NotFound（没有 ROA 覆盖，RFC 6811），开了验证的网络丢掉 Invalid。</p>
+<pre><code>$ curl -s 'https://stat.ripe.net/data/rpki-validation/data.json?resource=AS54113&amp;prefix=185.199.108.0/24'
+"validating_roas": [                                                     （整理过格式）
+  { "origin": "54113", "prefix": "185.199.108.0/24", "validity": "valid",          "max_length": 24 },
+  { "origin": "54113", "prefix": "185.199.108.0/22", "validity": "invalid_length", "max_length": 22 } ],
+"status": "valid", "validator": "routinator"</code></pre>
+  <p>两条 ROA 都只授权 AS54113：地址是 GitHub 的，它授权 Fastly 宣告。换几种宣告再问：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>宣告</th><th>结果</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>185.199.108.0/24</code>，起源 AS54113</td><td>valid</td><td>第一条 ROA 正好允许</td></tr>
+      <tr><td><code>185.199.108.0/24</code>，起源 AS64496（文档用的号）</td><td>invalid_asn</td><td>ROA 里写的不是这个 AS</td></tr>
+      <tr><td><code>185.199.108.0/25</code>，起源 AS54113</td><td>invalid_length</td><td>两条 ROA 都不许拆到 /25</td></tr>
+    </tbody>
+  </table></div>
+  <p>假如 2008 年 YouTube 有一条"<code>208.65.152.0/22</code>，maxLength 22，AS36561"的 ROA，巴基斯坦电信那条 /24 在验证的网络里就是 Invalid。但 RPKI 只验起源：伪造一条以 54113 结尾的路径，照样能过。能签整条路径的 BGPsec（RFC 8205）几乎没有部署。</p>
+</section>
+
+<section id="igp">
+  <h2><span class="n">06</span>一张网内部怎么找路</h2>
+  <p>BGP 管的是"哪个前缀在哪张网"。一张网内部还要知道：从这台路由器到网里另一台怎么走。这由内部网关协议（IGP）管，常用的是 OSPF（RFC 2328）和 IS-IS。它的表里只有本网路由器自己的地址（环回地址）和它们之间的链路，通常几百到几千条，不是一百多万条。每台路由器把自己有哪些链路、每条开销多少广播给全网，人人手里一张全图，各自算最短路径；断一根线，几百毫秒到几秒内全网就重算完了。BGP 则只听邻居说，变化要等宣告一级级传开。</p>
+  <h3>两张表叠起来用</h3>
+  <p>第 5 台是这张网通往 185.199.108.0/24 的出口。它用 eBGP 学到这条路，再用 iBGP 告诉网里其他路由器，下一跳写成自己的环回地址（示意：<code>192.0.2.5</code>）。第 3 台转发时查两次：</p>
+<pre><code>BGP：  185.199.108.0/24   下一跳 192.0.2.5（第 5 台）
+IGP：  192.0.2.5/32       从朝第 4 台的口出去，开销 20
+合起来：去 185.199.108.153 的包，交给第 4 台</code></pre>
+  <p>合成的这一行写进转发表（FIB），真正转发时只查它。</p>
+  <h3>iBGP 和路由反射器</h3>
+  <p>iBGP 有一条规矩：从一个 iBGP 邻居学来的路，不再告诉别的 iBGP 邻居，因为同一个 AS 里 AS_PATH 不变，没法靠它防绕圈。结果是 n 台路由器要两两建会话，共 n(n−1)/2 条：100 台是 4,950 条，1,000 台是 499,500 条。路由反射器（RFC 4456）可以把一个客户告诉它的路转告其他客户，每台路由器只要连两台反射器。</p>
+  <h3>全表有多大</h3>
+  <p>bgp.potaroo.net 每天统计一次。2026-11-23 的报告：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">IPv4</th><th class="num">IPv6</th></tr></thead>
+    <tbody>
+      <tr><td>路由表条目</td><td class="num">1,093,759</td><td class="num">267,066</td></tr>
+      <tr><td>最多的一种长度</td><td class="num">/24，697,918 条，63.8%</td><td class="num">/48，125,116 条，46.9%</td></tr>
+      <tr><td>出现的 AS 个数</td><td class="num">80,046</td><td class="num">38,257</td></tr>
+      <tr><td>平均 AS 路径长度</td><td class="num">5.31</td><td class="num">4.88</td></tr>
+      <tr><td>宣告出来的地址</td><td class="num">3,128,210,176，占全部 IPv4 的 72.8%</td><td class="num"></td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">IPv4 是 potaroo 主报告的视角（AS65000），IPv6 是 AS131072 的视角。同一天，Route Views 项目（AS6447）看到的 IPv4 是 1,170,861 条：从哪看，表就有多大。</p>
+  <ul>
+    <li><strong>/24 最多，</strong>因为它是能在全网传开的最小块，更长的前缀多数网络不收。IPv6 里对应的是 /48。</li>
+    <li><strong>家里的路由器没有全表，</strong>只有一条默认路由 <code>0.0.0.0/0</code>：不认识的都交给 BRAS。骨干上的路由器没有默认路由，全表要放进转发芯片的高速存储，每秒按它查上亿次。这是骨干路由器贵的原因之一，也是下一节 MPLS 的出发点之一。</li>
+  </ul>
+</section>
+
+<section id="mpls">
+  <h2><span class="n">07</span>MPLS：骨干网里按标签转发</h2>
+  <p>普通的 IP 转发，每一跳都要在一百多万条里找最长匹配。MPLS（Multiprotocol Label Switching，多协议标签交换，RFC 3031）换了个做法：包进骨干网时，入口判断一次它该走哪条路，在 IP 头前面贴一个 4 字节的标签；中间的路由器只看标签，按自己的表换一个新标签发出去；快出去时再撕掉。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>名词</th><th>意思</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">FEC</td><td>转发等价类：要走同一条路的一类包。最常见的是"BGP 下一跳是同一台出口路由器"的包</td></tr>
+      <tr><td class="nw">PE、P</td><td>PE 在骨干网的边上，负责贴和撕；P 在中间，只换标签。全流程里第 3 台是入口 PE，第 4 台是 P，第 5 台是出口 PE（示意）</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 0 620 200" role="img" aria-label="四台路由器 PE-A、P1、P2、PE-B。标签由下游告诉上游：PE-B 对 P2 说用 3，P2 对 P1 说用 24017，P1 对 PE-A 说用 24005。包上的标签：PE-A 到 P1 是 24005，P1 到 P2 换成 24017，P2 到 PE-B 撕掉。">
+      <defs>
+        <marker id="bb-a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+        <marker id="bb-a5" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker>
+      </defs>
+      <g class="ghostline" marker-end="url(#bb-a5)"><path d="M498 34H454"/><path d="M334 34H290"/><path d="M170 34H126"/></g>
+      <g text-anchor="middle"><text class="m" x="476" y="22">用 3</text><text class="m" x="312" y="22">用 24017</text><text class="m" x="148" y="22">用 24005</text></g>
+      <g class="ghost"><rect x="8" y="46" width="116" height="44" rx="8"/><rect x="172" y="46" width="116" height="44" rx="8"/><rect x="336" y="46" width="116" height="44" rx="8"/><rect x="500" y="46" width="116" height="44" rx="8"/></g>
+      <g text-anchor="middle">
+        <text x="66" y="65">PE-A</text><text class="m" x="66" y="82">入口</text>
+        <text x="230" y="65">P1</text><text class="m" x="230" y="82">中间</text>
+        <text x="394" y="65">P2</text><text class="m" x="394" y="82">倒数第二台</text>
+        <text x="558" y="65">PE-B</text><text class="m" x="558" y="82">出口</text>
+      </g>
+      <g class="out" marker-end="url(#bb-a4)"><path d="M124 68H170"/><path d="M288 68H334"/><path d="M452 68H498"/></g>
+      <g class="hot"><rect x="120" y="100" width="56" height="22" rx="4"/><rect x="284" y="100" width="56" height="22" rx="4"/></g>
+      <rect class="ghost" x="448" y="100" width="56" height="22" rx="4"/>
+      <g text-anchor="middle">
+        <text class="mn" x="148" y="116">24005</text><text class="mn" x="312" y="116">24017</text><text class="m" x="476" y="116">无标签</text>
+        <text class="m" x="66" y="150">查 IP 路由表</text><text class="mn" x="66" y="168">185.199.108.0/24</text><text class="mn a" x="66" y="186">→ 压入 24005</text>
+        <text class="m" x="230" y="150">查标签表</text><text class="mn" x="230" y="168">24005</text><text class="mn a" x="230" y="186">→ 换成 24017</text>
+        <text class="m" x="394" y="150">查标签表</text><text class="mn" x="394" y="168">24017</text><text class="mn a" x="394" y="186">→ 弹掉</text>
+        <text class="m" x="558" y="150">查 IP 路由表</text><text class="mn" x="558" y="168">185.199.108.0/24</text><text class="mn a" x="558" y="186">→ 交给第 6 台</text>
+      </g>
+    </svg></div>
+    <figcaption>示意。上一行是标签怎么定下来的：每台路由器给这条路自己挑一个号，告诉上游"发给我时贴这个"；PE-B 回的是保留值 3，意思是"到我之前先撕掉"。中间一行是包：每过一台换一次标签，最后一段又是普通的 IP 包。全流程那一页的第 3 到第 5 台之间只有一台 P，相当于这里去掉 P1，第 3 台直接贴 24017。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>标签只在一段线上有意义。</strong>24005 是 P1 自己挑的号，只对 PE-A 到 P1 这一段有效。这和家里路由器的 NAT 一个道理：每台设备守着自己的对应表，拿进来的号查出要换上的号（<a href="journey.html#s6">全流程第 6 步</a>）。</li>
+    <li><strong>标签从下游往上游定。</strong>LDP（RFC 5036）让每台路由器告诉邻居"去某台 PE 用哪个标签"，路径跟着 IGP 的最短路走。RSVP-TE（RFC 3209）由入口指定整条路径并预留带宽，用来做流量工程。</li>
+    <li><strong>倒数第二台就撕掉（PHP，penultimate hop popping）。</strong>PE-B 要的是 3，P2 收到 24017 直接弹掉，PE-B 收到的是普通 IP 包，只查一次 IP 路由表。P1、P2 只认识去各台 PE 的标签，不需要全表，也不跑 BGP。</li>
+  </ul>
+  <h3>4 个字节的标签</h3>
+  <p>标签插在以太网头和 IP 头之间，以太网头的类型字段从 <code>0x0800</code>（IPv4）改成 <code>0x8847</code>（MPLS）。每个标签 32 位（RFC 3032）：</p>
+  <div class="bits">
+    <div><b>0000 0101 1101 1101 0001</b><span>标签，20 位<br>= 24017</span></div>
+    <div><b>000</b><span>TC，3 位，流量类别<br>按它排队（以前叫 EXP）</span></div>
+    <div><b>1</b><span>S，1 位<br>1 = 这是最后一个标签</span></div>
+    <div><b>0011 1101</b><span>TTL，8 位<br>= 61</span></div>
+  </div>
+  <p>合起来是 <code>05 dd 11 3d</code>。标签可以叠几层（标签栈），只有最后一个的 S 是 1。0 到 15 是保留值，IANA 登记表里常见的几个：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">值</th><th>名字</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0、2</td><td>IPv4、IPv6 显式空标签</td><td>出口想保留 TC 时用它代替 3：倒数第二台换成 0 或 2，不撕</td></tr>
+      <tr><td class="num">3</td><td>隐式空标签</td><td>只出现在标签分配的消息里，意思是"撕掉再给我"，从不出现在线上</td></tr>
+      <tr><td class="num">7</td><td>熵标签指示</td><td>后面跟一个熵标签，供负载分担用（RFC 6790，第 08 节）</td></tr>
+      <tr><td class="num">1、4、13–15</td><td>路由器告警、网络动作（RFC 9994，2026 年新分配）、关联通道、OAM 告警、扩展标签</td><td>运维和扩展用</td></tr>
+    </tbody>
+  </table></div>
+  <h3>全流程那个 SYN，贴上标签</h3>
+  <p>全流程那一页握手的第一帧是 74 字节。它出了家门、过了 BRAS，在第 3 台被贴上标签，从第 3 台发往第 4 台时是这样的 78 字节（不含帧校验）：</p>
+<pre><code>00 00 5e 00 53 28 00 00 5e 00 53 21 88 47      以太网头：目的 MAC、源 MAC、类型 0x8847
+05 dd 11 3d                                    标签 24017，TC 0，S 1，TTL 61
+45 00 00 3c 1c 46 40 00 3d 06 bf 0d            IP 头 20 字节
+cb 00 71 07 b9 c7 6c 99
+9c 41 01 bb 7a 3c 91 e0 00 00 00 00 a0 02      TCP 头 40 字节
+ff ff 99 66 00 00 02 04 05 b4 04 02 08 0a
+00 52 a1 c4 00 00 00 00 01 03 03 08</code></pre>
+  <p class="caption">按 RFC 3032 用 python3 构造：从全流程那一帧出发，照第 1 台的 NAT 改了源地址和端口，按每一跳减了 TTL，重算了 IP 和 TCP 的校验和，再插进标签。</p>
+  <p>和手机发出时比，变了这些字节：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>字段</th><th>手机发出时</th><th>第 3 台发出时</th></tr></thead>
+    <tbody>
+      <tr><td>目的 MAC、源 MAC</td><td><code>00:00:5E:00:53:01</code>、<code>DA:A1:19:5C:3E:07</code></td><td><code>00:00:5E:00:53:28</code>、<code>00:00:5E:00:53:21</code>，每一跳都换</td></tr>
+      <tr><td>类型、标签</td><td><code>08 00</code>，没有标签</td><td><code>88 47</code>、<code>05 dd 11 3d</code>，第 3 台加的</td></tr>
+      <tr><td>IP 的 TTL、校验和</td><td><code>40</code>（64）、<code>36 56</code></td><td><code>3d</code>（61）、<code>bf 0d</code>，每台路由器减 1、重算</td></tr>
+      <tr><td>源 IP、源端口</td><td><code>c0 a8 01 17</code>（192.168.1.23）、<code>c8 22</code>（51234）</td><td><code>cb 00 71 07</code>（203.0.113.7）、<code>9c 41</code>（40001），家里路由器的 NAT 改的</td></tr>
+      <tr><td>TCP 校验和</td><td><code>e7 cd</code></td><td><code>99 66</code>，NAT 改完地址和端口后重算</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>贴标签时，IP 的 TTL 抄进标签。</strong>第 3 台把 IP 的 TTL 从 62 减到 61，再把 61 写进标签。第 4 台只减标签里的 TTL，撕标签时抄回 IP 头（60），第 5 台减成 59，和全流程那一页一跳不差。运营商也可以不抄（RFC 3443 叫 pipe 模式），那样 P 路由器不动 IP 的 TTL，traceroute 里也就看不到它们。</li>
+    <li><strong>专线的包有两层标签。</strong>企业专线常用 MPLS VPN（L3VPN，RFC 4364）：外层标签带包到出口 PE，内层标签告诉出口 PE 这是哪个客户的。同样的包在专线里是 82 字节，标签栈是 <code>05 dd 10 3d 05 e2 61 3d</code>：外层 24017 的 S 是 0，内层 24102 的 S 是 1。每个客户的路由在 PE 上单放一张表，几家客户都用 10.0.0.0/8 也不会打架。</li>
+    <li><strong>这种 VPN 和 <a href="vpn.html">VPN</a> 那一页讲的不是一回事。</strong>那种是在你的设备上给 IP 包套一层加密的头；这种是运营商在自己网里用标签把客户分开，不加密。</li>
+  </ul>
+  <p>运营商用 MPLS，除了让中间的路由器不装全表、做专线，还用来做流量工程（最短路挤满了，用 RSVP-TE 把一部分流量指到有空余的路上）和快速重路由（提前算好备用的标签路径，断线时前一台直接改贴）。新一点的做法是段路由（Segment Routing，RFC 8402）：入口把整条路写成一串"段"放进包里，中间的路由器不记状态，也不用 LDP、RSVP-TE。写成标签栈的叫 SR-MPLS（RFC 8660），一个节点在全网用同一个标签值，不再一跳一换；写成 IPv6 地址、放进扩展头的叫 SRv6（RFC 8754、8986）。</p>
+</section>
+
+<section id="hop">
+  <h2><span class="n">08</span>每一跳都换一个新帧</h2>
+  <p>骨干网里多是一根光纤直连两台路由器，线上只有这两台。给它编地址用最小的网段：/30 有 4 个地址，去掉网络号和广播只剩 2 个能用；/31 也是 2 个，RFC 3021 规定点对点链路两头都能用，省一半；IPv6 用 /127（RFC 6164）。按 /31 把第 2 台到第 6 台之间的几段写出来（示意），MAC 和 TTL 与全流程那一页一致：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>链路</th><th>网段</th><th>源 MAC → 目的 MAC</th><th>帧里装的</th><th class="num">IP 的 TTL</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">第 2 台 → 第 3 台</td><td><code>198.51.100.0/31</code></td><td class="nw"><code>:11 → :20</code></td><td>IP 包，类型 0x0800</td><td class="num">62</td></tr>
+      <tr><td class="nw">第 3 台 → 第 4 台</td><td><code>198.51.100.2/31</code></td><td class="nw"><code>:21 → :28</code></td><td>标签 24017 + IP 包，类型 0x8847</td><td class="num">61</td></tr>
+      <tr><td class="nw">第 4 台 → 第 5 台</td><td><code>198.51.100.4/31</code></td><td class="nw"><code>:29 → :2E</code></td><td>IP 包，标签已被第 4 台撕掉</td><td class="num">60</td></tr>
+      <tr><td class="nw">第 5 台 → 第 6 台</td><td><code>198.51.100.6/31</code></td><td class="nw"><code>:2F → :40</code></td><td>IP 包</td><td class="num">59</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">MAC 只写了最后一个字节，前面都是 <code>00:00:5E:00:53</code>。第 6 台交给服务器时是 <code>:41 → :99</code>，TTL 58。</p>
+  <ul>
+    <li><strong>ARP 只问一次。</strong>第一次要发包时，用 ARP 问一次对方的 MAC（IPv6 用邻居发现），记进缓存，之后每个包直接用。</li>
+    <li><strong>每一跳做的事和全流程第 6 步一样：</strong>查表，TTL 减 1，重算 IP 头校验和，拆掉旧帧、装上新帧，见 <a href="journey.html#s6">转发</a>。光信号也在每台路由器重新生成一次，见 <a href="physical-layer.html#chain">物理层</a>。TCP 头的 40 个字节一路没动，校验和一直是 <code>99 66</code>。</li>
+    <li><strong>回程走的是另一串表。</strong>回来的包在第 3 台查到 BRAS 宣告的那一段，再由 BRAS 找到你家，见 <a href="isp-access.html#return">回程</a>。</li>
+  </ul>
+  <h3>好几条一样好的路：ECMP</h3>
+  <p>两台路由器之间常有几条开销相同的路：两根并行的光纤，或者经过两台不同的 P。路由器把它们都放进表里分摊流量，叫等价多路径（ECMP）。分摊按流不按包：把源地址、目的地址、协议、源端口、目的端口算一个哈希，按结果选路。同一个连接的每个包算出来都一样，全程走一条路，就不会乱序；乱序会让 TCP 以为丢了包，见 <a href="tcp-congestion.html">TCP 拥塞控制</a>。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>连接（203.0.113.7 → 185.199.108.153:443）</th><th>哈希（示意，CRC32）</th><th class="num">除以 2 的余数</th><th>走哪条</th></tr></thead>
+    <tbody>
+      <tr><td>源端口 40001</td><td><code>86d7952b</code></td><td class="num">1</td><td>B</td></tr>
+      <tr><td>源端口 40002</td><td><code>84912b72</code></td><td class="num">0</td><td>A</td></tr>
+      <tr><td>源端口 40003</td><td><code>85534145</code></td><td class="num">1</td><td>B</td></tr>
+      <tr><td>源端口 40004</td><td><code>801c57c0</code></td><td class="num">0</td><td>A</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">真实的路由器用各家自己的哈希函数，还加随机种子，结果和这里不同；规律一样：同一个连接永远选同一条，不同的连接大致对半分。</p>
+  <ul>
+    <li><strong>traceroute 每次走的路可能不同。</strong>经典的 traceroute 每发一个探测包，目的端口加 1（从 33434 起），每个 TTL 发 3 个。端口一变哈希就变：按上面的示意算法，33434 到 33439 落在 A、A、B、B、B、B。所以 ECMP 之后的一行可能出现两个地址，两次的结果也可能不同。macOS 的 <code class="nw">traceroute -e</code> 固定目的端口；Paris traceroute 专门解决这个问题。</li>
+    <li><strong>贴了标签，P 路由器看不到端口，</strong>同一对 PE 之间的流量会挤在一条路上。RFC 6790 让入口 PE 先算好哈希，作为熵标签放进标签栈（前面垫一个保留值 7），P 按它分。</li>
+  </ul>
+</section>
+
+<section id="peering">
+  <h2><span class="n">09</span>运营商之间怎么连</h2>
+  <p>没有哪张网能直接连到所有的网。两张网之间，大体是两种关系：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>转接（transit）</th><th>对等（peering）</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">钱</td><td>客户付给上游，一般按带宽</td><td>通常互不结算</td></tr>
+      <tr><td class="nw">交换的路由</td><td>上游把全世界的路由给客户，再把客户的路由告诉全世界</td><td>只交换双方自己的和各自客户的</td></tr>
+      <tr><td class="nw">在哪连</td><td colspan="2">同一栋楼里两台路由器直接拉一根线；或者都接到互联网交换中心（IXP）的交换机上，一次接入，和很多家互联。RIS 的收集器也放在这些地方，比如 rrc03 在阿姆斯特丹的 AMS-IX</td></tr>
+    </tbody>
+  </table></div>
+  <h3>国内几家怎么互通</h3>
+  <p>国内各家骨干网之间只在指定的地点交换流量：国家级互联网骨干直联点。工信部 2013 年 10 月的通知说，当时八家骨干网单位都通过北京、上海、广州三地的直联点和交换中心互联，网间互联总带宽 1,492 Gbps，并决定在成都、武汉、西安、沈阳、南京、重庆、郑州增设七个。此后又加了杭州、贵阳·贵安、福州（2017 年），南宁、呼和浩特、太原、济南、青岛（2021 年获批），哈尔滨（2022 年开通）。</p>
+  <p>直联点开在哪，决定跨网要绕多远。黑龙江省通信管理局 2022 年 11 月报道，哈尔滨直联点开通后，省内本地网间时延下降超过 90%，跨省网间时延下降近 20%，丢包率下降超过 50%。在这之前，同在黑龙江的两家用户互访，流量要先出省，交接完再回来。</p>
+  <p>所以"跨网慢"（比如电信用户访问联通机房里的服务器）有三个来源：交接只能在直联点，要绕路；网间带宽要结算（2013 年那份通知里，交换中心的结算价从 100 万元每 G 每月降到 60 万元），扩容有成本，高峰期先在这里排队、丢包；去程和回程各自就近交出（第 05 节），可能走的是两个不同的直联点。</p>
+  <h3>从部署方看：多线机房</h3>
+  <p>如果你要部署一个视频或直播服务，用户分在三家运营商，常见的做法：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>做法</th><th>用户怎么连</th><th>好处</th><th>代价</th></tr></thead>
+    <tbody>
+      <tr><td>单线机房，一个地址</td><td>只有同一家的用户不跨网</td><td>便宜</td><td>另两家的用户跨网，晚高峰容易卡</td></tr>
+      <tr><td>每家运营商各放一组服务器</td><td>DNS 按用户的运营商给地址</td><td>不跨网</td><td>几套机器；DNS 认错运营商就跨网，比如用户用了别处的公共 DNS（<a href="dns.html#geo">DNS 的调度</a>）</td></tr>
+      <tr><td>BGP 多线机房</td><td>机房有自己的 AS 和地址，同时接三家，用 BGP 把同一段地址宣告给三家，各家用户从自己运营商的线进来</td><td>一个地址，不靠 DNS 猜</td><td>贵</td></tr>
+      <tr><td>CDN</td><td>节点放进各家运营商的网里（第 10 节）</td><td>离用户近</td><td>按流量付费；冷门内容回源时仍可能跨网</td></tr>
+    </tbody>
+  </table></div>
+  <p>播放器拉的是一个个分片，起播和卡顿取决于每个分片请求的往返时间和带宽（<a href="streaming-protocols.html">流媒体协议</a>）。跨网多绕的几十毫秒，乘上起播前的几次往返，就是用户能感觉到的差别。</p>
+  <h3>出境</h3>
+  <p>去境外的流量要经过国际出入口：运营商在少数几个城市设国际出口，从那里接上跨境的陆缆和海底光缆，再和境外的运营商对等或者买转接。出口的容量和走哪条光缆，决定了访问境外网站的延迟和高峰期的拥塞。三家运营商各有做国际业务的网络，比如中国移动国际（AS58453），RIS 看到它有 711 个邻居 AS，是第 04 节表里最多的。</p>
+</section>
+
+<section id="cdn">
+  <h2><span class="n">10</span>CDN 和运营商</h2>
+  <p>CDN（内容分发网络）把内容复制到很多地方的缓存服务器上，让用户从近处拿。国内的 CDN 节点通常放进每家运营商的城域网或机房，用户取内容不用跨网，也不用出城。剩下的问题是让每个用户找到近的节点，有两种办法：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>按 DNS 调度</th><th>任播（anycast）</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">谁来选</td><td>权威 DNS 看是谁在问，给一个近的节点的地址</td><td>路由器按 BGP 选路，把包送到"路由上最近"的那个节点</td></tr>
+      <tr><td class="nw">各节点的地址</td><td>各不相同</td><td>全部相同，同一个前缀在很多地方同时宣告</td></tr>
+      <tr><td class="nw">选错的原因</td><td>权威 DNS 看到的是解析器，不是用户；用了远处的公共 DNS，就被分到远处</td><td>BGP 的"近"按 AS 路径和生意关系算，不一定是地理上的近</td></tr>
+      <tr><td class="nw">节点坏了</td><td>要等 DNS 的 TTL 过期，客户端才换地址</td><td>撤掉那里的宣告，流量自动去别的节点</td></tr>
+      <tr><td class="nw">例子</td><td><a href="dns.html#geo"><code>www.wikipedia.org</code></a></td><td>1.1.1.1、8.8.8.8</td></tr>
+    </tbody>
+  </table></div>
+  <h3>185.199.108.153 背后是谁</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>查了什么</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>RDAP（第 03 节）</td><td><code>185.199.108.0/22</code> 的持有者是 GitHub, Inc.，2017 年从 RIPE NCC 领的</td></tr>
+      <tr><td>RIPEstat 的前缀概览</td><td>这个 /22 和拆出来的 4 个 /24 都由 AS54113（FASTLY - Fastly, Inc.）宣告</td></tr>
+      <tr><td>RPKI（第 05 节）</td><td>两条 ROA 都只授权 AS54113</td></tr>
+      <tr><td>反向解析（<a href="dns.html">DNS</a> 那一页）</td><td><code>cdn-185-199-108-153.github.com</code></td></tr>
+      <tr><td>RIS 的 342 条路由（第 05 节）</td><td>各大洲的采集点都看得到；161 条路径只有两个 AS，即采集点的邻居和 Fastly 直接相连</td></tr>
+    </tbody>
+  </table></div>
+  <p>结论：地址是 GitHub 的，宣告它、承载流量的是 Fastly 的网，GitHub Pages 经 Fastly 的 CDN 对外服务。世界各地的网络大多直接或者经过一张网就连到 Fastly，这和 DNS 那一页判断的任播一致：这个地址后面不是一台机器，你连上的是 Fastly 在路由上离你最近的那个节点，<a href="journey.html#s11">全流程的到站一步</a> 也提过。具体是哪个城市的节点，取决于你所在的网络，这一页不去猜。</p>
+  <ul>
+    <li><strong>同时宣告 /22 和 4 个 /24</strong> 是一种常见做法：平时按更具体的 /24 走；某个 /24 撤掉了，包还能按 /22 走到 Fastly 的别处。</li>
+    <li><strong>任播和 TCP 能共存，</strong>是因为路由通常长时间不变，一个连接从头到尾落在同一个节点上。路由恰好在连接中途变了，包被送到另一个节点，那里没有这个连接，连接就断了，客户端重连即可。</li>
+  </ul>
+</section>
+
+<section id="reassign">
+  <h2><span class="n">11</span>地址会被收回和转手</h2>
+  <p>地址分下去以后并不固定，在三个层面上流动：</p>
+  <ul>
+    <li><strong>一户和地址，每次拨号都可能变。</strong>断线重拨，BRAS 可能从池里给你另一个地址（<a href="isp-access.html">宽带接入</a>）。</li>
+    <li><strong>地址池和城市，按需调整。</strong>某个城市的用户多了，运营商从别处的池里挪一块过去。这块地址的"归属地"跟着变了，地理位置库要过一阵才跟上。</li>
+    <li><strong>地址和持有者，买卖时变。</strong>IPv4 分完以后，地址可以在单位之间转让，由 RIR 登记过户。</li>
+  </ul>
+  <h3>IPv4 的转让</h3>
+  <p>APNIC 公布每一笔转让。2026-11-23 下载的记录里，从 2010-11-19 到 2026-11-20 共 11,169 笔、95,700,224 个地址（同一块转手两次算两次），2021 年起每年 900 到 1,200 笔：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>从</th><th>到</th><th class="num">笔数</th><th class="num">地址</th></tr></thead>
+    <tbody>
+      <tr><td>APNIC 区内</td><td>APNIC 区内</td><td class="num">8,498</td><td class="num">61,249,536</td></tr>
+      <tr><td>ARIN</td><td>APNIC</td><td class="num">868</td><td class="num">23,555,840</td></tr>
+      <tr><td>RIPE NCC、LACNIC</td><td>APNIC</td><td class="num">329</td><td class="num">4,163,072</td></tr>
+      <tr><td>APNIC</td><td>其他 RIR</td><td class="num">1,474</td><td class="num">6,731,776</td></tr>
+    </tbody>
+  </table></div>
+  <p>转入中国大陆的有 1,292 笔、21,251,840 个地址。新会员从 APNIC 最多只能领一个 /23（512 个地址），再要就只能买。</p>
+  <h3>旧地址带着旧名声</h3>
+  <ul>
+    <li><strong>黑名单。</strong>上一个使用者发过垃圾邮件、扫过端口，地址可能还在各种拦截名单上：新主人的邮件进垃圾箱，访问某些网站要过验证。</li>
+    <li><strong>归属地。</strong>地理位置库里还是上一个主人的国家和城市，按地区授权内容的服务会认错。</li>
+    <li><strong>路由登记。</strong>旧的 ROA 和 IRR 记录没删，新主人宣告时可能被判 Invalid，或者被上游按 IRR 过滤掉。</li>
+  </ul>
+  <p>对 App 来说，这一节的结论是：<strong>用户的 IP 不是身份。</strong>它隔天就可能换，可能和几百户共用（<a href="isp-access.html#cgnat">CGNAT</a>），上个月可能还属于别人。按 IP 限流、封禁，会误伤一大片。</p>
+  <h3>IPv6：按块分</h3>
+  <p>IPv6 有 2<sup>128</sup> 个地址，分法反过来了：给得很大，按块数算，不按个数算。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>一级</th><th>常见大小</th><th>实例和算术</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">运营商</td><td>/32 起，大运营商更大</td><td>RDAP 里，中国电信是 <code>240e::/18</code>，中国移动是 <code>2409:8000::/20</code>，中国联通是 <code>2408:8000::/20</code>。一个 /20 是 2<sup>12</sup> = 4,096 个 /32，一个 /18 是 16,384 个；中国大陆合计 68,539 个（第 02 节）</td></tr>
+      <tr><td class="nw">一户</td><td class="nw">/56 到 /60</td><td>一个 /32 能分出 2<sup>24</sup> = 16,777,216 个 /56，或者 2<sup>28</sup> = 268,435,456 个 /60；一个 /20 能分出 2<sup>36</sup>，约 687 亿个 /56</td></tr>
+      <tr><td class="nw">局域网</td><td>/64</td><td>一个 /56 能分 256 个 /64，一个 /60 能分 16 个；每个 /64 里有 2<sup>64</sup> 个地址</td></tr>
+    </tbody>
+  </table></div>
+  <p>局域网固定用 /64，是因为设备自己生成地址（SLAAC）要用后 64 位，Android 手机拿 IPv6 地址靠的就是它。家里的路由器从运营商领一整段，再切成 /64 发给各个网段，见 <a href="isp-access.html">宽带接入</a>。地址给得这么宽，就用不着 NAT；也因为宽，按单个 IPv6 地址封禁基本没用，要按 /64 或 /56 封。</p>
+</section>
+
+<section id="lookup">
+  <h2><span class="n">12</span>自己能查到什么</h2>
+  <p>这一页的数据都来自公开接口，不需要账号：</p>
+<pre><code># 这个地址归谁：RDAP，返回 JSON。rdap.org 按 IANA 的引导文件跳到对应的 RIR
+curl -s https://rdap.org/ip/185.199.108.153
+# 老的 whois，纯文本
+whois -h whois.ripe.net 185.199.108.153
+# 这个 AS 是谁、宣告了多少（RIPEstat 的数据接口）
+curl -s 'https://stat.ripe.net/data/routing-status/data.json?resource=AS4134'
+# 谁在宣告这个地址、各地看到的路径、RPKI 结果
+curl -s 'https://stat.ripe.net/data/prefix-overview/data.json?resource=185.199.108.153'
+curl -s 'https://stat.ripe.net/data/bgp-state/data.json?resource=185.199.108.0/24'
+curl -s 'https://stat.ripe.net/data/rpki-validation/data.json?resource=AS54113&amp;prefix=185.199.108.0/24'</code></pre>
+  <p>网页上看：stat.ripe.net 是这些接口的网页版，能看历史变化；bgp.he.net 列出一个 AS 宣告了哪些前缀、和哪些 AS 相连；bgp.potaroo.net 记录全球路由表的大小。很多运营商和交换中心还开放了 Looking Glass：在网页上对它们的路由器做只读查询（看路由、ping、traceroute），等于从对方的网里往外看。</p>
+  <h3>读 traceroute</h3>
+  <p>traceroute 能列出包沿途经过的路由器。下面是一段示意输出，不是实测，地址按这一页的设定：</p>
+<pre><code>$ traceroute -n 185.199.108.153
+ 1  192.168.1.1       1.1 ms   0.9 ms   1.0 ms      家里的路由器
+ 2  203.0.113.1       4.0 ms   3.8 ms   4.1 ms      BRAS
+ 3  198.51.100.1      5.0 ms   5.2 ms   4.9 ms      城域网核心，入口 PE
+ 4  * * *                                           P 路由器不回
+ 5  198.51.100.5      9.6 ms   198.51.100.13  10.1 ms   9.7 ms
+ 6  198.51.100.7     10.3 ms  10.2 ms  10.4 ms      机房路由器
+ 7  185.199.108.153  10.5 ms  10.4 ms  10.6 ms</code></pre>
+  <ul>
+    <li><strong>一行 <code>* * *</code> 不等于丢包。</strong>traceroute 等 5 秒没收到回应就打一个 <code>*</code>（man 手册）。有的路由器不回 TTL 超时的通知，或者限制了每秒回几个。后面的跳正常回应，说明包是过去了的。</li>
+    <li><strong>中间某一跳延迟特别高、后面又正常，</strong>是那台路由器把生成通知排在了低优先级，不是路上慢。以最后一跳为准。</li>
+    <li><strong>一行出现两个地址</strong>（第 5 行），是 ECMP：三个探测包分到了两台路由器上（第 08 节）。</li>
+    <li><strong>经过 MPLS 的几跳，延迟常常和出口那一跳差不多。</strong>P 路由器没有回程的路由，会把通知顺着标签路径送到出口 PE，再由出口 PE 发回来（RFC 3032）。Linux 上的 <code class="nw">mtr -e</code> 能显示路由器附在通知里的标签（RFC 4950）。</li>
+    <li><strong>开头是 <code>100.64</code> 到 <code>100.127</code>，或者 <code>10.</code>、<code>172.16</code> 到 <code>172.31</code>、<code>192.168</code> 的地址，</strong>是运营商内部的链路用了不对外的地址；第 2 跳附近出现 100.64 开头的，你可能在 CGNAT 后面（<a href="isp-access.html#cgnat">CGNAT</a>）。</li>
+    <li><strong>反向解析出来的名字常带着城市。</strong>不加 <code>-n</code> 时，traceroute 会把地址反查成名字，运营商常把设备类型、编号和城市写进去，比如虚构的 <code>ae2.cr01.sha1.example.net</code>：接口 ae2、核心路由器 01、上海第 1 个机房。写法各家自定，可能过时，只能参考。</li>
+  </ul>
+  <p>国内的 traceroute 里常见几段骨干网的地址，RDAP 里登记的是：<code>202.97.0.0/19</code> 为 CHINANET-BB（中国电信骨干网），<code>59.43.0.0/16</code> 为 CN2-BB，<code>219.158.0.0/19</code> 为 ChinaUnicom-BACKBONE，<code>221.176.0.0/13</code> 为 CMNET（中国移动）。开头一样不代表是同一家：<code>202.97.192.0/18</code> 登记的是 UNICOM-HL（联通黑龙江）。拿不准就查 RDAP。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">13</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>IP 归属地显示在别的城市，甚至别的省</td><td>地址池在城市之间调配；手机流量从省里少数几处出网；CGNAT；地理位置库更新慢</td><td>城市只当参考；真要位置，用系统的定位权限</td></tr>
+      <tr><td>185.199.108.153 的归属地是美国，延迟却很低</td><td>登记的国家是持有者的国家；任播地址在很多地方同时存在</td><td>不要用登记的国家判断服务器在哪</td></tr>
+      <tr><td>电信用户访问联通机房很慢，晚上更慢</td><td>跨网：只能在直联点交接，可能要绕路，交接口高峰期拥塞</td><td>先看用户和服务器是不是同一家；服务端用 BGP 多线、分运营商部署或 CDN</td></tr>
+      <tr><td>traceroute 某一行全是 <code>*</code></td><td>那台路由器不回 TTL 超时通知，或者限速</td><td>看后面几跳，后面正常就不是丢包</td></tr>
+      <tr><td>两次 traceroute 走的路不一样，或者一行出现两个地址</td><td>ECMP 按流哈希，每个探测包的端口不同；路由也会变</td><td>macOS 用 <code class="nw">traceroute -e</code> 固定端口，或者用 Paris traceroute</td></tr>
+      <tr><td>traceroute 里出现 100.64 或 10. 开头的地址</td><td>运营商内部链路用不对外的地址；或者你在 CGNAT 后面</td><td>正常，不是故障。是不是 CGNAT 见 <a href="isp-access.html#cgnat">CGNAT</a></td></tr>
+      <tr><td>同一个地址，在不同地方 ping 的延迟差很多</td><td>任播：每个人连到的是自己路由上最近的那个节点</td><td>不要用一个地方的延迟推断服务器在哪</td></tr>
+      <tr><td>换了新服务器地址，邮件进垃圾箱、部分网站要验证</td><td>地址继承了上一个使用者的名声</td><td>上线前查黑名单和地理位置库，必要时申请移除</td></tr>
+      <tr><td>新宣告的前缀在一部分网络里不通</td><td>没有 ROA 或者和宣告不符，被判 Invalid；IRR 里没有 route 记录，被上游过滤</td><td>先建 ROA 和 IRR 记录，再宣告</td></tr>
+      <tr><td>按 IP 限流误伤一大片；同一个用户隔天 IP 就变了</td><td>CGNAT 让几百户共用一个地址；重新拨号、地址池调配都会换地址</td><td>按账号或设备限流，不要把 IP 当身份</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">数据都是 2026-11-23 查的：IANA 的 IPv4 登记表和 RDAP 引导文件；APNIC 的 delegated-apnic-latest（文件日期 20261123）和 transfer-apnic-latest，用 python3 汇总；RDAP 问的是 rdap.db.ripe.net 和 rdap.apnic.net，8.8.8.8 的 ARIN 和 RADB 记录取自 RIPEstat 的 whois 接口；AS、前缀、路径和 RPKI 取自 RIPEstat 的数据接口（RIS 数据时间 2026-11-22）；路由表大小取自 bgp.potaroo.net 当天的报告。耗尽日期对照 NRO 2011-02-03 的公告、APNIC 的 IPv4 耗尽说明页和英文维基百科；直联点取自工信部 2013-10-25 的通知（中国政府网转载）、黑龙江省通信管理局 2022-11-07 的报道和中文维基百科"中国互联网骨干网"条目；YouTube 事件取自 RIPE NCC 2008 年的 RIS 分析；保留标签取自 IANA 登记表；协议细节对照 RFC 原文和 macOS 的 traceroute 手册。带标签的帧用 python3 在全流程那一页的 74 字节 SYN 上构造，NAT、TTL 和校验和都重算过；ECMP 的哈希用 CRC32 示意。运营商内部的设备、链路网段、环回地址、MAC、标签值、traceroute 输出和反向解析名都是示意，用的是文档专用的地址段和 <code>00:00:5E:00:53:xx</code>。没有在这台机器上运行 traceroute，也没有查这台机器所在的网络。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 4 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="mobile-network.html"><span class="t">← 上一篇：移动网络</span><span class="d">移动网络：用流量上网时，包是怎么走的</span></a>
+    <a class="demo" href="dns.html"><span class="t">下一篇：DNS →</span><span class="d">到这里，包已经能送到世界上任何一台机器。下面看两端怎么对话，第一件事是把域名换成地址。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>

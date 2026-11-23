@@ -54,7 +54,7 @@ td.nw{white-space:nowrap}
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 音视频学习笔记</div>
+  <div class="eyebrow">通用 · 网络</div>
   <h1>DNS：域名是怎么查到 IP 的</h1>
   <p class="lede">网络上的机器靠 IP 地址找到对方，人记的却是域名。把域名换成 IP 的这一步叫 DNS 解析，每次连接之前都要先做它。这份笔记拿这个知识库自己的域名当例子，把一次查询从头跟到尾：问了谁，问题和答案的每个字节是什么，答案能用多久，在 Android 上又是谁替你问的。</p>
   <div class="journey" aria-label="一次 DNS 查询的大小和结果">
@@ -605,6 +605,13 @@ val client = OkHttpClient.Builder()
   </table></div>
   <p class="foot">记录、TTL、报文大小和耗时是 2026 年 11 月在一台 Mac 上实测的，查的是公共解析器 1.1.1.1、8.8.8.8 和各级权威服务器。授权链用 <code>dig @1.1.1.1 +trace +tcp +nodnssec mythlin19920302.github.io A</code>（dig 9.10.6）；各类记录用 <code>dig +tcp</code>；43 字节的查询和 107 字节的回答是用 python3 的 socket 按 RFC 1035 构造、收发的，分别走了 UDP、TCP 和 DoT；DoH 用 curl；客户端子网用 <code>dig +subnet</code>；系统缓存的耗时用 python3 的 <code>socket.getaddrinfo</code> 计时。Android 的行为对照的是 SDK 里 android-36 的源码（<code>java/net/Inet6AddressImpl.java</code>、<code>AddressCache.java</code>），OkHttp 对照 4.12.0 的源码和 5.x 的更新日志，FFmpeg 对照工程里的 n8.1.3 源码。没有在真机上抓包；私人 DNS 的三档行为、netd 的转交方式和 Happy Eyeballs 的两个时间取自文档和 RFC 8305。</p>
 </section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 5 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="isp-backbone.html"><span class="t">← 上一篇：运营商内部</span><span class="d">运营商内部：地址怎么分下来，包怎么跨城跨网</span></a>
+    <a class="demo" href="tcp-congestion.html"><span class="t">下一篇：拥塞控制 →</span><span class="d">有了地址就能建连接。TCP 负责把数据一个不少地送到，还得自己判断该发多快。</span></a>
+  </div>
+</nav>
 </main>
 </div>
 </body>

@@ -31,7 +31,7 @@
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 视频学习笔记</div>
+  <div class="eyebrow">视频 · OpenGL 渲染</div>
   <h1>用 OpenGL 把 YUV 画到屏幕</h1>
   <p class="lede">解码器给的是三块 YUV 数据，屏幕要的是 RGB 像素。中间的换算、缩放和旋转都交给 GPU：把三个平面当成三张纹理传上去，画一个铺满的矩形，让着色器对每个像素做一次矩阵乘法。这份笔记对着工程里的 <code>YuvGlRenderer</code> 走一遍。</p>
   <div class="journey" aria-label="一帧画面的旅程">

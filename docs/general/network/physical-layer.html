@@ -52,7 +52,7 @@ figure.fig svg.wide{max-width:700px;min-width:640px}
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 音视频学习笔记</div>
+  <div class="eyebrow">通用 · 网络</div>
   <h1>物理层：比特是怎么变成电、光和无线电的</h1>
   <p class="lede">总览页跟着一个请求从手机走到服务器，把最底下一层当成了黑盒：帧交给网卡，就算发出去了。这一页打开这个黑盒。还是那一帧，74 字节的 TCP SYN：它先变成无线电飞到热点，再变成网线上的电压走到光猫，然后变成一串光脉冲进了运营商的光纤。每换一种介质，同样的比特就换一种样子。</p>
   <div class="journey" aria-label="同一帧在物理层的几个数字">
@@ -679,6 +679,13 @@ cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback()
   </table></div>
   <p class="foot">标着"计算值"的数，以及线上字节数和时间、香农极限、Wi-Fi 各档速率和空中耗时、波长和频率、光纤里的延迟和衰减、分光损耗、误码估算，都是按正文里写出的算式算的。帧长、前导码、帧间隔、各代以太网的编码、Wi-Fi 的子载波数和时隙、PON 的速率和波长，取自 IEEE 802.3、IEEE 802.11 和 ITU-T G.984、G.987、G.9807.1 的规定值。折射率 1.468、光纤和网线的衰减、穿墙损耗、所需信噪比、放大器间距、"吞吐量约为链路速率的一半"是常见的典型值，随器件和环境变化。74 字节的帧、10 ms 的一个来回和 6 台路由器引自总览页；这一页没有做任何新的测量。</p>
 </section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 1 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="journey.html"><span class="t">← 上一篇：全流程</span><span class="d">一个请求是怎么送到的</span></a>
+    <a class="demo" href="isp-access.html"><span class="t">下一篇：宽带接入 →</span><span class="d">信号能传了。接着看你家那根光纤怎么接进运营商，路由器又是怎么领到地址的。</span></a>
+  </div>
+</nav>
 </main>
 </div>
 </body>

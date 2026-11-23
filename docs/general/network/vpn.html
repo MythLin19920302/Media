@@ -50,7 +50,7 @@
 
 <main>
 <header class="hero">
-  <div class="eyebrow">Android 音视频学习笔记</div>
+  <div class="eyebrow">通用 · 网络</div>
   <h1>VPN：在公网上再套一层</h1>
   <p class="lede"><a href="journey.html">全流程</a>那一页里，一个请求从手机走到网站用了十二步。打开 VPN 之后还是这十二步，只是手机发出的每个包先被加密，再整个装进另一个包，寄给 VPN 服务器，由它拆开后替你送出去。这份笔记讲多出来的这一层是怎么套上去的，以及十二步里每一步因此变了什么。</p>
   <div class="journey" aria-label="WireGuard 隧道给每个包增加的字节">
@@ -497,6 +497,13 @@ val onVpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true</code>
   </table></div>
   <p class="foot">字节数是按协议定义逐项相加的：IPv4 头 20、IPv6 头 40、UDP 头 8、TCP 头 20（带时间戳选项再加 12）、WireGuard 数据包的头 16 和认证标签 16、握手发起 148、握手回应 92。隧道 MTU 1420、MSS 1380、SYN 的 138 字节和首页的 7 段都由这些数算出，其中 74 和 8406 取自全流程那一页。手机、路由器和 VPN 这一侧的 IP、MAC、端口、网段全部是示意值，取自文档专用地址段和私有地址段，不对应任何真实设备；网站的地址沿用全流程那一页。延迟和吞吐没有实测，只写了它们由哪几段组成。协议的行为依据 WireGuard 的协议说明和相关 RFC（IKEv2 7296、ESP 的 UDP 封装 3948、路径 MTU 发现 1191、QUIC 9000、SOCKS5 1928），Android 部分对照 <code>VpnService</code> 和 <code>NetworkCapabilities</code> 的公开 API 文档。</p>
 </section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 9 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="http2-http3.html"><span class="t">← 上一篇：HTTP/2 与 HTTP/3</span><span class="d">HTTP/2 与 HTTP/3：一条连接上怎么跑很多请求</span></a>
+    <a class="demo" href="streaming-protocols.html"><span class="t">下一篇：流媒体协议 →</span><span class="d">最后落到音视频：点播、直播、通话分别用了前面哪些东西，又各自改了什么。</span></a>
+  </div>
+</nav>
 </main>
 </div>
 </body>

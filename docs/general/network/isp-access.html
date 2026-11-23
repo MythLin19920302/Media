@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>宽带接入：你家是怎么连进运营商的</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+<style>
+/* 本页独有：字节拆解、位拆解、较宽的图 */
+.bytes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0 0 16px;font-family:var(--font-mono);font-size:13px}
+.bytes div{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:8px 10px;line-height:1.5;min-width:0}
+.bytes b{display:block;color:var(--accent);font-weight:500;overflow-wrap:anywhere}
+.bytes span{font-family:var(--font-body);font-size:12.5px;color:var(--muted)}
+@media (max-width:520px){.bytes{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.bits{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;font-family:var(--font-mono);font-size:13px}
+.bits div{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:7px 10px;line-height:1.5}
+.bits b{display:block;color:var(--accent);font-weight:500;letter-spacing:.04em}
+.bits span{font-family:var(--font-body);font-size:12.5px;color:var(--muted)}
+figure.fig svg.wide{max-width:680px;min-width:600px}
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw{white-space:nowrap}
+.tbl td code{overflow-wrap:break-word}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 网络</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#chain">从你家到机房：一串盒子</a></li>
+    <li><a href="#onu">光猫先要被认出来</a></li>
+    <li><a href="#vlan">一根光纤，几种业务：VLAN</a></li>
+    <li><a href="#bridge">路由器也要入网：桥接还是路由</a></li>
+    <li><a href="#pppoe">PPPoE 发现：找到 BRAS</a></li>
+    <li><a href="#ppp">PPP 会话：协商、认证、领地址</a></li>
+    <li><a href="#radius">账号在哪验：RADIUS</a></li>
+    <li><a href="#ipoe">不拨号的接法：IPoE</a></li>
+    <li><a href="#mac">MAC 地址在运营商那边</a></li>
+    <li><a href="#pool">地址从池里来</a></li>
+    <li><a href="#cgnat">IPv4 不够用：CGNAT</a></li>
+    <li><a href="#ipv6">IPv6：不用 NAT</a></li>
+    <li><a href="#return">回程：一路查表找回你家</a></li>
+    <li><a href="#see">自己能看到什么</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">通用 · 网络</div>
+  <h1>宽带接入：你家是怎么连进运营商的</h1>
+  <p class="lede">全流程那一页里，包出了家里的路由器，下一站就是运营商的路由器。中间其实还隔着光猫、OLT 和交换机，运营商就在这一段认出"这是哪一户"，给你家的路由器发地址，再把回包送回来。这一页从光猫通电讲起，一直跟到回包一张表一张表地找回手机。</p>
+  <div class="journey" aria-label="握手第一帧到达 BRAS 时的长度">
+    <div class="step"><span class="k">握手第一帧</span><span class="v hex">74 字节</span></div>
+    <span class="arrow" aria-hidden="true">+</span>
+    <div class="step"><span class="k">PPPoE 头和 PPP 协议号</span><span class="v">8</span></div>
+    <span class="arrow" aria-hidden="true">+</span>
+    <div class="step"><span class="k">两层 VLAN 标签</span><span class="v">8</span></div>
+    <span class="arrow" aria-hidden="true">=</span>
+    <div class="step"><span class="k">到 BRAS 时</span><span class="v">90 字节</span></div>
+  </div>
+  <p class="caption">74 字节是<a href="journey.html#s5">全流程装包那一步</a>的 TCP SYN（不含帧校验），另外 16 字节按 RFC 2516 和 IEEE 802.1ad 加上，整帧用 python3 构造后数出，校验和是真算的。网站地址沿用全流程那一页，其余地址、MAC、VLAN 号、会话号、账号都是示意值。各地运营商做法不同，这里写的是常见的一种。</p>
+</header>
+
+<section id="chain">
+  <h2><span class="n">01</span>从你家到机房：一串盒子</h2>
+  <p>全流程那一页数到 6 台路由器，家里的是第 1 台，运营商的第一台是第 2 台。这两台之间还隔着几个盒子。它们不看 IP，也不改 TTL（包每过一台路由器减 1 的那个数），所以数不出来。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg class="wide" viewBox="0 0 680 152" role="img" aria-label="七台设备：路由器、光猫、分光器、OLT、汇聚交换机、BRAS、核心路由器。只有路由器、BRAS 和核心路由器看 IP，把 TTL 减 1">
+      <g class="lead" fill="none"><path d="M60 24H226"/><path d="M240 24H316"/><path d="M330 24H586"/><path d="M600 24H676"/></g>
+      <g class="axis" fill="none"><path d="M136 58H150"/><path d="M226 58H240"/><path d="M316 58H330"/><path d="M406 58H420"/><path d="M496 58H510"/><path d="M586 58H600"/></g>
+      <g class="hot"><rect x="60" y="34" width="76" height="48" rx="7"/><rect x="510" y="34" width="76" height="48" rx="7"/><rect x="600" y="34" width="76" height="48" rx="7"/></g>
+      <g class="band"><rect x="150" y="34" width="76" height="48" rx="7"/><rect x="330" y="34" width="76" height="48" rx="7"/><rect x="420" y="34" width="76" height="48" rx="7"/></g>
+      <g class="ghost"><rect x="240" y="34" width="76" height="48" rx="7"/></g>
+      <g text-anchor="middle">
+        <text class="m" x="143" y="16">家里</text><text class="m" x="278" y="16">楼里或小区</text><text class="m" x="458" y="16">运营商的机房</text><text class="m" x="638" y="16">城域网</text>
+        <text x="98" y="55">路由器</text><text x="188" y="55">光猫</text><text x="278" y="55">分光器</text><text x="368" y="55">OLT</text><text x="458" y="55">汇聚交换机</text><text x="548" y="55">BRAS</text><text x="638" y="55">核心路由器</text>
+        <text class="m" x="98" y="73">你家</text><text class="m" x="188" y="73">ONU</text><text class="m" x="278" y="73">无源</text><text class="m" x="368" y="73">光线路终端</text><text class="m" x="458" y="73">汇聚 OLT</text><text class="m" x="548" y="73">也叫 BNG</text><text class="m" x="638" y="73">全城出口</text>
+        <text x="98" y="112">IP、端口</text><text x="188" y="112">帧</text><text x="278" y="112">光</text><text x="368" y="112">帧、VLAN</text><text x="458" y="112">帧、VLAN</text><text x="548" y="112">帧、IP</text><text x="638" y="112">IP</text>
+        <text class="a" x="98" y="140">减 1 · 第 1 台</text><text class="m" x="188" y="140">不变</text><text class="m" x="278" y="140">不变</text><text class="m" x="368" y="140">不变</text><text class="m" x="458" y="140">不变</text><text class="a" x="548" y="140">减 1 · 第 2 台</text><text class="a" x="638" y="140">减 1 · 第 3 台</text>
+      </g>
+      <text class="m" x="4" y="112">看哪层</text><text class="m" x="4" y="140">TTL</text>
+    </svg>
+    </div>
+    <figcaption>蓝框的三台按 IP 转发，每过一台 TTL 减 1，就是全流程里的第 1、2、3 台路由器。中间四台只看帧或者只传光，TTL 不变，traceroute 里也看不到它们。光猫按桥接模式画（第 04 节）。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>设备</th><th>做什么</th></tr></thead>
+    <tbody>
+      <tr><td>光猫（ONU，光网络单元）</td><td>光电互转；给上网、电视、电话的帧打上各自的 VLAN 标签</td></tr>
+      <tr><td>分光器</td><td>不用电，一根光纤分成 32 或 64 根，见 <a href="physical-layer.html#pon">物理层</a></td></tr>
+      <tr><td>OLT（光线路终端）</td><td>每个 PON 口经分光器挂几十台光猫；把每户的流量换成 VLAN 标签送上去</td></tr>
+      <tr><td>汇聚交换机</td><td>把一片区域的 OLT 汇到一起，按 VLAN 和 MAC 转发</td></tr>
+      <tr><td>BRAS（宽带远程接入服务器），也叫 BNG</td><td>拨号、认证、发地址、限速、计费；第一台按 IP 转发的运营商设备，常放在城市或区县的机房</td></tr>
+      <tr><td>城域网核心路由器</td><td>把全城的 BRAS 接到骨干网。城域网是运营商在一个城市里的那张网</td></tr>
+    </tbody>
+  </table></div>
+  <p>在 BRAS 之前，包一直按二层（帧和 MAC 地址）转发。运营商在这一段认出"这是哪一户"，靠的是光猫编号、VLAN 标签、MAC 地址和拨号会话号，后面几节逐个讲。BRAS 往后怎么走，见 <a href="isp-backbone.html">运营商内部</a>；用流量上网时没有这一段，见 <a href="mobile-network.html">移动网络</a>。</p>
+</section>
+
+<section id="onu">
+  <h2><span class="n">02</span>光猫先要被认出来</h2>
+  <p>一个 PON 口下的几十台光猫共用一根光纤，OLT 要先知道下面挂着谁、谁是合法的，才给它分上行时间片、替它转发。新光猫插上光纤后：先对上 OLT 下行光的节拍；在 OLT 定期留出的空档里报上序列号；测距，让它的上行和邻居对齐（原理见 <a href="physical-layer.html#pon">物理层</a>）；OLT 给它一个编号（ONU ID），拿它报的身份查登记表，查到才放行；最后经一条管理通道（GPON 里叫 OMCI）把业务通道和 VLAN 配进光猫。光猫的 PON 灯常亮，就是这几步走完了。</p>
+  <h3>拿什么认</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>认法</th><th>用的是什么</th><th>什么时候录进 OLT</th></tr></thead>
+    <tbody>
+      <tr><td>序列号（SN），GPON</td><td>出厂写死的 8 字节：4 字节厂商代码加 4 字节编号，印在光猫背面；可以再配一个密码一起核对</td><td>装机时录入，换光猫要重录</td></tr>
+      <tr><td>逻辑 ID（LOID），可加校验码</td><td>运营商定义的字符串，最长 24 字节，和哪一台光猫无关</td><td>开户时生成，交给装机师傅</td></tr>
+      <tr><td>MAC 地址，EPON</td><td>光猫 PON 口的 MAC；EPON 也支持 LOID</td><td>装机时录入</td></tr>
+    </tbody>
+  </table></div>
+  <p>国内装机师傅在光猫注册页面里输入的一串号码，多半就是 LOID。它的好处是运营商不用事先知道你家是哪一台光猫：任何一台兼容的光猫，填对 LOID 就能顶上这条线。</p>
+  <h3>OLT 用来区分各家的编号</h3>
+  <p>注册之后，OLT 内部用这几个号码指代你家（以 GPON 为例，号码是示意）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>号码</th><th>这个例子里</th><th>用来</th></tr></thead>
+    <tbody>
+      <tr><td>PON 口</td><td><code>0/1/3</code>（机框/槽位/端口）</td><td>光纤接在 OLT 的哪个口</td></tr>
+      <tr><td>ONU ID</td><td><code>7</code></td><td>这个口下的第几台光猫</td></tr>
+      <tr><td>GEM 端口号，12 位</td><td><code>263</code>，上网用</td><td>下行的每块数据前面有 5 字节的 GEM 帧头，写着它属于哪个 GEM 端口。一个 PON 口最多 4096 个，每台光猫的每种业务各一个，光猫只收自己的</td></tr>
+    </tbody>
+  </table></div>
+  <p>XG-PON、XGS-PON 的帧头是 8 字节，端口号 16 位。EPON 用 LLID（逻辑链路标识，15 位），写在每一帧开头的前导码里。下行数据会复制给整个 PON 口，别家的光猫就是看这个号码把它丢掉的（第 13 节）。</p>
+  <h3>TR-069：运营商远程配置光猫</h3>
+  <p>光猫自己的配置也不靠手填。它有一条走单独 VLAN 的管理连接，上线后主动连到运营商的自动配置服务器（ACS），报上型号、序列号和 LOID，这一步叫 Inform。ACS 按开户工单把参数写进来：上网连接的 VLAN 和模式，路由模式下的拨号账号和密码，电视和电话的设置。改套餐、升级固件也走这条路。</p>
+  <p>这套协议叫 TR-069（CWMP），由 Broadband Forum 制定，消息是 SOAP（XML），跑在 HTTP 或 HTTPS 上。光猫是客户端；ACS 要找光猫时，先访问光猫留下的一个网址，让它连回来。国内有的运营商把这个平台叫 ITMS，换光猫时说的"ITMS 注册"就是这一步。光猫管理页面的连接列表里常见 <code>2_INTERNET_B_VID_xxx</code> 这样的名字：<code>INTERNET</code> 是上网，<code>TR069</code> 是管理，<code>B</code> 是桥接，<code>R</code> 是路由，<code>VID</code> 后面是 VLAN 号。</p>
+</section>
+
+<section id="vlan">
+  <h2><span class="n">03</span>一根光纤，几种业务：VLAN</h2>
+  <p>上网、电视、电话共用一根光纤，到了运营商那边要分开走：上网的去 BRAS，电视和电话的去各自的平台。办法是 VLAN（虚拟局域网）：在帧里插一个 4 字节的标签写上编号，交换机只在编号相同的口之间转发，编号不同的帧像在两张不相通的网里。</p>
+  <h3>标签的 4 个字节</h3>
+  <p>标签插在源 MAC 和类型字段之间，格式由 IEEE 802.1Q 规定。你家上网这一条是 <code>81 00 00 7b</code>：</p>
+  <div class="bits">
+    <div><b>1000 0001 0000 0000</b><span>TPID 0x8100<br>"后面是一个 VLAN 标签"</span></div>
+    <div><b>000</b><span>PCP，优先级 0–7<br>上网是 0</span></div>
+    <div><b>0</b><span>DEI<br>拥挤时可否先丢</span></div>
+    <div><b>0000 0111 1011</b><span>VID，12 位<br>123</span></div>
+  </div>
+  <p>收帧的一方在类型字段的位置读到 <code>0x8100</code>，就知道这是标签，真正的类型在 4 字节之后。VID 为 0 表示只带优先级，4095 保留，能用的是 1 到 4094。带一个标签时，以太网帧最长从 1518 字节变成 1522。</p>
+  <h3>4094 个号不够一个城市用</h3>
+  <p>一台 BRAS 下面几万户，一个城市几百万户。每户一个 VLAN 号，一张二层网里最多只有 4094 户。几百户共用一个号也行，叫 N:1 VLAN，电视常这样用：同一个频道在一个 VLAN 里只送一份。但这样 BRAS 就没法从标签上分出是哪一户。</p>
+  <p>办法是再套一层，叫 QinQ（IEEE 802.1ad）。外层叫 S-VLAN（服务商 VLAN），按 OLT 或 PON 口分；内层叫 C-VLAN（用户 VLAN），在同一个外层里按户分。合起来有 4094 × 4094 = 16,760,836 种组合，在 BRAS 的一个端口上，一对号码就是一户，这叫 1:1 VLAN。你家上网的帧，在 OLT 和 BRAS 之间开头是这 22 个字节（按 802.1ad 构造）：</p>
+<pre><code>00 00 5e 00 53 10   00 00 5e 00 53 02   88 a8 03 e9   81 00 00 7b   88 64</code></pre>
+  <div class="bytes">
+    <div><b>00 00 5e 00 53 10</b><span>目的 MAC：BRAS 的接入口</span></div>
+    <div><b>00 00 5e 00 53 02</b><span>源 MAC：你家路由器的 WAN 口</span></div>
+    <div><b>88 a8 03 e9</b><span>外层标签：S-VLAN 0x3E9 = 1001</span></div>
+    <div><b>81 00 00 7b</b><span>内层标签：C-VLAN 0x07B = 123</span></div>
+  </div>
+  <p>最后的 <code>88 64</code> 才是原来的类型字段，表示里面是 PPPoE 会话的帧（第 05 节）。标准里外层的 TPID 是 <code>0x88A8</code>；早年有过用 <code>0x9100</code> 的非标准做法，也有内外两层都写 <code>0x8100</code> 的，设备上能配。</p>
+  <h3>标签是谁打的</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>线路段</th><th>帧里的标签</th><th>谁加的</th></tr></thead>
+    <tbody>
+      <tr><td>路由器 → 光猫（网线）</td><td>没有</td><td>—</td></tr>
+      <tr><td>光猫 → OLT（PON）</td><td>C-VLAN 123</td><td>光猫，按 TR-069 下发的配置</td></tr>
+      <tr><td>OLT → 汇聚交换机 → BRAS</td><td>S-VLAN 1001 + C-VLAN 123</td><td>OLT 在外面再加一层</td></tr>
+    </tbody>
+  </table></div>
+  <p>这是常见的一种分工。也有地区让光猫打一个全区统一的号，由 OLT 按 PON 口、光猫和 GEM 端口换成每户不同的内层号再加外层，这叫 VLAN 转换，所以同一户在光猫上和在 BRAS 上看到的号可以不同。回来时倒过来（第 13 节）。</p>
+</section>
+
+<section id="bridge">
+  <h2><span class="n">04</span>路由器也要入网：桥接还是路由</h2>
+  <p>全流程第 1 步里，手机向路由器领了地址。路由器自己也要入网：它的 WAN 口（朝外的口）要向运营商领一个地址，这是它的第二个身份。由谁去领，看光猫设成什么模式：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>光猫桥接</th><th>光猫路由</th></tr></thead>
+    <tbody>
+      <tr><td>光猫做什么</td><td>只做光电转换和打标签，像一根加长的网线</td><td>自己拨号、做 NAT、给下面发地址，是一台路由器</td></tr>
+      <tr><td>谁拨号</td><td>你的路由器</td><td>光猫</td></tr>
+      <tr><td>BRAS 看到的 MAC</td><td>路由器 WAN 口的 <code>00:00:5E:00:53:02</code></td><td>光猫的，例如 <code>00:00:5E:00:53:03</code></td></tr>
+      <tr><td>路由器 WAN 口拿到</td><td>公网地址，或者第 11 节的 100.64 地址</td><td>光猫分的私有地址</td></tr>
+      <tr><td>到服务器经过的路由器</td><td>6 台，到达时 TTL 是 58</td><td>路由器也开着路由时 7 台，TTL 到达时是 57</td></tr>
+    </tbody>
+  </table></div>
+  <p>这一页按全流程的设定：光猫桥接，路由器拨号。光猫和路由器都在路由模式时，手机的包要被换两次地址，叫双重 NAT。浏览网页一般没事，但端口转发要在两台上都做，有的游戏会报"NAT 类型严格"。路由器改 AP 模式（只当交换机和热点），或者光猫改桥接，就回到一次 NAT。国内很多光猫装好时是路由模式，改桥接一般要找运营商。</p>
+</section>
+
+<section id="pppoe">
+  <h2><span class="n">05</span>PPPoE 发现：找到 BRAS</h2>
+  <p>家里的路由器入网，国内最常见的是 PPPoE（以太网上的 PPP，RFC 2516）。PPP 原本给电话拨号上网用，认证、分地址、维持连接一套都有，但它假定线路只有两头，而一个 VLAN 里可能有不止一台 BRAS。所以 PPPoE 先用发现阶段找到 BRAS、领一个会话号，帧类型是 <code>0x8863</code>；之后的 PPP 都装在会话阶段里，帧类型是 <code>0x8864</code>（第 06 节）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>包</th><th>代码</th><th>谁发给谁</th><th>会话号</th><th>带的标签</th><th class="num">帧长</th></tr></thead>
+    <tbody>
+      <tr><td>PADI</td><td><code>0x09</code></td><td>路由器 → 整个 VLAN（广播）</td><td>0</td><td>Service-Name、Host-Uniq</td><td class="num">60</td></tr>
+      <tr><td>PADO</td><td><code>0x07</code></td><td>每台 BRAS → 路由器</td><td>0</td><td>AC-Name、Service-Name、Host-Uniq、AC-Cookie</td><td class="num">63</td></tr>
+      <tr><td>PADR</td><td><code>0x19</code></td><td>路由器 → 选中的 BRAS</td><td>0</td><td>Service-Name、Host-Uniq、AC-Cookie</td><td class="num">52</td></tr>
+      <tr><td>PADS</td><td><code>0x65</code></td><td>BRAS → 路由器</td><td><code>0x0F3A</code></td><td>Service-Name、Host-Uniq</td><td class="num">60</td></tr>
+      <tr><td>PADT</td><td><code>0xA7</code></td><td>任何一方，结束会话时</td><td><code>0x0F3A</code></td><td>可以没有</td><td class="num">60</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">帧长是路由器这一侧、不带标签、不含帧校验的长度，按 RFC 2516 构造后数出来；不够 60 字节的补到 60。</p>
+  <ul>
+    <li><strong>Service-Name：要什么服务。</strong>PADI 里必须恰好有一个，长度 0 表示什么服务都行。</li>
+    <li><strong>Host-Uniq：路由器自己挑的记号。</strong>BRAS 在回答里原样带回，路由器靠它认出"这是回答我的"。</li>
+    <li><strong>AC-Name：BRAS 的名字。</strong>几台 BRAS 都回了 PADO 时，路由器一般挑最先回的。</li>
+    <li><strong>AC-Cookie：BRAS 给的一串字节</strong>，路由器在 PADR 里原样带回。RFC 2516 说它用来帮助防拒绝服务攻击。常见的用法是 BRAS 不为每个 PADI 记状态，等 PADR 带回它再核对。</li>
+  </ul>
+  <h3>拆开 PADI</h3>
+  <p>路由器发出的 PADI，按 RFC 2516 构造，60 字节：</p>
+<pre><code>ff ff ff ff ff ff 00 00 5e 00 53 02 88 63 11 09
+00 00 00 0c 01 01 00 00 01 03 00 04 4b 7f 21 06
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00</code></pre>
+  <div class="bytes">
+    <div><b>ff ff ff ff ff ff</b><span>目的 MAC：广播，这个 VLAN 里的所有设备</span></div>
+    <div><b>00 00 5e 00 53 02</b><span>源 MAC：路由器的 WAN 口</span></div>
+    <div><b>88 63</b><span>类型：PPPoE 发现阶段</span></div>
+    <div><b>11 09</b><span>版本 1、类型 1；代码 0x09，PADI</span></div>
+    <div><b>00 00</b><span>会话号：还没有，填 0</span></div>
+    <div><b>00 0c</b><span>长度：后面的标签共 12 字节</span></div>
+    <div><b>01 01 00 00</b><span>Service-Name，长度 0</span></div>
+    <div><b>01 03 00 04 4b 7f 21 06</b><span>Host-Uniq，4 字节的记号</span></div>
+    <div><b>00 × 28</b><span>填充：以太网帧至少 60 字节</span></div>
+  </div>
+  <p>有内容的只有前 32 字节，后面 28 个 0 是凑够以太网最小帧长的；PPPoE 头里的长度字段让收的一方知道标签到哪结束。</p>
+  <h3>OLT 在半路写上线路</h3>
+  <p>PADI 经光猫、OLT 送到 BRAS。OLT 在半路加了两层 VLAN 标签，又在标签末尾插了一个 Vendor-Specific 标签，写明这个包是从哪条线路来的。这个功能叫 PPPoE 中间代理（PPPoE Intermediate Agent，国内设备上常叫 PPPoE+），出自 Broadband Forum 的 TR-101；PADR 经过时还会再插一次。到达 BRAS 的 PADI 是 83 字节：</p>
+<pre><code>ff ff ff ff ff ff 00 00 5e 00 53 02     两个 MAC 没变
+88 a8 03 e9 81 00 00 7b                 OLT 加的两层标签
+88 63 11 09 00 00 00 37                 长度从 12 变成 55
+01 01 00 00 01 03 00 04 4b 7f 21 06     原来的两个标签
+01 05 00 27 00 00 0d e9                 Vendor-Specific，39 字节；厂商号 3561
+01 13 4f 4c 54 2d 41 31 20 78 70 6f 6e 20 30 2f 31 2f 33 3a 37
+02 0c 64 65 6d 6f 2d 6c 6f 69 64 2d 30 31</code></pre>
+  <ul>
+    <li><strong>厂商号 3561</strong>（<code>0x0DE9</code>）是 ADSL Forum（今天的 Broadband Forum）在 IANA 登记的企业号，各家设备都用它。</li>
+    <li><strong>子选项 1 是线路标识（Agent Circuit ID）</strong>：<code>OLT-A1 xpon 0/1/3:7</code>，哪台 OLT、哪个 PON 口、第几台光猫，格式各家不同，这里是示意。<strong>子选项 2 是用户标识（Agent Remote ID）</strong>：<code>demo-loid-01</code>，内容由运营商定。</li>
+    <li><strong>RFC 2516 规定 PADI 不能超过 1484 字节</strong>，就是给路上的中继留出加标签的地方。</li>
+  </ul>
+  <h3>BRAS 记下了什么</h3>
+  <p>发出 PADS，BRAS 的会话表里多了一行，之后路由器发来的每一帧都要和它对上（第二行是同一个 PON 口下的邻居，都是示意）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>BRAS 端口</th><th>S-VLAN</th><th>C-VLAN</th><th>路由器 MAC</th><th>会话号</th><th>线路标识</th></tr></thead>
+    <tbody>
+      <tr><td>2/0/1</td><td>1001</td><td>123</td><td><code>00:00:5E:00:53:02</code></td><td><code>0x0F3A</code></td><td><code>OLT-A1 xpon 0/1/3:7</code></td></tr>
+      <tr><td>2/0/1</td><td>1001</td><td>124</td><td><code>00:00:5E:00:53:04</code></td><td><code>0x0F3B</code></td><td><code>OLT-A1 xpon 0/1/3:8</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>会话号 16 位，<code>0xFFFF</code> 保留不用。按 RFC 2516，一个会话由会话号和两端的 MAC 一起确定，只看会话号不够；BRAS 实际对的是端口、两层 VLAN、MAC、会话号这一整组，对不上的帧丢掉。账号和地址要等认证完才填进这一行（第 06、07 节）。结束时任何一方发 PADT；路由器突然断电时，BRAS 靠下一节的心跳发现。</p>
+</section>
+
+<section id="ppp">
+  <h2><span class="n">06</span>PPP 会话：协商、认证、领地址</h2>
+  <p>PADS 之后，路由器和 BRAS 之间的帧类型都是 <code>0x8864</code>，PPPoE 头里写着会话号 <code>0x0F3A</code>，再往后 2 字节是 PPP 协议号，说明里面装的是什么：<code>c0 21</code> 是 LCP，<code>c0 23</code> 和 <code>c2 23</code> 是 PAP 和 CHAP 两种认证，<code>80 21</code> 和 <code>80 57</code> 是 IPCP 和 IPv6CP，<code>00 21</code> 和 <code>00 57</code> 是 IPv4、IPv6 包。拨号接着走三步：LCP 商量链路，认证账号，IPCP 领地址。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 640 578" role="img" aria-label="一次拨号的时序：PPPoE 发现的四个包，LCP 协商，CHAP 认证交给 RADIUS 核对，IPCP 领到 203.0.113.7，最后 BRAS 向 RADIUS 报计费开始">
+      <defs>
+        <marker id="ia-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker>
+        <marker id="ia-arr-a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" style="fill:var(--accent)"/></marker>
+      </defs>
+      <g class="grid"><path d="M8 171H632"/><path d="M8 235H632"/><path d="M8 377H632"/><path d="M8 493H632"/></g>
+      <rect class="ghost" x="100" y="8" width="100" height="34" rx="7"/><rect class="hot" x="340" y="8" width="100" height="34" rx="7"/><rect class="band" x="515" y="8" width="120" height="34" rx="7"/>
+      <g class="ghostline"><path d="M150 42V548"/><path d="M390 42V548"/><path d="M575 42V548"/></g>
+      <g class="lead" marker-end="url(#ia-arr)">
+        <path d="M150 74H386"/><path d="M390 100H154"/><path d="M150 126H386"/><path d="M390 152H154"/>
+        <path d="M150 190H386"/><path d="M390 216H154"/>
+        <path d="M390 254H154"/><path d="M150 280H386"/><path d="M390 358H154"/>
+        <path d="M150 396H386"/><path d="M390 422H154"/><path d="M150 448H386"/><path d="M390 474H154"/>
+      </g>
+      <g class="snap" marker-end="url(#ia-arr-a)">
+        <path d="M390 306H571"/><path d="M575 332H394"/><path d="M390 512H571"/><path d="M575 538H394"/>
+      </g>
+      <g text-anchor="middle">
+        <text x="150" y="30">家里的路由器</text><text x="390" y="30">BRAS</text><text x="575" y="30">RADIUS 服务器</text>
+        <text x="270" y="68">PADI，广播</text>
+        <text x="270" y="94">PADO：AC-Name、AC-Cookie</text>
+        <text x="270" y="120">PADR：带回 AC-Cookie</text>
+        <text x="270" y="146">PADS：会话号 0x0F3A</text>
+        <text x="270" y="184">LCP：MRU 1492</text>
+        <text x="270" y="210">LCP：MRU 1492，认证用 CHAP</text>
+        <text x="270" y="248">CHAP 挑战：16 字节随机数</text>
+        <text x="270" y="274">CHAP 回答：账号 + MD5</text>
+        <text class="a" x="482" y="300">Access-Request</text>
+        <text class="a" x="482" y="326">Access-Accept：地址、限速</text>
+        <text x="270" y="352">CHAP 成功</text>
+        <text x="270" y="390">IPCP 请求：0.0.0.0</text>
+        <text x="270" y="416">IPCP Nak：用 203.0.113.7</text>
+        <text x="270" y="442">IPCP 请求：203.0.113.7</text>
+        <text x="270" y="468">IPCP Ack</text>
+        <text class="a" x="482" y="506">Accounting-Request</text>
+        <text class="a" x="482" y="532">Accounting-Response</text>
+        <text class="m" x="320" y="572">之后：IP 包装在会话里来回，BRAS 定期发 LCP Echo 探路由器在不在</text>
+      </g>
+      <g><text class="m" x="8" y="117">发现</text><text class="m" x="8" y="207">LCP</text><text class="m" x="8" y="310">认证</text><text class="m" x="8" y="439">IPCP</text><text class="m" x="8" y="529">计费</text></g>
+    </svg>
+    </div>
+    <figcaption>"发现"四个包的帧类型是 0x8863，从 LCP 起路由器和 BRAS 之间都是 0x8864。LCP 和 IPCP 里每个请求都有一个 Ack，图里只画了要点。蓝色的四个包走 UDP，在运营商内部，路由器看不到；最后两个是计费开始（Start）的请求和回应。</figcaption>
+  </figure>
+  <h3>LCP：先商量链路</h3>
+  <p>两边各发一个 Configure-Request，列出自己的要求。对方同意就回 Ack，不同意就回 Nak（"这个值不行，用这个"）或者 Reject（"这一项我不认"）。路由器的请求是 16 个字节：</p>
+<pre><code>c0 21   01 01 00 0e   01 04 05 d4   05 06 5e 1d 0c 42</code></pre>
+  <p><code>01 01 00 0e</code> 是请求、编号 1、长度 14。<code>01 04 05 d4</code> 是 MRU（最多能收多大的包）1492：PPP 默认 1500，RFC 2516 规定 PPPoE 上不能超过 1492。<code>05 06 …</code> 是魔术字，一个随机数，线路被意外接成环时会收到自己的魔术字。BRAS 的请求多一项 <code>03 05 c2 23 05</code>：认证用 CHAP，算法 5（MD5）；写成 <code>03 04 c0 23</code> 就是要用 PAP。</p>
+  <p>LCP 还管心跳。BRAS 隔一段时间发一个 Echo-Request（例如 <code>c0 21 09 07 00 08 2a 9b 7c 13</code>，后 4 字节是它的魔术字），路由器回 Echo-Reply。连续几次没回应，BRAS 就认为你家掉线了，删掉会话。RFC 2516 建议 BRAS 这样做。</p>
+  <h3>认证：PAP 和 CHAP</h3>
+  <p>PAP 把账号和密码直接发过去，都是明文：</p>
+<pre><code>c0 23 01 01 00 1b                              PAP，请求，编号 1，长度 27
+08 64 65 6d 6f 30 30 30 31                     8 字节的账号 demo0001
+0d 64 65 6d 6f 2d 70 61 73 73 77 6f 72 64      13 字节的密码 demo-password</code></pre>
+  <p>CHAP 不发密码。BRAS 先发一个 16 字节的随机数，叫挑战；路由器把"编号 + 密码 + 挑战"连起来算 MD5，只回 16 字节的结果：</p>
+<pre><code>c2 23 01 01 00 1c 10                               挑战：Challenge，编号 1，长度 28
+6c 0d 31 f2 a4 58 9e 7b 13 c6 d0 8e 5f 2a 94 b1    16 字节随机数
+42 52 41 53 2d 41 31                               BRAS 的名字 BRAS-A1
+
+c2 23 02 01 00 1d 10                               回答：Response，编号 1，长度 29
+f7 d3 96 4e 17 13 29 35 c5 5e bb 9f af ca 11 a7    16 字节的 MD5
+64 65 6d 6f 30 30 30 31                            账号 demo0001
+
+MD5( 01 + "demo-password" + 6c0d31f2…5f2a94b1 )
+  = f7d3964e17132935c55ebb9fafca11a7</code></pre>
+  <p>BRAS 自己不验，交给 RADIUS 服务器用存着的密码算一遍（第 07 节），再回 Success（<code>c2 23 03 01 00 04</code>）或 Failure。</p>
+  <div class="key">CHAP 保护的是线路上的密码：路上只看得到随机数和 MD5，下一次挑战换了，旧回答就没用。它不保护两件事：服务器必须存着能还原的密码（RFC 1994 明说了）；抓到一对挑战和回答的人可以离线拿字典试，弱密码照样会被猜出。</div>
+  <h3>IPCP：领地址和 DNS</h3>
+  <p>认证通过后，用 IPCP 商量 IPv4 地址。路由器不知道该用什么地址，就把地址和两个 DNS 服务器（RFC 1877 加的选项 129、131）都填成 <code>0.0.0.0</code>，意思是"请你告诉我"：</p>
+<pre><code>01 01 00 16   03 06 00 00 00 00   81 06 00 00 00 00   83 06 00 00 00 00   请求 →
+03 01 00 16   03 06 cb 00 71 07   81 06 c6 33 64 35   83 06 c6 33 64 36   Nak ←
+01 02 00 16   03 06 cb 00 71 07   81 06 c6 33 64 35   83 06 c6 33 64 36   请求 →
+02 02 00 16   03 06 cb 00 71 07   81 06 c6 33 64 35   83 06 c6 33 64 36   Ack ←</code></pre>
+  <p>每行前 4 字节是代码、编号和长度，后面是地址、首选 DNS、备用 DNS 三个选项；每个包前面还有 PPP 协议号 <code>80 21</code>。→ 是路由器发给 BRAS，← 反过来。第 2 行是 BRAS 回的 Nak（<code>03</code>），三个值已经填好：<code>cb 00 71 07</code> 是 203.0.113.7，<code>c6 33 64 35</code> 是 198.51.100.53，<code>c6 33 64 36</code> 是 198.51.100.54。路由器照着再请求一次（编号 2），BRAS 回 Ack（<code>02</code>），地址到手。BRAS 也发了自己的请求 <code>80 21 01 01 00 0a 03 06 cb 00 71 01</code>，报出对端是 203.0.113.1。PPP 线路只有两头，出门的包都交给这条会话，用不着 ARP，WAN 口的掩码常显示成 255.255.255.255。198.51.100.53 和 .54 是运营商的递归解析器，家里的路由器收到手机的 DNS 查询，就转给它们（见 <a href="dns.html">DNS</a>）。用流量上网时没有拨号这一步，手机的地址是核心网建会话时分的，见 <a href="mobile-network.html#session">移动网络</a>。</p>
+  <h3>IPv6CP：只商量后 64 位</h3>
+  <p>IPv6CP（RFC 5072）只商量接口标识，也就是 IPv6 地址的后 64 位。路由器提议 <code>80 57 01 01 00 0e 01 0a 02 00 5e ff fe 00 53 02</code>，后 8 字节由 WAN 口的 MAC 按 EUI-64 规则变来（中间插 <code>ff fe</code>，首字节翻转一位），拼上 <code>fe80::</code> 就是只在这条会话上有效的链路本地地址 <code>fe80::200:5eff:fe00:5302</code>。全球地址另外领，见第 12 节。</p>
+  <h3>多出来的 8 字节</h3>
+  <p>PPPoE 头 6 字节、PPP 协议号 2 字节，也要装进以太网的 1500 字节里：</p>
+<pre><code>MTU   1500 − 6 − 2     = 1492
+MSS   1492 − 20 − 20   = 1452     减去 IP 头和 TCP 头
+      1452 − 12        = 1440     带时间戳选项时，每段实际装的数据</code></pre>
+  <p>手机连的是 Wi-Fi，握手时申报的 MSS 仍是 1460。所以拨号上网的路由器常见的做法是：转发 SYN 时把 MSS 改成 1452，叫 MSS 钳制。不改的话，服务器发来的 1500 字节的包在 BRAS 放不进 1492，只能靠 ICMP 通知让服务器调小，通知被过滤时连接就卡住，和 <a href="vpn.html#mtu">VPN 的 MTU 问题</a>一样。全流程里 8406 字节的首页，每段 1440 字节，仍是 6 段。</p>
+  <h3>握手第一帧到了 BRAS 门口</h3>
+  <p>路由器对全流程那个 74 字节的 SYN 做了这些事：NAT（源地址和端口换成 203.0.113.7:40001），TTL 从 64 减到 63，MSS 改成 1452，重算 IP 和 TCP 的校验和，再装进 PPPoE。OLT 交给 BRAS 时，是这样的 90 字节（不含帧校验）：</p>
+<pre><code>00 00 5e 00 53 10 00 00 5e 00 53 02     目的 MAC：BRAS；源 MAC：路由器
+88 a8 03 e9 81 00 00 7b                 S-VLAN 1001，C-VLAN 123
+88 64                                   类型：PPPoE 会话阶段
+11 00 0f 3a 00 3e                       代码 0，会话号 0x0F3A，长度 62
+00 21                                   PPP：里面是 IPv4
+45 00 00 3c 1c 46 40 00 3f 06 bd 0d     IP：总长 60，TTL 63，头校验和 0xBD0D
+cb 00 71 07 b9 c7 6c 99                 203.0.113.7 → 185.199.108.153
+9c 41 01 bb 7a 3c 91 e0 00 00 00 00     TCP：40001 → 443，序号没变
+a0 02 ff ff 99 6e 00 00                 SYN，校验和 0x996E
+02 04 05 ac 04 02 08 0a 00 52 a1 c4     MSS 1452；后面的选项没变
+00 00 00 00 01 03 03 08</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>线路段</th><th>IP 包外面包着</th><th class="num">帧长（字节）</th></tr></thead>
+    <tbody>
+      <tr><td>手机 → 路由器</td><td>以太网头 14（全流程那一帧）</td><td class="num">74</td></tr>
+      <tr><td>路由器 → 光猫</td><td>以太网头 14 + PPPoE 6 + PPP 2</td><td class="num">82</td></tr>
+      <tr><td>光猫 → OLT</td><td>再加 C-VLAN 4；外面另有 5 字节的 GEM 帧头</td><td class="num">86</td></tr>
+      <tr><td>OLT → 汇聚交换机 → BRAS</td><td>再加 S-VLAN 4</td><td class="num">90</td></tr>
+      <tr><td>BRAS → 核心路由器</td><td>拆掉标签、PPPoE 和 PPP，换一个新的以太网头 14</td><td class="num">74</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">IP 包本身一直是 60 字节。同一段代码复算全流程那一帧，校验和 <code>0x3656</code>、<code>0xE7CD</code> 和帧校验都与那一页一致。</p>
+</section>
+
+<section id="radius">
+  <h2><span class="n">07</span>账号在哪验：RADIUS</h2>
+  <p>BRAS 手里没有用户的密码。账号、密码和套餐存在运营商的 AAA 服务器（认证、授权、计费）里，BRAS 用 RADIUS 协议（RFC 2865、2866）去问，走 UDP：认证用 1812 端口，计费用 1813。RADIUS 把 BRAS 这种替用户去问的设备叫 NAS（网络接入服务器）。</p>
+  <h3>Access-Request：BRAS 替你去问</h3>
+  <p>收到 CHAP 回答后，BRAS 发出这样一个请求（按 RFC 2865 构造，属性的取值是示意）：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>属性</th><th class="num">编号</th><th>这次的值</th><th class="num">字节</th></tr></thead>
+    <tbody>
+      <tr><td>头</td><td class="num">—</td><td>代码 1、编号、长度、16 字节的认证码</td><td class="num">20</td></tr>
+      <tr><td>User-Name</td><td class="num">1</td><td><code>demo0001</code></td><td class="num">10</td></tr>
+      <tr><td>CHAP-Password</td><td class="num">3</td><td>CHAP 编号 1 + 路由器算出的 16 字节</td><td class="num">19</td></tr>
+      <tr><td>CHAP-Challenge</td><td class="num">60</td><td>BRAS 发出的 16 字节挑战</td><td class="num">18</td></tr>
+      <tr><td>NAS-IP-Address</td><td class="num">4</td><td>BRAS 自己：192.0.2.10</td><td class="num">6</td></tr>
+      <tr><td>NAS-Port-Type</td><td class="num">61</td><td>15，以太网</td><td class="num">6</td></tr>
+      <tr><td>NAS-Port-Id</td><td class="num">87</td><td><code>eth 2/0/1:1001.123</code>，BRAS 的端口和两层 VLAN</td><td class="num">20</td></tr>
+      <tr><td>Calling-Station-Id</td><td class="num">31</td><td><code>00-00-5E-00-53-02</code>，路由器的 MAC</td><td class="num">19</td></tr>
+      <tr><td>Service-Type、Framed-Protocol</td><td class="num">6、7</td><td>2（Framed）、1（PPP）</td><td class="num">12</td></tr>
+      <tr><td>Vendor-Specific</td><td class="num">26</td><td>厂商号 3561，里面是 OLT 插的线路标识和用户标识（RFC 4679）</td><td class="num">41</td></tr>
+      <tr><td>合计</td><td class="num"></td><td></td><td class="num">171</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">加上 UDP 头和 IP 头是 199 字节。NAS-Port-Id 的格式各厂家不同；NAS-Port-Type 也有设备填 RFC 4603 加的 34（QinQ 上的 PPPoE）。</p>
+  <p>RADIUS 服务器查出密码，算 MD5(编号 + 密码 + 挑战)，和 CHAP-Password 比。用 PAP 时，密码放在 User-Password 里，用 BRAS 和服务器的共享密钥混淆过。</p>
+  <h3>Access-Accept：给 BRAS 的配置</h3>
+  <p>通过了，服务器回 Access-Accept，带着给这个用户的设置，BRAS 照着执行：</p>
+  <ul>
+    <li><strong>地址：</strong>Framed-IP-Address（8）直接指定，固定地址的账号用；Framed-Pool（88）只说从哪个池里挑（第 10 节）。IPv6 用 Framed-IPv6-Prefix（97）和 Delegated-IPv6-Prefix（123），也可以由 BRAS 自己从池里分。</li>
+    <li><strong>时长：</strong>Session-Timeout（27）是会话最长多少秒，Idle-Timeout（28）是多久没流量就断，Acct-Interim-Interval（85）是隔多久报一次用量。</li>
+    <li><strong>限速和策略：</strong>标准属性里没有上下行各限多少，一般放在厂商自定义的 Vendor-Specific（26）里，或者用 Filter-Id（11）写一个 BRAS 上预先配好的策略名。</li>
+  </ul>
+  <p>没通过，服务器回 Access-Reject，BRAS 给路由器回 CHAP Failure，拨号失败。</p>
+  <h3>计费：开始、过程、结束</h3>
+  <p>IPCP 完成后，BRAS 发 Accounting-Request（到 1813 端口），类型是 Start：哪个账号、哪个会话、哪条线路、拿到哪个地址、从什么时候开始。之后每隔一段时间发 Interim-Update，报到目前为止的字节数、包数和在线时长；断开时发 Stop，附上原因，比如用户主动断开、掉线、超时、被管理员踢下线。记字节数的属性只有 32 位，最多 4,294,967,296 字节（4 GiB），千兆宽带跑满 34 秒就绕一圈，所以另有一个 Gigawords 属性记绕了几圈。</p>
+  <div class="key">运营商回答"某个时刻 203.0.113.7 是谁家"，靠的就是计费记录：Start 里有账号、地址和开始时间，Stop 里有结束时间。地址会被收回再借给别人，没有时间就查不出人。</div>
+  <h3>为什么账号只能在自己家用</h3>
+  <p>账号密码泄露了，别人能不能拿到他家去拨？多数地区不能，因为认证时还验线路。线路信息都不由路由器决定：线路标识是 OLT 插的，两层 VLAN 是光猫和 OLT 打的，BRAS 端口取决于光纤接在哪。BRAS 把它们抄进 NAS-Port-Id 和 Vendor-Specific，RADIUS 服务器和开户时登记的线路比，对不上就拒绝，这叫账号和端口绑定。不拨号的接法也一样，线路标识换成 DHCP 的 Option 82。</p>
+</section>
+
+<section id="ipoe">
+  <h2><span class="n">08</span>不拨号的接法：IPoE</h2>
+  <p>也可以不拨号，直接用 DHCP 领地址，和手机向家里路由器领地址（<a href="journey.html#s1">全流程第 1 步</a>）是同一个协议。运营商把这种接法叫 IPoE（以太网上直接跑 IP）。帧里没有 PPPoE 头，MTU 还是 1500。</p>
+  <p>没有账号密码，靠线路认人。路由器广播的 DHCP Discover 经过 OLT 时，OLT（或者当 DHCP 中继的 BRAS）在里面加一个 Option 82（中继代理信息，RFC 3046），写上这个请求从哪条线来：</p>
+<pre><code>52 23
+01 13 4f 4c 54 2d 41 31 20 78 70 6f 6e 20 30 2f 31 2f 33 3a 37
+02 0c 64 65 6d 6f 2d 6c 6f 69 64 2d 30 31</code></pre>
+  <div class="bytes">
+    <div><b>52</b><span>选项 82</span></div>
+    <div><b>23</b><span>后面共 35 字节</span></div>
+    <div><b>01 13 …</b><span>子选项 1，线路标识，19 字节：<code>OLT-A1 xpon 0/1/3:7</code></span></div>
+    <div><b>02 0c …</b><span>子选项 2，用户标识，12 字节：<code>demo-loid-01</code></span></div>
+  </div>
+  <p>内容和 PPPoE 中间代理插的是同一套。DHCP 服务器（或者 BRAS 拿去问 RADIUS）按线路标识查到这一户，决定给不给地址、从哪个池里给。回答里原样带回 Option 82，插它的设备再删掉，路由器看不到。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>PPPoE</th><th>IPoE</th></tr></thead>
+    <tbody>
+      <tr><td>认的是什么</td><td>账号密码，加上线路</td><td>线路（Option 82），有的还加 MAC</td></tr>
+      <tr><td>BRAS 怎么认出一帧是谁的</td><td>端口、两层 VLAN、MAC、会话号</td><td>端口、两层 VLAN、MAC，再和 DHCP 分配的记录对照</td></tr>
+      <tr><td>MTU</td><td>1492</td><td>1500</td></tr>
+      <tr><td>掉线怎么发现</td><td>LCP 心跳</td><td>DHCP 租期到了没续，或者 BRAS 发 ARP 探测没回应</td></tr>
+    </tbody>
+  </table></div>
+  <p>用在哪：IPTV 机顶盒在不少地区用 DHCP 上线，有的地区机顶盒还在 DHCP 里带一个说明自己身份的选项（Option 60）；也有地区的宽带上网本身就是 IPoE。国外更常见，例如日本的光纤宽带有专门的 IPv6 IPoE 接入，美国有线电视网络上的宽带也是用 DHCP 直接领地址。</p>
+</section>
+
+<section id="mac">
+  <h2><span class="n">09</span>MAC 地址在运营商那边</h2>
+  <p>MAC 地址只在一张二层网里有效（<a href="journey.html#s4">全流程第 4 步</a>）。对宽带来说，这张二层网从你家路由器的 WAN 口一直延伸到 BRAS：中间的光猫（桥接时）、OLT、汇聚交换机只转发帧，不改 MAC。所以 BRAS 看到的源 MAC 是路由器 WAN 口的 <code>00:00:5E:00:53:02</code>，光猫是路由模式时则是光猫的。手机的 MAC 不会出现在这里，它只在家里那张网里。</p>
+  <p>OLT 和汇聚交换机像家里的交换机一样学 MAC：看源 MAC 记下它在哪个口、哪个 VLAN，回来的帧按表送。它们也限 MAC：每户能学的个数有上限；同一个 MAC 突然出现在另一户的口上，有的 OLT 只认先来的，防止有人冒用邻居的 MAC 把邻居的帧骗过来。</p>
+  <h3>防伪造的几道关</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>手段</th><th>在哪</th><th>防什么</th></tr></thead>
+    <tbody>
+      <tr><td>PPPoE 会话本身</td><td>BRAS</td><td>帧的端口、VLAN、MAC、会话号要和会话表里的一行全对上。BRAS 一般还核对源 IP 是不是分给这个会话的那个，伪造源地址的包出不去</td></tr>
+      <tr><td>DHCP 监听（DHCP snooping）</td><td>OLT、交换机</td><td>记下每次 DHCP 分配：哪个口、哪个 VLAN、哪个 MAC、拿到哪个 IP，形成绑定表；只放行从上游来的 DHCP 回答，私接的 DHCP 服务器发不出地址</td></tr>
+      <tr><td>IP 源防护（IP Source Guard）</td><td>OLT、交换机、BRAS</td><td>只放行源 MAC 和源 IP 在绑定表里对得上的包，手填别人的地址也没用</td></tr>
+      <tr><td>MAC 和账号绑定</td><td>RADIUS</td><td>有的地区把账号和一个 MAC 绑死，换设备要先解绑</td></tr>
+    </tbody>
+  </table></div>
+  <h3>换了路由器为什么上不了网</h3>
+  <ul>
+    <li><strong>旧会话还在。</strong>旧路由器直接拔了电，没发 PADT，BRAS 上的会话要等 LCP 心跳连续失败才删。账号只允许一个在线的话，新路由器的拨号会被拒绝，过一阵子自己就好，或者请客服手动清掉。</li>
+    <li><strong>账号绑了 MAC。</strong>RADIUS 发现 Calling-Station-Id 里的 MAC 换了，直接拒绝。路由器设置里的"MAC 地址克隆"就是为这种情况准备的：把新路由器 WAN 口的 MAC 改成旧设备的，运营商那边看起来什么都没换。</li>
+  </ul>
+  <h3>出了 BRAS，你家的 MAC 就没了</h3>
+  <p>BRAS 是第一台路由器。它拆掉收到的帧，按路由表找到下一跳，用自己的 MAC 装一个新帧发出去（<a href="journey.html#s6">全流程的转发那一步</a>），往后每一跳都这样。你家路由器的 MAC 走不出 BRAS，网站更看不到；网站能看到的最底层的身份，是 IP 地址和端口。</p>
+</section>
+
+<section id="pool">
+  <h2><span class="n">10</span>地址从池里来</h2>
+  <p>每台 BRAS 上配着几个地址池，每个池是一段连续的地址。这个例子里是 <code>203.0.113.0/24</code>，网关是池里的 <code>203.0.113.1</code>，就是 IPCP 里 BRAS 报的那个对端地址。拨号成功时，BRAS 从池里挑一个空闲的地址给你，断开时收回。这些池最初从哪来，见 <a href="isp-backbone.html#allocation">运营商内部：地址是怎么分下来的</a>。</p>
+  <h3>每个会话一条路由</h3>
+  <p>BRAS 给每个在线的会话装一条 /32 路由（只含一个地址），指向这条会话。它的路由表大致是这样（左边是目的，右边是交给谁）：</p>
+<pre><code>203.0.113.7/32    会话 0x0F3A：端口 2/0/1，VLAN 1001/123
+203.0.113.8/32    会话 0x0F3B：端口 2/0/1，VLAN 1001/124
+…                 每个在线用户一条，拨号成功时加上，断开时删掉
+203.0.113.0/24    丢弃（整段，只用来向上宣告）
+0.0.0.0/0         城域网核心路由器</code></pre>
+  <p>向上，BRAS 只把整段 <code>203.0.113.0/24</code> 宣告给核心路由器，不宣告每一条 /32。核心路由器只需知道"这 256 个地址都在这台 BRAS 后面"，回程的包就是这样先找到 BRAS、再由 BRAS 找到你家（第 13 节）。那条"丢弃"是常见配法：发往池里空闲地址的包到这里就停，不会被送回核心路由器来回转。</p>
+  <h3>重拨之后地址为什么变了</h3>
+  <ul>
+    <li><strong>地址是借的。</strong>断开时还回池里，可能马上借给了别人。下次拨号拿到哪个，看那一刻池里哪些空着。有的 BRAS 会尽量给回原来的，但不保证。</li>
+    <li><strong>有的地区会定期强制断线重拨</strong>，Access-Accept 里的 Session-Timeout 就能做到。重拨之后，地址一般就换了。</li>
+    <li><strong>固定地址一般是另外收费的业务</strong>，多见于企业宽带和专线，做法就是 RADIUS 直接给出 Framed-IP-Address。IPv6 的前缀同样会变，见第 12 节。</li>
+  </ul>
+  <h3>为什么网站能猜出你在哪个城市</h3>
+  <p>一台 BRAS 管一个城市或几个区县，地址池是固定的几段。每段地址归哪家运营商，地址登记机构（亚太地区是 APNIC）的公开记录里能查到；IP 定位库再结合测量数据，把"这几段在这个城市"整理成表。所以一般能准到城市，很难准到小区。</p>
+</section>
+
+<section id="cgnat">
+  <h2><span class="n">11</span>IPv4 不够用：CGNAT</h2>
+  <p>IPv4 一共 2<sup>32</sup> 个地址，早就分完了。运营商拿不出足够的公网地址给每户一个，就在自己网里再做一次 NAT：你家路由器的 WAN 口拿到一个运营商内部的地址，出城域网时再换成公网地址，许多户共用一个。做这件事的设备叫 CGN（运营商级 NAT），这种做法叫 CGNAT。CGN 有的做成 BRAS 上的一块板卡，有的是城域网里单独的一台设备。</p>
+  <h3>100.64.0.0/10：专门留的一段</h3>
+  <p>WAN 口拿到的地址取自 <code>100.64.0.0/10</code>，即 100.64.0.0 到 100.127.255.255，共 4,194,304 个，是 RFC 6598（2012 年）专门留出来的，叫共享地址空间。为什么不用 10.0.0.0/8、192.168.0.0/16 这些私有地址？因为用户家里已经在用。运营商要是给 WAN 口一个 <code>192.168.1.x</code>，路由器里外两边就是同一段地址，分不清包该往哪边送。100.64/10 只给运营商这样用，家里不会出现，就不会撞。RFC 6598 还要求这段地址的路由不能传出运营商的边界。</p>
+  <h3>两次 NAT</h3>
+  <p>这时一个包要被换两次地址，所以也叫 NAT444：经过三段 IPv4 地址，家里的、运营商内部的、公网的。全流程那一页把换地址画在家里的路由器上，那是 WAN 口直接拿到公网地址的情况。有 CGNAT 时，同一个请求这样走：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 640 188" role="img" aria-label="没有 CGNAT 时，路由器把 192.168.1.23:51234 换成 203.0.113.7:40001；有 CGNAT 时，路由器先换成 100.64.12.34:51234，CGN 再换成 203.0.113.7:40001">
+      <g class="axis" fill="none"><path d="M70 41H158"/><path d="M222 41H300"/><path d="M360 41H568"/><path d="M70 141H158"/><path d="M222 141H300"/><path d="M360 141H442"/><path d="M498 141H568"/></g>
+      <g class="ghost"><rect x="10" y="26" width="60" height="30" rx="6"/><rect x="568" y="26" width="64" height="30" rx="6"/><rect x="10" y="126" width="60" height="30" rx="6"/><rect x="568" y="126" width="64" height="30" rx="6"/></g>
+      <g class="hot"><rect x="158" y="26" width="64" height="30" rx="6"/><rect x="158" y="126" width="64" height="30" rx="6"/><rect x="442" y="126" width="56" height="30" rx="6"/></g>
+      <g class="band"><rect x="300" y="26" width="60" height="30" rx="6"/><rect x="300" y="126" width="60" height="30" rx="6"/></g>
+      <text class="m" x="8" y="16">没有 CGNAT（全流程那一页）</text><text class="m" x="8" y="116">有 CGNAT</text>
+      <g text-anchor="middle">
+        <text x="40" y="46">手机</text><text x="190" y="46">路由器</text><text x="330" y="46">BRAS</text><text x="600" y="46">网站</text>
+        <text x="40" y="146">手机</text><text x="190" y="146">路由器</text><text x="330" y="146">BRAS</text><text x="470" y="146">CGN</text><text x="600" y="146">网站</text>
+        <text class="mn" x="114" y="78">192.168.1.23:51234</text><text class="mn a" x="395" y="78">203.0.113.7:40001</text>
+        <text class="mn" x="114" y="178">192.168.1.23:51234</text><text class="mn" x="332" y="178">100.64.12.34:51234</text><text class="mn a" x="533" y="178">203.0.113.7:40001</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>蓝框的设备换了地址。线下面写的是包在这一段上的源地址和源端口。路由器这次只换地址、不换端口；端口 40001 是 CGN 从分给这一户的 40000–41023 里挑的。网站两种情况看到的一样。</figcaption>
+  </figure>
+  <p>两次转换各记在自己的表里：家里路由器的 NAT 表记 <code>192.168.1.23:51234 ↔ 100.64.12.34:51234</code>，CGN 的转换表记 <code>100.64.12.34:51234 ↔ 203.0.113.7:40001</code>。网站看到的还是 <code>203.0.113.7:40001</code>，和全流程那一页一样；区别是 203.0.113.7 不再归你家独有，同一时刻另外几十户的连接也从这个地址出去，只是端口不同。</p>
+  <h3>按端口段分</h3>
+  <p>一个地址有 65536 个端口，去掉 0 到 1023，还剩 64512 个。CGN 常见的做法是一次给每户一整段端口，而不是一个一个地分。这一户分到的是 40000 到 41023，共 1024 个。块的大小是示意，各运营商自己定：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">每户的端口数</th><th class="num">一个公网地址能分给几户</th></tr></thead>
+    <tbody>
+      <tr><td class="num">2048</td><td class="num">31</td></tr>
+      <tr><td class="num">1024</td><td class="num">63</td></tr>
+      <tr><td class="num">512</td><td class="num">126</td></tr>
+      <tr><td class="num">256</td><td class="num">252</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>按段分是为了少记日志。</strong>一户一段，只要记一条"几点到几点，这一段给了谁"，不用每条连接都记。RFC 6888（CGN 的通用要求）规定 CGN 必须能限制每户占用的端口数。</li>
+    <li><strong>端口会用完。</strong>每条对外的连接占一个端口，几台设备开着几十个网页、再挂一个 P2P 下载，一千个端口很快就满，新连接建不起来。有的 CGN 会再补一段。</li>
+    <li><strong>映射会超时。</strong>一条映射多久没有包就删，由运营商配置。IETF 的要求是 UDP 不少于 2 分钟、建议 5 分钟以上（RFC 4787），建立好的 TCP 连接不少于 2 小时 4 分钟（RFC 5382）。实际设成多少各家不同。</li>
+  </ul>
+  <h3>转换日志</h3>
+  <p>地址共用之后，"203.0.113.7 在某个时刻是谁"已经回答不了。要知道端口和精确到秒的时间，查 CGN 的转换日志（或者端口段的分配记录），再对 RADIUS 的计费记录，才能落到一户。所以 RFC 6302 建议网站记日志时，除了对方的 IP，还要记源端口和准确的时间。中国的《网络安全法》（2025 年修正）第二十三条要求网络运营者"按照规定留存相关的网络日志不少于六个月"。</p>
+  <h3>怎么看自己是不是在 CGNAT 后面</h3>
+  <p>在路由器的管理页面里找到 WAN 口的地址，再用浏览器打开一个显示"你的公网 IP"的网站，比一比。两个一样，路由器拿到的就是公网地址。WAN 口是 100.64 到 100.127 开头的，就在 CGNAT 后面；是 <code>10.</code>、<code>172.16.</code>–<code>172.31.</code>、<code>192.168.</code> 开头的，前面还有一层 NAT，可能是光猫的路由模式，也可能是运营商拿私有地址做的 CGNAT。</p>
+  <h3>CGNAT 带来的麻烦</h3>
+  <ul>
+    <li><strong>端口转发没用了。</strong>你改得了自己路由器的 NAT 表，改不了 CGN 的。外面的人连 203.0.113.7 的某个端口，CGN 不知道交给哪一户。有的运营商可以申请换成公网地址。</li>
+    <li><strong>P2P 和视频通话更难直连。</strong>两边都要先打洞（见 <a href="streaming-protocols.html#webrtc">WebRTC：怎么连上</a>），多一层 NAT 成功率就低一些，更多通话要靠 TURN 服务器转发，延迟和流量费都更高。</li>
+    <li><strong>信誉是共享的。</strong>同一个公网地址后面有人在刷接口、发垃圾请求，网站限的是这个地址，你也跟着要输验证码、被限流。</li>
+  </ul>
+</section>
+
+<section id="ipv6">
+  <h2><span class="n">12</span>IPv6：不用 NAT</h2>
+  <p>IPv6 的地址有 128 位，多到每户可以分一大段，不用共用，也就不用 NAT。走 PPPoE 时，IPCP 之外再跑一遍 IPv6CP（第 06 节，只商量后 64 位），接着是这几步：</p>
+  <ol class="plain">
+    <li><strong>RA（路由器通告，RFC 4861）。</strong>BRAS 在这条会话上发 RA，告诉路由器"我是你的 IPv6 网关"。RA 里的 M、O 两个标志位说的是要不要再用 DHCPv6 领地址、领其他参数。</li>
+    <li><strong>WAN 口的地址。</strong>常见两种：RA 里带一个 /64 前缀，路由器拼上自己的接口标识，这叫 SLAAC（无状态自动配置，RFC 4862）；或者用 DHCPv6 直接领一个。也有不给 WAN 口全球地址的。</li>
+    <li><strong>DHCPv6 前缀委派（PD，RFC 8415）。</strong>路由器再用 DHCPv6 要一整段前缀给家里用，常见的是 /60 或 /56。</li>
+    <li><strong>给家里切一个 /64。</strong>路由器从中切出一个 /64，在家里的 Wi-Fi 上发自己的 RA。</li>
+    <li><strong>手机自己配地址。</strong>手机用这个 /64 加上自己生成的后 64 位组成地址，另外再生成一个临时地址（RFC 8981），定期更换，对外连接优先用它，免得网站靠固定的后 64 位认出你。Android 只用 SLAAC 配地址，不用 DHCPv6 领单个地址。</li>
+  </ol>
+  <div class="tbl"><table>
+    <thead><tr><th>地址</th><th>从哪来</th><th>这个例子里</th></tr></thead>
+    <tbody>
+      <tr><td>路由器 WAN 口的链路本地地址</td><td>IPv6CP 商量的接口标识</td><td><code>fe80::200:5eff:fe00:5302</code></td></tr>
+      <tr><td>路由器 WAN 口的全球地址</td><td>RA 里的前缀 + 接口标识</td><td><code>2001:db8:100:7:200:5eff:fe00:5302</code></td></tr>
+      <tr><td>委派给你家的前缀</td><td>DHCPv6-PD</td><td><code>2001:db8:200:7a0::/60</code></td></tr>
+      <tr><td>家里 Wi-Fi 的前缀</td><td>从 /60 里切出的第一个 /64</td><td><code>2001:db8:200:7a0::/64</code></td></tr>
+      <tr><td>手机的地址、临时地址</td><td>SLAAC</td><td><code>2001:db8:200:7a0:8c3f:2e1a:9b47:d105</code>、<code>2001:db8:200:7a0:51e9:a3c2:6f08:1b7d</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>前缀长度决定家里能分出几个 /64 网段（/56 的例子是包含上面那个 /60 的一段）：</p>
+<pre><code>/60   2^(64−60) = 16 个 /64     2001:db8:200:7a0::/64 到 2001:db8:200:7af::/64
+/56   2^(64−56) = 256 个 /64    2001:db8:200:700::/56 里是 …:700::/64 到 …:7ff::/64
+一个 /64 有 2^64 = 18,446,744,073,709,551,616 个地址</code></pre>
+  <p>家里一般只用一个 /64，多出来的可以给访客网络、智能家居这类单独的网段。</p>
+  <ul>
+    <li><strong>没有 NAT 不等于谁都能连进来。</strong>RFC 6092 建议家用路由器默认挡住外面主动发起的连接，只放行家里先发出去的连接的回包，同时留一个"透明模式"的开关。想让外面连某台设备，要在路由器上单独放行。</li>
+    <li><strong>回程少一步。</strong>BRAS 给这条会话装一条 <code>2001:db8:200:7a0::/60</code> 的路由，家里的路由器按 /64 找到 Wi-Fi，再用邻居发现（IPv6 里代替 ARP 的那一套）问出手机的 MAC，不用查 NAT 表。</li>
+    <li><strong>前缀也会变。</strong>重拨之后委派的前缀常换一个，家里所有设备的地址跟着变。路由器没有及时告诉手机旧前缀作废时，手机会继续拿旧地址发包，表现为 IPv6 时通时断，RFC 8978 讲的就是这个问题。</li>
+  </ul>
+</section>
+
+<section id="return">
+  <h2><span class="n">13</span>回程：一路查表找回你家</h2>
+  <p>服务器 185.199.108.153 从 443 端口回信，比如握手的第二个包，目的地址写的是 <code>203.0.113.7:40001</code>。这个地址后面是城里的某一户，回信怎么在成千上万户里找到你家，再找到你的手机？每台设备只做一件事：拿包里的一个号码查一张表，查出下一个号码，再把它写进包外面的某一层。</p>
+  <figure class="fig">
+    <div class="card">
+    <svg class="wide" viewBox="0 0 680 256" role="img" aria-label="回程每段线路上包外面的各层：核心到 BRAS 只有以太网头；BRAS 到 OLT 多了两层 VLAN 和 PPPoE；PON 上再套 GEM 帧；光猫到路由器去掉标签；路由器到手机换回私有地址">
+      <text x="4" y="31">核心 → BRAS</text><text class="m" x="4" y="47">光纤，以太网</text>
+      <text x="4" y="81">BRAS → OLT</text><text class="m" x="4" y="97">经汇聚交换机</text>
+      <text x="4" y="131">OLT → 光猫</text><text class="m" x="4" y="147">PON，下行</text>
+      <text x="4" y="181">光猫 → 路由器</text><text class="m" x="4" y="197">网线</text>
+      <text x="4" y="231">路由器 → 手机</text><text class="m" x="4" y="247">Wi-Fi</text>
+      <g class="band"><rect x="124" y="18" width="52" height="30" rx="5"/><rect x="296" y="18" width="76" height="30" rx="5"/><rect x="124" y="68" width="52" height="30" rx="5"/><rect x="286" y="68" width="82" height="30" rx="5"/><rect x="372" y="68" width="40" height="30" rx="5"/><rect x="416" y="68" width="112" height="30" rx="5"/><rect x="532" y="68" width="76" height="30" rx="5"/><rect x="190" y="118" width="52" height="30" rx="5"/><rect x="246" y="118" width="46" height="30" rx="5"/><rect x="296" y="118" width="82" height="30" rx="5"/><rect x="382" y="118" width="40" height="30" rx="5"/><rect x="426" y="118" width="112" height="30" rx="5"/><rect x="542" y="118" width="76" height="30" rx="5"/><rect x="124" y="168" width="52" height="30" rx="5"/><rect x="266" y="168" width="40" height="30" rx="5"/><rect x="124" y="218" width="66" height="30" rx="5"/></g>
+      <g class="hot"><rect x="180" y="18" width="112" height="30" rx="5"/><rect x="180" y="68" width="52" height="30" rx="5"/><rect x="236" y="68" width="46" height="30" rx="5"/><rect x="124" y="118" width="62" height="30" rx="5"/><rect x="180" y="168" width="82" height="30" rx="5"/><rect x="310" y="168" width="112" height="30" rx="5"/><rect x="426" y="168" width="76" height="30" rx="5"/><rect x="194" y="218" width="118" height="30" rx="5"/><rect x="316" y="218" width="76" height="30" rx="5"/></g>
+      <g text-anchor="middle">
+        <text x="150" y="38">以太网</text><text class="mn" x="236" y="38">IP 203.0.113.7</text><text class="mn" x="334" y="38">TCP 40001</text>
+        <text x="150" y="88">以太网</text><text class="mn" x="206" y="88">S 1001</text><text class="mn" x="259" y="88">C 123</text><text class="mn" x="327" y="88">PPPoE 0F3A</text><text class="mn" x="392" y="88">PPP</text><text class="mn" x="472" y="88">IP 203.0.113.7</text><text class="mn" x="570" y="88">TCP 40001</text>
+        <text class="mn" x="155" y="138">GEM 263</text><text x="216" y="138">以太网</text><text class="mn" x="269" y="138">C 123</text><text class="mn" x="337" y="138">PPPoE 0F3A</text><text class="mn" x="402" y="138">PPP</text><text class="mn" x="482" y="138">IP 203.0.113.7</text><text class="mn" x="580" y="138">TCP 40001</text>
+        <text x="150" y="188">以太网</text><text class="mn" x="221" y="188">PPPoE 0F3A</text><text class="mn" x="286" y="188">PPP</text><text class="mn" x="366" y="188">IP 203.0.113.7</text><text class="mn" x="464" y="188">TCP 40001</text>
+        <text class="mn" x="157" y="238">Wi-Fi 帧</text><text class="mn" x="253" y="238">IP 192.168.1.23</text><text class="mn" x="354" y="238">TCP 51234</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>每一行是一段线路上包的样子，左边是最外层。蓝框的格子是收到这一段的设备拿来查表的号码：BRAS 看 IP，OLT 看两层 VLAN，光猫看 GEM 端口，路由器看会话号和目的地址、端口，手机看地址和端口。里面的 IP 目的地址一直是 203.0.113.7，直到家里的路由器才换。</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>设备</th><th>查哪张表</th><th>用什么查</th><th>查出什么</th><th>改了包的什么</th></tr></thead>
+    <tbody>
+      <tr><td>核心路由器</td><td>路由表</td><td>目的 IP 203.0.113.7</td><td>最长匹配是 BRAS 宣告的 203.0.113.0/24，下一跳是 BRAS</td><td>TTL 61 → 60；换新帧，目的 MAC 是 BRAS 朝核心的口 <code>00:00:5E:00:53:11</code></td></tr>
+      <tr><td>BRAS</td><td>路由表</td><td>203.0.113.7</td><td>/32 用户路由，指向会话 0x0F3A</td><td>TTL 60 → 59，重算 IP 头校验和</td></tr>
+      <tr><td>BRAS</td><td>会话表</td><td>会话 0x0F3A</td><td>端口 2/0/1，S-VLAN 1001，C-VLAN 123，路由器 MAC <code>00:00:5E:00:53:02</code></td><td>装新帧：源 MAC 是 BRAS 接入口的 <code>00:00:5E:00:53:10</code>，加两层标签、PPPoE 头、PPP 协议号 <code>0x0021</code></td></tr>
+      <tr><td>汇聚交换机</td><td>MAC 表</td><td>外层 VLAN 1001 + 目的 MAC</td><td>朝 OLT 的那个口</td><td>不改</td></tr>
+      <tr><td>OLT</td><td>业务流表</td><td>S-VLAN 1001 + C-VLAN 123</td><td>PON 口 0/1/3，光猫 7，GEM 端口 263</td><td>去掉外层标签，装进 GEM 帧，加密</td></tr>
+      <tr><td>分光器</td><td>不查</td><td>—</td><td>复制给这个 PON 口下的每一台光猫</td><td>不改</td></tr>
+      <tr><td>光猫</td><td>自己的 GEM 端口</td><td>GEM 帧头里的 263</td><td>是自己的，解密收下；邻居的光猫看到 263 不是自己的，丢掉</td><td>拆掉 GEM 帧</td></tr>
+      <tr><td>光猫</td><td>WAN 连接</td><td>C-VLAN 123</td><td>上网那条桥接连接，从网口出去</td><td>去掉内层标签</td></tr>
+      <tr><td>路由器</td><td>PPPoE 会话</td><td>类型 <code>0x8864</code>、会话号 0x0F3A</td><td>是自己的会话，里面是 IPv4</td><td>拆掉 PPPoE 头和 PPP 协议号</td></tr>
+      <tr><td>路由器</td><td>NAT 表</td><td>TCP，185.199.108.153:443 → 203.0.113.7:40001</td><td>192.168.1.23:51234</td><td>目的地址和端口；TTL 59 → 58；重算 IP 和 TCP 校验和</td></tr>
+      <tr><td>路由器</td><td>路由表、ARP 缓存</td><td>192.168.1.23</td><td>在家里的网里，MAC <code>DA:A1:19:5C:3E:07</code></td><td>装 Wi-Fi 帧，源 MAC <code>00:00:5E:00:53:01</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>表里 11 行，除了分光器，每一行都查了一次表：前两行按 IP 地址，中间按二层的标签和编号，最后在家里的路由器上换回私有地址、查出手机的 MAC。手机怎么一层层拆开，见 <a href="journey.html#s11">全流程的到站那一步</a>。TTL 只在三台路由器上减：核心 61 → 60，BRAS 60 → 59，家里的路由器 59 → 58。服务器发出时是 64，前面还过了 3 台；手机收到 58，和全流程那一页实测的一样。</p>
+  <h3>有 CGNAT 时多查一张</h3>
+  <p>按第 11 节的设定，203.0.113.0/24 这时由 CGN 宣告，核心路由器把包交给 CGN。CGN 查转换表：TCP，目的 <code>203.0.113.7:40001</code>（端口落在这一户的 40000–41023 里），查出 <code>100.64.12.34:51234</code>，改写目的地址和端口、重算校验和，再按路由交给 BRAS。BRAS 用 100.64.12.34 的 /32 路由找到的还是会话 0x0F3A，往后和上表一样；最后家里路由器的 NAT 表把 <code>100.64.12.34:51234</code> 换回 <code>192.168.1.23:51234</code>，这次端口不用换。</p>
+  <p>多出来的只有 CGN 那一次查表，汇聚交换机、OLT、光猫照旧。CGN 是 BRAS 上的板卡时，这一步在 BRAS 里完成；是单独的设备时，它也减 TTL，手机收到时会是 57。</p>
+</section>
+
+<section id="see">
+  <h2><span class="n">14</span>自己能看到什么</h2>
+  <p>前面那些表大多在运营商的设备里，用户看不到。能看到的是下面几处，这里只说去哪看、看什么：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>去哪看</th><th>能看到</th><th>对应</th></tr></thead>
+    <tbody>
+      <tr><td>路由器管理页面的 WAN 状态</td><td>连接方式（PPPoE 或 DHCP）、WAN 地址、网关（BRAS 那一头）、DNS、在线时长；有的还显示 BRAS 的名字（AC-Name）和 MTU</td><td class="nw">第 05、06、11 节</td></tr>
+      <tr><td>光猫的管理页面</td><td>PON 注册状态、收发光功率、LOID；WAN 连接列表，每条的 VLAN 号和模式</td><td class="nw">第 02、03、04 节</td></tr>
+      <tr><td>显示"你的公网 IP"的网站</td><td>网站看到的地址，和 WAN 地址比，就知道有没有 CGNAT</td><td class="nw">第 11 节</td></tr>
+    </tbody>
+  </table></div>
+  <p>traceroute 能看出前几跳是谁。在电脑上运行 <code>traceroute -n -m 4 185.199.108.153</code>（Windows 上是 <code>tracert -d -h 4 185.199.108.153</code>），前几行大致是这样（地址是示意，不是实测）：</p>
+<pre><code> 1  192.168.1.1      家里的路由器
+ 2  203.0.113.1      BRAS；在 CGNAT 后面时常是 100.64 开头的地址
+ 3  198.51.100.1     城域网核心路由器
+ 4  …</code></pre>
+  <p>第 2 跳就是 BRAS。光猫（桥接时）、OLT、汇聚交换机都不减 TTL，traceroute 数不到它们；光猫在路由模式时，第 2 跳是光猫自己的私有地址，BRAS 退到第 3 跳。某一跳显示 <code>* * *</code>，是那台设备不回 ICMP 通知，不一定是不通。</p>
+  <p>看不到的：OLT 的业务流表，BRAS 的会话表和路由表，RADIUS 的记录，CGN 的转换表，只有运营商能查。手机上的 App 只知道自己在家里那张网里的地址，想知道出口的公网地址，只能问外面的服务器，比如 WebRTC 用的 STUN。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">15</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>换了路由器，拨号报认证失败或"账号已在线"（老的 Windows 拨号报 691），过一阵子又好了</td><td>旧路由器的会话还挂在 BRAS 上，账号只允许一个在线；或者账号绑了旧设备的 MAC</td><td>等 BRAS 靠心跳清掉旧会话，或者请客服手动清；绑了 MAC 的用"MAC 地址克隆"</td></tr>
+      <tr><td>拨号一直没有回应（老的 Windows 拨号报 678）</td><td>PADI 发出去没有 PADO 回来：光猫没在 OLT 上注册好（PON 灯闪、LOS 灯红）；光猫上网那条连接的 VLAN 或模式不对；网线插在了电视口上</td><td>先看光猫的 PON 灯和注册状态；核对上网连接的 VLAN 和桥接模式；换到上网口</td></tr>
+      <tr><td>能上网，但部分网站、大图、视频卡住</td><td>PPPoE 的 MTU 只有 1492，路由器没改 SYN 里的 MSS，路上的 ICMP 通知又被过滤了</td><td>打开路由器的 MSS 钳制，或者把 WAN 口 MTU 设成 1492，见 <a href="vpn.html#mtu">VPN：开销和 MTU</a></td></tr>
+      <tr><td>路由器上的 WAN 地址和"查 IP"网站报的不一样</td><td>WAN 是 100.64 到 100.127 开头：在 CGNAT 后面；是 192.168 这类私有地址：光猫在路由模式，或者运营商拿私有地址做 CGNAT</td><td>前者向运营商申请公网地址；后者把光猫改桥接，由路由器拨号</td></tr>
+      <tr><td>端口转发配好了，外面还是连不进来</td><td>CGNAT 或双重 NAT，外面的包到不了你的路由器；有的运营商还挡了入站的常用端口</td><td>同上；或者用 IPv6 并在路由器上放行；或者经中转服务器</td></tr>
+      <tr><td>App 的长连接闲一会儿就收不到推送，发心跳时才发现断了</td><td>路上某一层 NAT 的映射闲置超时被删，服务器发来的包找不到你家</td><td>心跳间隔要短于路上最短的超时；断了能自己重连</td></tr>
+      <tr><td>每隔一段时间断线一次，公网地址变了</td><td>有的地区定期强制重拨；或者 LCP 心跳连续丢失，BRAS 判定掉线</td><td>长连接和下载要能重连、续传；需要固定地址就办固定地址业务</td></tr>
+      <tr><td>重拨之后 IPv6 时通时断</td><td>委派的前缀换了，手机还在用旧前缀的地址</td><td>路由器重拨后要通告旧前缀作废；临时办法是让手机重连 Wi-Fi</td></tr>
+      <tr><td>光猫改成桥接后电视看不了</td><td>IPTV 是光猫上另一条 VLAN 连接，改的时候一起删了或改了</td><td>改之前记下每条 WAN 连接的名字、VLAN 号和模式</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">这一页没有做任何实测：没有在运营商设备、光猫、路由器或手机上测试，也没有查询本机所在网络的任何信息。示例帧是 2026 年 11 月 23 日用 python3 按 RFC 2516（PPPoE）、RFC 1661、1332、1877、1994、5072（PPP 各部分）、IEEE 802.1Q 和 802.1ad（VLAN 标签）、RFC 2865（RADIUS）、RFC 3046（Option 82）逐字节构造的：PADI 60 字节、到 BRAS 时 83 字节，握手第一帧在接入段的 82、86、90 字节和两个校验和，CHAP 回答的 MD5，171 字节的 Access-Request，37 字节的 Option 82；同一段校验代码复算全流程那一帧，结果与那一页一致。VLAN 组合数、MTU 和 MSS、端口块能分几户、前缀里的 /64 个数、32 位计数器绕一圈的时间是算出来的。同日查阅：rfc-editor.org 上 RFC 2516、1661、1877、1994、5072、3046、4679、6598、6888、4787、5382、6302、6092 的原文；IANA 的 RADIUS 编号表；维基百科的 IEEE 802.1Q、IEEE 802.1ad、TR-069、G-PON encapsulation method 条目；IETF 草案 draft-ietf-opsawg-ipfix-gpon-gem（GEM 帧头）；华为 MA5600T 手册和 H3C 的 OLT 文档（LOID、光猫认证方式）；Juniper 的用户管理 VLAN 文档（1:1、N:1）；Cisco、Zyxel 的 PPPoE 中间代理文档；国家网信办网站 2025 年 12 月 29 日发布的《网络安全法》全文。示意的部分：所有地址、MAC、VLAN 号、会话号、PON 口、光猫编号、GEM 端口号、账号、密码、LOID、魔术字、挑战、线路标识和 NAS-Port-Id 的写法、端口块大小、traceroute 的输出。谁打哪层标签、用 PPPoE 还是 IPoE、地址池和端口块多大、超时多长，都因国家、运营商和地区而异，正文写的是常见的一种。</p>
+</section>
+<nav class="pager" aria-label="阅读顺序" style="border-top:1px solid var(--rule);margin-top:56px">
+  <div class="label">网络 · 阅读顺序第 2 篇，共 10 篇 · <a href="index.html">看全部</a></div>
+  <div class="demos">
+    <a class="demo" href="physical-layer.html"><span class="t">← 上一篇：物理层</span><span class="d">物理层：比特是怎么变成电、光和无线电的</span></a>
+    <a class="demo" href="mobile-network.html"><span class="t">下一篇：移动网络 →</span><span class="d">不用宽带、用流量时，前面这一段换成了基站和核心网，规矩也跟着变。</span></a>
+  </div>
+</nav>
+</main>
+</div>
+</body>
+</html>
