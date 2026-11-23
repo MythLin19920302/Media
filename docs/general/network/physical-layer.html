@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>物理层：比特是怎么变成电、光和无线电的</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+<style>
+/* 本页独有：一帧在线上的布局条、较宽的全程图 */
+.wire{display:flex;gap:3px;margin:0 0 8px;font-family:var(--font-mono);font-size:12px;line-height:1.4}
+.wire div{background:var(--warn-soft);border-radius:4px;padding:8px;min-width:0;overflow:hidden;white-space:nowrap}
+.wire .f{background:var(--accent-soft);flex:1}
+.wire b{display:block;font-weight:500;color:var(--fg)}
+.wire span{color:var(--muted)}
+figure.fig svg.wide{max-width:700px;min-width:640px}
+/* kb.css 里 .card .m 和 .card .t 是首页卡片用的，会让图里的小字变成等宽、加粗，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:500}
+.fig text.s{font-size:11px}
+.fig .bad{fill:var(--warn)}
+.caption+p,.caption+.tbl{margin-top:14px}
+.tbl td code{overflow-wrap:break-word}
+.tbl table.w{min-width:620px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 网络</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#what">这一层在做什么</a></li>
+    <li><a href="#words">四个容易混的词</a></li>
+    <li><a href="#signal">比特怎么搭上信号</a></li>
+    <li><a href="#copper">网线：双绞线和编码</a></li>
+    <li><a href="#wire">一帧在线上占多久</a></li>
+    <li><a href="#wifi">Wi-Fi：子载波和星座图</a></li>
+    <li><a href="#air">Wi-Fi：共用一个信道</a></li>
+    <li><a href="#fibre">光纤：电怎么变成光</a></li>
+    <li><a href="#pon">光猫：一根光纤分给几十户</a></li>
+    <li><a href="#cell">蜂窝网络：第一跳换成基站</a></li>
+    <li><a href="#speed">信号跑多快</a></li>
+    <li><a href="#errors">比特错了怎么办</a></li>
+    <li><a href="#chain">整条路换了几次样子</a></li>
+    <li><a href="#android">落到 Android 和播放器</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Android 音视频学习笔记</div>
+  <h1>物理层：比特是怎么变成电、光和无线电的</h1>
+  <p class="lede">总览页跟着一个请求从手机走到服务器，把最底下一层当成了黑盒：帧交给网卡，就算发出去了。这一页打开这个黑盒。还是那一帧，74 字节的 TCP SYN：它先变成无线电飞到热点，再变成网线上的电压走到光猫，然后变成一串光脉冲进了运营商的光纤。每换一种介质，同样的比特就换一种样子。</p>
+  <div class="journey" aria-label="同一帧在物理层的几个数字">
+    <div class="step"><span class="k">总览页的第一帧</span><span class="v hex">74 字节</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">在网线上实际占</span><span class="v">98 字节时间</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">一路经过</span><span class="v">3 种介质</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">电和无线电、电和光互转</span><span class="v">至少 16 次</span></div>
+  </div>
+  <p class="caption">74 字节是<a href="journey.html#s5">总览页装包那一步</a>拆开的 TCP SYN。98 = 74 + 4 + 8 + 12，按以太网规范算，见第 05 节。16 次是按总览页的 6 台路由器，再加光猫和运营商局端设备各一台数出来的下限，见第 13 节。这一页没有做新的测量。</p>
+</header>
+
+<section id="what">
+  <h2><span class="n">01</span>这一层在做什么</h2>
+  <p>上面几层处理的都是字节：加头、查表、编号、重发。到了最底下，这些字节要离开芯片，穿过一段空间，到达另一台设备。物理层只做一件事：<strong>把比特变成某种介质上的信号，对面再把信号变回比特。</strong></p>
+  <p>它不认识帧里的内容。MAC 地址、IP、端口，在它眼里都只是一串 0 和 1。它要解决的是三个问题：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>问题</th><th>不解决会怎样</th><th>靠什么解决</th></tr></thead>
+    <tbody>
+      <tr><td>0 和 1 在介质上长什么样</td><td>对面认不出来</td><td>调制和线路编码，第 03 节</td></tr>
+      <tr><td>一个比特从哪开始、到哪结束</td><td>连着几个相同的比特，数不清是几个</td><td>从信号的跳变里恢复时钟</td></tr>
+      <tr><td>信号变弱、被干扰了怎么办</td><td>0 被认成 1</td><td>限制距离、降低速率、加纠错码，第 12 节</td></tr>
+    </tbody>
+  </table></div>
+  <p>总览页那一帧一路上经过三种介质：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>介质</th><th>里面走的是</th><th>比特搭在什么上</th><th>这趟旅程里的哪一段</th></tr></thead>
+    <tbody>
+      <tr><td>空气</td><td>2.4 或 5 GHz 的无线电波</td><td>电波的振幅和相位</td><td>手机 → 热点</td></tr>
+      <tr><td>铜线</td><td>电流</td><td>两根线之间的电压差</td><td>路由器 → 光猫</td></tr>
+      <tr><td>玻璃丝</td><td>红外光</td><td>光的亮和暗</td><td>光猫 → 运营商 → 骨干网 → 机房</td></tr>
+    </tbody>
+  </table></div>
+  <p>每一段链路有自己的物理层，两端必须用同一种。所以每台设备都要把收到的信号先变回比特，再按下一段的规矩重新发出去。这样的转换一路上有多少次，第 13 节会数。</p>
+</section>
+
+<section id="words">
+  <h2><span class="n">02</span>四个容易混的词</h2>
+  <h3>比特率和符号率</h3>
+  <p>信号每变化一次叫一个符号（symbol）。每秒发多少个符号叫符号率，单位是波特（baud）。信号只有高、低两种状态时，一个符号就是 1 比特，符号率等于比特率。一个符号有 4 种状态时，它能表示 2 比特；有 16 种状态时是 4 比特。</p>
+<pre><code>比特率 = 符号率 × 每个符号的比特数
+每个符号的比特数 = log2(状态数)      2 → 1，4 → 2，16 → 4，1024 → 10</code></pre>
+  <p>提速只有两条路：符号发得更快，或者每个符号带更多比特。后面每一种介质都是在这两条路上想办法。</p>
+  <h3>"带宽"的两个意思</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>说的是</th><th>单位</th><th>意思</th><th>例子</th></tr></thead>
+    <tbody>
+      <tr><td>信号带宽</td><td>Hz</td><td>信号占了多宽的一段频率</td><td>Wi-Fi 的一个信道宽 20 MHz</td></tr>
+      <tr><td>网络带宽</td><td>bit/s</td><td>每秒能传多少比特</td><td>千兆宽带是 1000 Mbit/s</td></tr>
+    </tbody>
+  </table></div>
+  <p>两者有关系：占的频率越宽，每秒能发的符号越多，大致成正比。但它们不是一回事。同样 20 MHz 的信道，信号好的时候能跑 143 Mbit/s，差的时候只有 8.6 Mbit/s（第 06 节），差别在每个符号带几个比特。</p>
+  <h3>信噪比和分贝</h3>
+  <p>接收方收到的永远是信号加噪声。信噪比（SNR）是信号功率除以噪声功率。这类倍数跨度太大，习惯用分贝（dB）写：</p>
+<pre><code>dB = 10 × log10(倍数)
+变强：3 dB ≈ 2 倍，10 dB = 10 倍，20 dB = 100 倍，30 dB = 1000 倍
+变弱：−3 dB ≈ 一半，−10 dB = 十分之一，−20 dB = 百分之一</code></pre>
+  <p>分贝可以直接相加：先衰减 20 dB，再衰减 10 dB，一共 30 dB，剩千分之一。带 m 的 dBm 是绝对功率，以 1 毫瓦为基准：0 dBm 是 1 mW，20 dBm 是 100 mW，−60 dBm 是百万分之一毫瓦。</p>
+  <h3>香农极限：信号干净，才塞得下更多比特</h3>
+  <p>一个符号要带 10 比特，就得有 1024 种分得清的状态。噪声会把每个状态抹成一团，状态挤得越密越容易认错。带宽和信噪比一起决定了上限：</p>
+<pre><code>最大比特率 = 带宽 × log2(1 + 信噪比)
+
+20 MHz 的信道（计算值）
+10 dB，即 10 倍      20 MHz × log2(11)   ≈  69 Mbit/s
+20 dB，即 100 倍     20 MHz × log2(101)  ≈ 133 Mbit/s
+30 dB，即 1000 倍    20 MHz × log2(1001) ≈ 199 Mbit/s</code></pre>
+  <p>信号功率大了 10 倍，速率只多出 60 多 Mbit/s。换个说法：每个符号想多带 1 比特，信号功率就得翻一倍。带宽则是翻倍就翻倍，所以新一代的 Wi-Fi 和光通信都在抢更宽的频率。这个公式是所有物理层的总账，没有哪种编码能超过它，好的编码只是更接近它。</p>
+</section>
+
+<section id="signal">
+  <h2><span class="n">03</span>比特怎么搭上信号</h2>
+  <p>一个正弦波有三样东西可以改，改哪一样都能用来表示 0 和 1：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>改什么</th><th>叫法</th><th>0 和 1 的样子</th><th>谁在用</th></tr></thead>
+    <tbody>
+      <tr><td>振幅：波有多强</td><td>调幅（ASK）</td><td>弱、强</td><td>光纤里的亮和暗</td></tr>
+      <tr><td>频率：振得多快</td><td>调频（FSK）</td><td>慢、快</td><td>蓝牙</td></tr>
+      <tr><td>相位：从哪一点起步</td><td>调相（PSK）</td><td>正着起步、反着起步</td><td>Wi-Fi 的低速档</td></tr>
+      <tr><td>振幅和相位一起改</td><td>QAM</td><td>见第 06 节</td><td>Wi-Fi、蜂窝网络、长途光纤</td></tr>
+    </tbody>
+  </table></div>
+  <p>被改的这个正弦波叫载波。波形和采样的基础在<a href="../../audio/pcm/pcm-to-speaker.html">从 PCM 到喇叭</a>里讲过：那边是把连续的声音量成数字，这里反过来，把数字变成连续的波形发出去。</p>
+  <p>网线不用载波，直接用电压的高低表示比特，叫基带传输。无线电必须有载波，因为天线的尺寸要和波长相当：2.4 GHz 的波长是 12.5 cm，四分之一波长的天线约 3 cm，装得进手机；10 MHz 的波长是 30 m。光本身就是一个频率极高的载波。</p>
+  <h3>难处不在分高低，在数格子</h3>
+  <p>最直接的写法是 1 发高电压、0 发低电压，叫不归零码（NRZ）。麻烦出在连续相同的比特上。收发两端没有共用的时钟，各用各的晶振，以太网允许每一端偏差万分之一。一长串 1 在线上是一条平线，接收方只能靠自己的钟去数这条平线有几格：</p>
+<pre><code>两端的钟最多相差万分之二
+0.5 格 ÷ 0.0002 = 2500      数到第 2500 个比特就偏了半格
+一帧最长 1518 字节 = 12,144 比特</code></pre>
+  <p>解决办法是保证信号里有足够多的跳变，接收方每看到一次跳变，就把自己的钟对一下。规定比特怎么变成电平的这套规则叫线路编码。最简单的一种是曼彻斯特编码：每个比特的正中间一定跳一次，从低跳到高是 1，从高跳到低是 0。</p>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 0 520 222" role="img" aria-label="同一串比特 0 1 1 1 1 0 1 0 的两种波形。上面是 NRZ：1 是高电平，0 是低电平，连续四个 1 期间是一条平线。下面是曼彻斯特编码：每个比特的正中间都有一次跳变，上跳是 1，下跳是 0。">
+<line class="grid" x1="72" y1="36" x2="72" y2="190"/><line class="grid" x1="124" y1="36" x2="124" y2="190"/><line class="grid" x1="176" y1="36" x2="176" y2="190"/><line class="grid" x1="228" y1="36" x2="228" y2="190"/><line class="grid" x1="280" y1="36" x2="280" y2="190"/><line class="grid" x1="332" y1="36" x2="332" y2="190"/><line class="grid" x1="384" y1="36" x2="384" y2="190"/><line class="grid" x1="436" y1="36" x2="436" y2="190"/><line class="grid" x1="488" y1="36" x2="488" y2="190"/>
+<text class="t" x="98" y="27" text-anchor="middle">0</text><text class="t" x="150" y="27" text-anchor="middle">1</text><text class="t" x="202" y="27" text-anchor="middle">1</text><text class="t" x="254" y="27" text-anchor="middle">1</text><text class="t" x="306" y="27" text-anchor="middle">1</text><text class="t" x="358" y="27" text-anchor="middle">0</text><text class="t" x="410" y="27" text-anchor="middle">1</text><text class="t" x="462" y="27" text-anchor="middle">0</text>
+<text x="6" y="79">NRZ</text>
+<text x="6" y="163">曼彻斯特</text>
+<line class="lim" x1="126" y1="47" x2="330" y2="47"/>
+<polyline class="out" points="72,92 124,92 124,56 332,56 332,92 384,92 384,56 436,56 436,92 488,92"/>
+<text class="bad" x="228" y="112" text-anchor="middle">连续 4 个 1：一条平线，中间没有跳变</text>
+<polyline class="out" points="72,140 98,140 98,176 150,176 150,140 176,140 176,176 202,176 202,140 228,140 228,176 254,176 254,140 280,140 280,176 306,176 306,140 358,140 358,176 410,176 410,140 462,140 462,176 488,176"/>
+<circle class="dot" cx="98" cy="158" r="3.2"/><circle class="dot" cx="150" cy="158" r="3.2"/><circle class="dot" cx="202" cy="158" r="3.2"/><circle class="dot" cx="254" cy="158" r="3.2"/><circle class="dot" cx="306" cy="158" r="3.2"/><circle class="dot" cx="358" cy="158" r="3.2"/><circle class="dot" cx="410" cy="158" r="3.2"/><circle class="dot" cx="462" cy="158" r="3.2"/>
+<text class="t" x="496" y="60">高</text><text class="t" x="496" y="96">低</text><text class="t" x="496" y="144">高</text><text class="t" x="496" y="180">低</text>
+<text class="m" x="280" y="210" text-anchor="middle">每格正中间都跳一次：上跳是 1，下跳是 0</text>
+</svg></div>
+    <figcaption>总览页那一帧的第 3 个字节是 <code>5E</code>，二进制 0101 1110。以太网每个字节从最低位先发，所以线上的顺序是 0 1 1 1 1 0 1 0。上面的 NRZ 在连续 4 个 1 期间没有跳变；下面的曼彻斯特每一格中间都有一次（圆点），接收方靠它对钟。</figcaption>
+  </figure>
+  <p>代价是信号变化的次数翻了一倍：10 Mbit/s 的数据，线上每秒最多要变 2000 万次。速率越高，这笔开销越付不起，后来的编码换了更省的办法，见下一节。</p>
+</section>
+
+<section id="copper">
+  <h2><span class="n">04</span>网线：双绞线和编码</h2>
+  <p>一根网线里有 8 根铜线，两两拧成 4 对，所以叫双绞线。两头的水晶头叫 RJ45，8 个金属片各接一根。</p>
+  <h3>为什么成对，为什么要拧</h3>
+  <p>每一对线传一路信号，用的是差分信号：一根线发 +V，另一根同时发 −V，接收方只看两根线的差。外来的干扰（电机、日光灯、旁边的电线）会同时加在两根线上，一减就没了：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th class="num">线 A</th><th class="num">线 B</th><th class="num">接收方算 A − B</th></tr></thead>
+    <tbody>
+      <tr><td>发出（电压为示意值）</td><td class="num">+1.0 V</td><td class="num">−1.0 V</td><td class="num">2.0 V</td></tr>
+      <tr><td>路上受到的干扰</td><td class="num">+0.3 V</td><td class="num">+0.3 V</td><td class="num"></td></tr>
+      <tr><td>收到</td><td class="num">+1.3 V</td><td class="num">−0.7 V</td><td class="num">2.0 V，干扰被减掉了</td></tr>
+    </tbody>
+  </table></div>
+  <p>拧在一起，是为了让"干扰同时、等量地加在两根线上"这个前提成立。两根线平行放时，离干扰源近的那根受的影响更大，减不干净。拧起来以后，两根线轮流靠近干扰源，平均下来就一样了。四对线拧的疏密各不相同，这样它们彼此之间的串扰也能互相抵消。</p>
+  <h3>线的等级和 100 米</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>类别</th><th class="num">标称频率</th><th>能跑到</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td>Cat5</td><td class="num">100 MHz</td><td>100 Mbit/s</td><td>已停产，老房子的墙里还有</td></tr>
+      <tr><td>Cat5e</td><td class="num">100 MHz</td><td>1 Gbit/s</td><td>现在的底线</td></tr>
+      <tr><td>Cat6</td><td class="num">250 MHz</td><td>1 Gbit/s；10 Gbit/s 限 55 m 以内</td><td>家用常见</td></tr>
+      <tr><td>Cat6a</td><td class="num">500 MHz</td><td>10 Gbit/s</td><td>万兆用</td></tr>
+    </tbody>
+  </table></div>
+  <p>类别说的是这根线在多高的频率下，衰减和串扰还达标，线身上印着。长度上限都是 100 m：信号在铜线里越走越弱，频率越高弱得越快。Cat5e 在 100 MHz 下走 100 m 大约衰减 22 dB，只剩不到 1%。收发芯片是按这个衰减量设计的，再长就认不出来了。</p>
+  <h3>插上之后：自动协商和全双工</h3>
+  <p>网线一插上，两端先用一串低速脉冲互相通报自己支持哪些速率，然后选两边都支持的最高一档，这叫自动协商。千兆网卡接到百兆的网口上，会自动落到 100 Mbit/s。</p>
+  <p>全双工是两个方向同时发。10 兆和百兆用分开的两对线，一对发、一对收，另外两对空着。千兆把 4 对线全用上，而且每一对都同时双向传：每一端知道自己发了什么，从线上的总信号里把它减掉，剩下的就是对方发来的。</p>
+  <p>早期的以太网是半双工：所有机器共用一根线，同一时刻只能有一台在发，撞上了就各等一段随机时间重来。交换机普及以后有线网里已经见不到这种方式，Wi-Fi 却一直是这个处境，见第 07 节。</p>
+  <h3>编码是怎么一代代变的</h3>
+  <div class="tbl"><table class="w">
+    <thead><tr><th>标准</th><th>用几对线</th><th class="num">每对每秒的符号数</th><th>一个符号</th><th>速率怎么来的</th></tr></thead>
+    <tbody>
+      <tr><td>10BASE-T，1990</td><td>2 对，一发一收</td><td class="num">—</td><td>曼彻斯特：一比特一次跳变</td><td>10 Mbit/s</td></tr>
+      <tr><td>100BASE-TX，1995</td><td>2 对，一发一收</td><td class="num">125 M</td><td>4B5B 加 MLT-3</td><td>125 M × 4/5 = 100 Mbit/s</td></tr>
+      <tr><td>1000BASE-T，1999</td><td>4 对，每对双向</td><td class="num">125 M</td><td>PAM-5：5 种电平，带 2 比特</td><td>125 M × 2 × 4 = 1000 Mbit/s</td></tr>
+      <tr><td>10GBASE-T，2006</td><td>4 对，每对双向</td><td class="num">800 M</td><td>PAM-16：16 种电平</td><td>要 Cat6a 的线</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>4B5B：</strong>每 4 个数据比特换成 5 个码位来发。5 位有 32 种组合，只挑其中跳变够多的来用，长串没有跳变的情况就不会出现。开销是 25%，比曼彻斯特的 100% 省得多。</li>
+    <li><strong>MLT-3：</strong>用 −1、0、+1 三种电平。遇到 1 就按 0、+1、0、−1 的顺序走一步，遇到 0 不动。信号的主要频率因此降到 125 ÷ 4 = 31.25 MHz，Cat5 的线扛得住。</li>
+    <li><strong>PAM-5：</strong>符号率没变，靠每个符号多带比特、4 对线一起上来提速。5 种电平里 4 种就够表示 2 比特，多出来的一种留给纠错和控制符号。</li>
+  </ul>
+  <p>这张表是第 02 节那个公式的几次应用：先把编码的开销降下来，再让每个符号多带比特、多用几对线，最后才去提符号率，因为符号率一高就得换更好的线。</p>
+</section>
+
+<section id="wire">
+  <h2><span class="n">05</span>一帧在线上占多久</h2>
+  <p>抓包软件给你看的那 74 个字节，不是线上的全部。网卡发送时在前后还要加东西：</p>
+  <div class="wire" role="img" aria-label="一帧在线上的布局：前导码 7 字节，帧起始符 1 字节，帧 74 字节（以太网头 14 加 IP 包 60），帧校验 4 字节，帧间隔 12 字节">
+    <div><b>前导码</b><span>7</span></div>
+    <div><b>起始符</b><span>1</span></div>
+    <div class="f"><b>帧</b><span>74 = 14 + 60</span></div>
+    <div><b>帧校验</b><span>4</span></div>
+    <div><b>帧间隔</b><span>12</span></div>
+  </div>
+  <p class="caption">条的宽度不按比例。中间的长条是总览页拆开的那 74 字节（以太网头 14，IP 包 60），两边四格是网卡加上去的 24 字节。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>部分</th><th class="num">字节</th><th>内容</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td>前导码</td><td class="num">7</td><td><code>10101010</code> 重复 7 遍</td><td>让接收方把钟对上</td></tr>
+      <tr><td>帧起始符</td><td class="num">1</td><td><code>10101011</code></td><td>末尾连着两个 1，表示下一位开始是帧</td></tr>
+      <tr><td>帧</td><td class="num">74</td><td>从目的 MAC 到 TCP 的最后一个选项</td><td>上面各层要送的东西</td></tr>
+      <tr><td>帧校验（FCS）</td><td class="num">4</td><td>整帧算出来的 CRC-32</td><td>查这一帧在路上有没有错，见第 12 节</td></tr>
+      <tr><td>帧间隔</td><td class="num">12</td><td>不发数据</td><td>给对方留出处理上一帧的时间</td></tr>
+    </tbody>
+  </table></div>
+<pre><code>握手第一帧：  74 + 4 + 8 + 12 =   98 字节时间 =    784 比特时间
+装满的一帧：1514 + 4 + 8 + 12 = 1538 字节时间 = 12,304 比特时间</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>计算值</th><th class="num">10 Mbit/s</th><th class="num">100 Mbit/s</th><th class="num">1 Gbit/s</th></tr></thead>
+    <tbody>
+      <tr><td>一个比特</td><td class="num">100 ns</td><td class="num">10 ns</td><td class="num">1 ns</td></tr>
+      <tr><td>握手第一帧，98 字节时间</td><td class="num">78.4 µs</td><td class="num">7.84 µs</td><td class="num">0.784 µs</td></tr>
+      <tr><td>装满的一帧，1538 字节时间</td><td class="num">1230.4 µs</td><td class="num">123.04 µs</td><td class="num">12.304 µs</td></tr>
+      <tr><td>每秒最多发几个满帧</td><td class="num">812</td><td class="num">8,127</td><td class="num">81,274</td></tr>
+    </tbody>
+  </table></div>
+  <p>"装满的一帧"就是<a href="journey.html#s9">总览页传输那一步</a>里服务器发回来的大段：1448 字节数据，加 32 字节 TCP 头、20 字节 IP 头、14 字节以太网头，正好 1514 字节。线上的 1538 字节时间里，真正属于应用的只有 1448：</p>
+<pre><code>1448 ÷ 1538 = 94.1%
+千兆链路跑满：1000 Mbit/s × 94.1% ≈ 941 Mbit/s ≈ 117.7 MB/s</code></pre>
+  <p>所以千兆网的下载速度到不了 125 MB/s。另外两个细节：</p>
+  <ul>
+    <li><strong>帧太短要补齐。</strong>以太网规定一帧连校验至少 64 字节。SYN 是 74 + 4 = 78，不用补。不带选项的纯确认包只有 54 字节，网卡会在后面补 6 个字节的 0。</li>
+    <li><strong>百兆以上的链路从不安静。</strong>没有帧要发时，线上一直在发空闲符号，接收方的钟始终是对着的。前导码是 10 兆时代留下来的：那时没帧就真的没信号，每一帧开头都得重新对钟。</li>
+  </ul>
+</section>
+
+<section id="wifi">
+  <h2><span class="n">06</span>Wi-Fi：子载波和星座图</h2>
+  <h3>频段和信道</h3>
+  <p>Wi-Fi 用的是不需要执照的三段频率。每一段再切成固定宽度的小段，叫信道，一个热点（接入点，AP）工作在其中一个信道上。</p>
+  <div class="tbl"><table class="w">
+    <thead><tr><th>频段</th><th>范围</th><th class="num">波长</th><th>信道</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>2.4 GHz</td><td>2400–2483.5 MHz</td><td class="num">约 12.5 cm</td><td>每 5 MHz 一个编号，一个信道却宽 20 MHz，互不重叠的只有 1、6、11 三个</td><td>传得远，穿墙好；拥挤，蓝牙和微波炉也在这一段</td></tr>
+      <tr><td>5 GHz</td><td>5150–5850 MHz 之间的几段</td><td class="num">约 6 cm</td><td>20 MHz 的信道有十几到二十几个，可以并成 40、80、160 MHz</td><td>宽、干净；衰减快</td></tr>
+      <tr><td>6 GHz</td><td>5925–7125 MHz</td><td class="num">约 5 cm</td><td>最多 1200 MHz 的新频率</td><td>Wi-Fi 6E 和 Wi-Fi 7 才支持，各国开放的范围不同</td></tr>
+    </tbody>
+  </table></div>
+  <h3>OFDM：一个信道拆成很多条窄的</h3>
+  <p>室内的无线电会在墙和家具上反射，同一个符号沿几条路先后到达，相差几十到几百纳秒。符号发得太快，上一个符号的回声就盖住了下一个。Wi-Fi 的办法是反着来：把 20 MHz 切成很多条窄的子载波，每一条都发得很慢，很多条同时发。这叫 OFDM（正交频分复用）。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>20 MHz 的信道</th><th>Wi-Fi 4、5（802.11n、ac）</th><th>Wi-Fi 6（802.11ax）</th></tr></thead>
+    <tbody>
+      <tr><td>子载波</td><td>64 条，间隔 312.5 kHz</td><td>256 条，间隔 78.125 kHz</td></tr>
+      <tr><td>其中运数据的</td><td>52 条</td><td>234 条</td></tr>
+      <tr><td>一个符号多长</td><td>3.2 µs，前面加 0.8 µs 保护间隔</td><td>12.8 µs，前面加 0.8 µs 保护间隔</td></tr>
+    </tbody>
+  </table></div>
+  <p>保护间隔是每个符号前面留的一小段，回声落在这里面就不碍事。</p>
+  <h3>QAM：一个符号带好几个比特</h3>
+  <p>每条子载波是一个正弦波，同时改它的振幅和相位。把"振幅多大、相位多少"画成平面上的一个点，所有允许的点合起来叫星座图。16 个点叫 16-QAM，每个符号带 4 比特：</p>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 34 520 246" role="img" aria-label="16-QAM 星座图：平面上 4 乘 4 共 16 个点，每个点标着 4 个比特，相邻两点只差 1 位。右边放大其中一格：理想位置在格子中心，加了噪声后收到的点散在周围，落在格子里就能认对，越过虚线就被认成邻居。">
+<line class="grid" x1="116" y1="46" x2="116" y2="246"/><line class="grid" x1="204" y1="46" x2="204" y2="246"/><line class="grid" x1="60" y1="102" x2="260" y2="102"/><line class="grid" x1="60" y1="190" x2="260" y2="190"/>
+<line class="axis" x1="60" y1="146" x2="260" y2="146"/><line class="axis" x1="160" y1="46" x2="160" y2="246"/>
+<circle class="dot" cx="94" cy="80" r="4.5"/><circle class="dot" cx="138" cy="80" r="4.5"/><circle class="dot" cx="182" cy="80" r="4.5"/><circle class="dot" cx="226" cy="80" r="4.5"/>
+<circle class="dot" cx="94" cy="124" r="4.5"/><circle class="dot" cx="138" cy="124" r="4.5"/><circle class="dot" cx="182" cy="124" r="4.5"/><circle class="dot" cx="226" cy="124" r="4.5"/>
+<circle class="dot" cx="94" cy="168" r="4.5"/><circle class="dot" cx="138" cy="168" r="4.5"/><circle class="dot" cx="182" cy="168" r="4.5"/><circle class="dot" cx="226" cy="168" r="4.5"/>
+<circle class="dot" cx="94" cy="212" r="4.5"/><circle class="dot" cx="138" cy="212" r="4.5"/><circle class="dot" cx="182" cy="212" r="4.5"/><circle class="dot" cx="226" cy="212" r="4.5"/>
+<text class="t s" x="94" y="96" text-anchor="middle">0010</text><text class="t s" x="138" y="96" text-anchor="middle">0110</text><text class="t s" x="182" y="96" text-anchor="middle">1110</text><text class="t s" x="226" y="96" text-anchor="middle">1010</text>
+<text class="t s" x="94" y="140" text-anchor="middle">0011</text><text class="t s" x="138" y="140" text-anchor="middle">0111</text><text class="t s" x="182" y="140" text-anchor="middle">1111</text><text class="t s" x="226" y="140" text-anchor="middle">1011</text>
+<text class="t s" x="94" y="184" text-anchor="middle">0001</text><text class="t s" x="138" y="184" text-anchor="middle">0101</text><text class="t s" x="182" y="184" text-anchor="middle">1101</text><text class="t s" x="226" y="184" text-anchor="middle">1001</text>
+<text class="t s" x="94" y="228" text-anchor="middle">0000</text><text class="t s" x="138" y="228" text-anchor="middle">0100</text><text class="t s" x="182" y="228" text-anchor="middle">1100</text><text class="t s" x="226" y="228" text-anchor="middle">1000</text>
+<rect class="lim" x="204" y="102" width="44" height="44" fill="none"/>
+<line class="lead" x1="248" y1="124" x2="310" y2="124"/>
+<text x="160" y="270" text-anchor="middle">16 个点，每个点 4 比特</text>
+<text class="m" x="370" y="52" text-anchor="middle">放大一格</text>
+<rect class="lim" x="310" y="64" width="120" height="120" fill="none"/>
+<circle class="hot" cx="370" cy="124" r="36"/>
+<circle class="ghost" cx="356" cy="112" r="3"/><circle class="ghost" cx="385" cy="107" r="3"/><circle class="ghost" cx="364" cy="141" r="3"/><circle class="ghost" cx="389" cy="134" r="3"/><circle class="ghost" cx="349" cy="129" r="3"/><circle class="ghost" cx="377" cy="151" r="3"/><circle class="ghost" cx="394" cy="119" r="3"/>
+<circle class="dot" cx="370" cy="124" r="5"/>
+<circle class="bad" cx="446" cy="112" r="3.5"/>
+<text class="bad" x="438" y="78">越过虚线</text>
+<text class="bad" x="438" y="95">认成邻居</text>
+<text x="370" y="206" text-anchor="middle">圆圈里是加了噪声后收到的点</text>
+<text class="m" x="370" y="224" text-anchor="middle">没出格就能认对</text>
+</svg></div>
+    <figcaption>点离中心多远是振幅，在哪个方向是相位。编号的排法让相邻两点只差 1 位，认错成邻居时只错 1 个比特。噪声越大，右边那团点散得越开。</figcaption>
+  </figure>
+  <p>点越多，每个符号带的比特越多，点和点也挨得越近。下表的速率是 Wi-Fi 6、20 MHz、一条空间流时的值：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>调制</th><th class="num">每个符号</th><th class="num">相邻点的间距</th><th class="num">纠错码率</th><th class="num">速率</th></tr></thead>
+    <tbody>
+      <tr><td>BPSK，2 个点</td><td class="num">1 比特</td><td class="num">整条边</td><td class="num">1/2</td><td class="num">8.6 Mbit/s</td></tr>
+      <tr><td>QPSK，4 个点</td><td class="num">2 比特</td><td class="num">整条边</td><td class="num">1/2</td><td class="num">17.2 Mbit/s</td></tr>
+      <tr><td>16-QAM</td><td class="num">4 比特</td><td class="num">边长的 1/3</td><td class="num">1/2</td><td class="num">34.4 Mbit/s</td></tr>
+      <tr><td>64-QAM</td><td class="num">6 比特</td><td class="num">1/7</td><td class="num">2/3</td><td class="num">68.8 Mbit/s</td></tr>
+      <tr><td>256-QAM</td><td class="num">8 比特</td><td class="num">1/15</td><td class="num">3/4</td><td class="num">103.2 Mbit/s</td></tr>
+      <tr><td>1024-QAM</td><td class="num">10 比特</td><td class="num">1/31</td><td class="num">5/6</td><td class="num">143.4 Mbit/s</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">间距按最大振幅相同来比，是算出来的。纠错码率 5/6 的意思是每 6 个比特里有 1 个是冗余，见第 12 节。Wi-Fi 7 还有 4096-QAM，每个符号 12 比特。</p>
+  <p>最后一列是这样算的：</p>
+<pre><code>234 条子载波 × 10 比特 × 5/6 ÷ 13.6 µs = 143.4 Mbit/s
+80 MHz 的信道有 980 条数据子载波：980 × 10 × 5/6 ÷ 13.6 µs = 600.5 Mbit/s
+两条空间流：600.5 × 2 = 1201 Mbit/s</code></pre>
+  <p>手机连上 Wi-Fi 6 的热点时显示的 1201 Mbps 就是这个数。"空间流"来自多天线（MIMO）：手机和热点各有几根天线时，可以在同一个信道上同时发几路不同的数据。每根接收天线听到的都是几路的混合，但每对天线之间的路径不一样，混合的比例也不一样，接收方解一组方程就能把它们分开。两根天线对两根天线，最多两条流，速率翻倍。</p>
+  <h3>离远了为什么变慢</h3>
+  <p>信号强度随距离掉得很快：在空旷处，距离每翻一倍，功率降到四分之一（−6 dB）；每穿一堵墙，再扣几到十几 dB。同样的距离，5 GHz 比 2.4 GHz 多衰减约 6 dB，穿墙也更吃亏。</p>
+  <p>信号弱了，信噪比跟着降，1024 个点就分不清了。从 16-QAM 到 1024-QAM，间距缩到十分之一左右，折合信噪比要高 20 dB。于是热点和手机会自动换到点更少的调制、冗余更多的纠错，这叫速率自适应。上面那张表从最后一行退到第一行，速率差 16 倍多。连接没有断，只是每个符号带的比特少了。最高一档大约要 35 dB 的信噪比，最低一档几 dB 就能通，这两个是典型值，各家芯片不同。</p>
+</section>
+
+<section id="air">
+  <h2><span class="n">07</span>Wi-Fi：共用一个信道</h2>
+  <p>网线是两台设备独占一根线。无线电不是：同一个信道上，你家的手机、电视、热点，还有邻居家用了同一个信道的所有设备，听到的是同一片空气。同一时刻只能有一台在发，两台同时发，信号叠在一起，谁的都收不到。热点和手机之间也只能是半双工：一台设备自己发射的信号（约 20 dBm）比它要接收的（约 −60 dBm）强一亿倍，没法边发边听。</p>
+  <h3>先听再说</h3>
+  <p>这套规矩叫 CSMA/CA，下面的时间是 5 GHz 上的规定值：</p>
+  <ol class="plain">
+    <li>要发之前先听。信道上有人在发，就等它发完。</li>
+    <li>信道空下来以后，再等一段固定时间，34 µs。</li>
+    <li>抽一个随机数，再等这么多个 9 µs 的时隙。第一次从 0 到 15 里抽。等的过程中别人先发了，就暂停倒数，等它发完接着数。</li>
+    <li>数到 0，发。</li>
+  </ol>
+  <p>随机数是用来错开的：好几台设备都在等同一帧结束，等完一起发就一定会撞。</p>
+  <h3>每一帧都要对方确认</h3>
+  <p>发射的时候听不到别人，撞没撞自己不知道。所以让接收方表态：收到一帧并且校验通过，隔 16 µs 立刻回一个 14 字节的 ACK。发送方没等到 ACK，就当这一帧丢了：把随机数的范围翻倍（0–31、0–63，最多到 0–1023），重新排队再发，通常重试 7 次左右才放弃，同时往往把速率降一档。</p>
+  <p>这就是<a href="journey.html#s10">总览页丢包那一步</a>说的"Wi-Fi 在链路层自己会重发几次"。对上面的 TCP 来说，这种重发看不出是丢包，只表现为这一帧晚到了几毫秒。信号差的时候延迟忽高忽低，就是它在一遍遍重发。现在的 Wi-Fi 会把几十帧拼成一次发射，对方用一张位图一次说明哪些收到了，道理相同。</p>
+  <h3>小帧很不划算</h3>
+  <p>每次发射的开头有一段前导码，让接收方发现信号、对钟、摸清这条路径的情况。它至少 20 µs，速率再高也省不掉。按最简单的 802.11a 帧格式、54 Mbit/s 估算一下那个 SYN：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>步骤（计算值）</th><th class="num">时间</th></tr></thead>
+    <tbody>
+      <tr><td>等信道空闲</td><td class="num">34 µs</td></tr>
+      <tr><td>随机退避，平均 7.5 个时隙</td><td class="num">67.5 µs</td></tr>
+      <tr><td>前导码</td><td class="num">20 µs</td></tr>
+      <tr><td>数据：114 字节，5 个符号，每个 4 µs</td><td class="num">20 µs</td></tr>
+      <tr><td>等对方回 ACK</td><td class="num">16 µs</td></tr>
+      <tr><td>ACK：前导码 20 µs，内容 8 µs</td><td class="num">28 µs</td></tr>
+      <tr><td>合计</td><td class="num">185.5 µs</td></tr>
+    </tbody>
+  </table></div>
+  <p>同一帧在百兆网线上只要 7.84 µs。185.5 µs 里真正在运数据的只有 20 µs，占一成。新标准的前导码更长，但会把很多帧拼在一起发来摊薄。所以 Wi-Fi 显示的连接速率，只是"正在发数据的那一小段时间里"的速率，实际吞吐量常常只有它的一半上下。</p>
+  <h3>空中的帧和网线上的帧不一样</h3>
+  <p>总览页拆开的 74 字节是以太网格式，那是系统交给应用和抓包软件看的样子。在空中，同一个 IP 包外面套的是 802.11 的头：</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>以太网帧</th><th>802.11 数据帧，WPA2 加密</th></tr></thead>
+    <tbody>
+      <tr><td>头</td><td>14 字节：目的 MAC、源 MAC、类型</td><td>26 字节：帧控制、时长、三个地址、序号、优先级</td></tr>
+      <tr><td>"里面是什么"的类型</td><td>在头里</td><td>另加 8 字节</td></tr>
+      <tr><td>加密</td><td>没有</td><td>8 字节加密头，8 字节防篡改校验</td></tr>
+      <tr><td>IP 包</td><td>60 字节</td><td>60 字节，加密过</td></tr>
+      <tr><td>帧校验</td><td>4 字节</td><td>4 字节</td></tr>
+      <tr><td>合计</td><td>78 字节</td><td>26 + 8 + 8 + 60 + 8 + 4 = 114 字节</td></tr>
+    </tbody>
+  </table></div>
+  <p>802.11 的头里有三个地址。手机发往热点时：</p>
+  <ul>
+    <li><strong>地址 1，空中的接收者：</strong>热点无线网卡的 MAC。</li>
+    <li><strong>地址 2，发送者：</strong>手机的 MAC，ACK 回给它。</li>
+    <li><strong>地址 3，最终交给谁：</strong>网关的 MAC。</li>
+  </ul>
+  <p>以太网里收发双方就是线的两头，两个地址够用。无线里"空中由谁接收"和"这一帧最终给谁"可以不是同一台：发给同一个 Wi-Fi 下的电视时，地址 1 仍然是热点，地址 3 才是电视。</p>
+  <p>热点收到以后做的事叫桥接：验校验、回 ACK、解密，去掉 802.11 的头，用地址 3 和地址 2 拼出一个以太网头，再从有线口发出去。家用路由器把热点、交换机、路由器装在了一个盒子里，这一步在盒子内部完成。</p>
+</section>
+
+<section id="fibre">
+  <h2><span class="n">08</span>光纤：电怎么变成光</h2>
+  <h3>光为什么跑不出去</h3>
+  <p>光纤是一根玻璃丝，分两层：中间的纤芯，外面的包层。两层都是玻璃，纤芯的折射率比包层高不到 1%。光从折射率高的一侧斜着碰到边界时，只要角度够平，就会被全部弹回来，一点不漏，这叫全反射。光就这样在纤芯里一路弹到几十公里以外。</p>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 0 520 196" role="img" aria-label="光纤的纵剖面：中间是纤芯，上下是包层。一束角度够平的光在纤芯的上下边界之间来回全反射，一直向右传；另一束太陡的光穿过边界进入包层，漏掉了。">
+<defs><marker id="ah3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker></defs>
+<rect class="band" x="40" y="40" width="440" height="120"/>
+<rect class="hot" x="40" y="80" width="440" height="40"/>
+<polyline class="ghostline" points="40,100 56,80 84,40 92,28"/>
+<polyline class="out" points="14,110.4 40,100 90,80 190,120 290,80 390,120 480,84 504,74.4" marker-end="url(#ah3)"/>
+<text class="m" x="100" y="24">太陡的光线：穿进包层，漏掉</text>
+<text class="m" x="472" y="64" text-anchor="end">包层：折射率略低</text>
+<line class="lead" x1="190" y1="124" x2="190" y2="172"/>
+<text class="a" x="190" y="188" text-anchor="middle">够平：全部弹回</text>
+<line class="lead" x1="440" y1="114" x2="440" y2="172"/>
+<text x="472" y="188" text-anchor="end">纤芯：折射率略高</text>
+</svg></div>
+    <figcaption>示意图，角度画大了，粗细也不按比例。按折射率差 1% 算，光线和轴线的夹角要小于约 8° 才会全反射。把光纤弯得太急，原本够平的光线在拐弯处就变陡了，会漏出去，所以光纤怕折。</figcaption>
+  </figure>
+  <h3>单模和多模</h3>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>单模</th><th>多模</th></tr></thead>
+    <tbody>
+      <tr><td>纤芯直径</td><td>约 9 µm</td><td>50 µm 或 62.5 µm</td></tr>
+      <tr><td>包层外径</td><td colspan="2">125 µm，比头发丝略粗</td></tr>
+      <tr><td>光在里面</td><td>只有一条路可走</td><td>有很多条路，长短不一</td></tr>
+      <tr><td>麻烦</td><td>纤芯细，对准难，器件贵</td><td>走不同路的光先后到达，脉冲被拉宽；速率越高，能传的距离越短</td></tr>
+      <tr><td>常用波长</td><td>1310、1490、1550 nm</td><td>850 nm</td></tr>
+      <tr><td>距离</td><td>几十公里；加放大器可以上千公里</td><td>几百米以内</td></tr>
+      <tr><td>用在</td><td>入户、城域、骨干、海缆</td><td>机房内部</td></tr>
+      <tr><td>外皮的惯用颜色</td><td>黄</td><td>橙或水蓝</td></tr>
+    </tbody>
+  </table></div>
+  <h3>用的是哪几种光</h3>
+  <p>全是红外线，肉眼看不见（可见光在 380 到 750 nm 之间）。玻璃在 1550 nm 附近最透明：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">波长</th><th>用在哪</th><th class="num">在玻璃里的衰减（典型值）</th></tr></thead>
+    <tbody>
+      <tr><td class="num">850 nm</td><td>多模，机房里的短距离</td><td class="num">约 3 dB/km</td></tr>
+      <tr><td class="num">1310 nm</td><td>单模；入户光纤的上行</td><td class="num">约 0.35 dB/km</td></tr>
+      <tr><td class="num">1490 nm</td><td>入户光纤的下行</td><td class="num">介于上下两行之间</td></tr>
+      <tr><td class="num">1550 nm</td><td>长途、海缆</td><td class="num">约 0.2 dB/km</td></tr>
+    </tbody>
+  </table></div>
+<pre><code>1550 nm 的光纤：0.2 dB/km × 100 km = 20 dB     走 100 公里还剩 1%
+Cat5e 网线（100 MHz）：100 米就衰减约 22 dB</code></pre>
+  <p>同样衰减到 1% 上下，光纤能走的距离是铜线的一千倍。它还不怕电磁干扰，不导电，不引雷。长途线路全用光纤，原因就在这里。</p>
+  <p>1550 nm 的光，频率是 193 THz，是 5 GHz Wi-Fi 的近四万倍。载波这么高，能用的带宽也大得多：光是 1530 到 1565 nm 这一小段就有约 4.4 THz 宽，是整个 6 GHz Wi-Fi 频段的三千多倍。</p>
+  <h3>电变光，光变电</h3>
+  <p>发送端是一只激光二极管。电流超过一个门限它就发光，电流越大越亮。驱动电路按要发的比特去改电流：1 就亮，0 就暗。这叫开关键控（OOK），本质是给 193 THz 的载波调幅。10 Gbit/s 就是每秒亮暗 100 亿次。0 也不是全灭，只是暗很多，因为从全灭再点亮来不及。</p>
+  <p>接收端是一只光电二极管：光子打在上面会打出电子，光越强，电流越大。后面的放大器把这点微弱的电流变成电压，再判断每一格是亮还是暗，同时从亮暗的跳变里恢复时钟。这和第 03 节是同一个问题，所以光纤上也要用线路编码保证跳变够多：千兆光口用 8b/10b，万兆用 64b/66b。</p>
+  <p>激光器、光电二极管和驱动电路封装在一起，做成手指大小、可以插拔的光模块，SFP、SFP+、QSFP 这些名字说的是外形和速率档。交换机和路由器的光口其实是个空槽，插什么模块，决定了它发什么波长、能跑多远。一个模块通常接两根光纤，一根发、一根收；也有只用一根的，两个方向用不同的波长，光猫就是这样。</p>
+  <h3>一根光纤里走很多路</h3>
+  <p>波长不同的光在同一根光纤里互不干扰，就像不同频率的电台。把几十束波长略有差别的激光合进一根光纤，对面再分开，叫波分复用（WDM）。骨干网常见的排法是在 1550 nm 附近每隔 0.4 或 0.8 nm 放一路，一根光纤走 40 到 96 路，每一路 100 Gbit/s 或更高。</p>
+  <p>走远了光会变弱。陆地上每隔 80 km 左右放一台光放大器：一段掺了铒元素的光纤，用另一束激光给它供能，进来的光直接被放大，不用先变成电，而且几十路波长一起放大。海底光缆是同一套东西：缆里有几对到二十几对光纤，每隔几十公里串一个放大器，两岸用上万伏的直流电通过缆里的铜导体给它们供电。横跨太平洋的一条有一万公里上下，要串上百个放大器。</p>
+  <p>单路 100 Gbit/s 以上，光靠亮暗已经不够。新的办法和 Wi-Fi 一样，改用星座图：同时改光的相位和振幅，再把光的两个偏振方向当成两条独立的通道。常见的一种是每个偏振上用 QPSK，一个符号 2 × 2 = 4 比特，每秒约 30 G 个符号，扣掉纠错的开销，净得 100 Gbit/s。接收端要拿一束本地的激光和收到的光混在一起，才能读出相位，所以叫相干光通信。</p>
+</section>
+
+<section id="pon">
+  <h2><span class="n">09</span>光猫：一根光纤分给几十户</h2>
+  <p>从运营商的机房到你家，不是一户一根的专线。机房里一个光口出一根光纤，到小区后经过分光器分成 32 或 64 根，每根进一户。这种结构叫无源光网络（PON）。"无源"指分光器不用电，它只是一块玻璃器件，把进来的光按功率平分。机房那头的设备叫 OLT，家里这头叫 ONU，就是光猫。</p>
+  <figure class="fig">
+    <div class="card"><svg viewBox="0 26 560 246" role="img" aria-label="PON 的树形结构：左边一台 OLT，经一根光纤到分光器，分成三路到光猫 A、B、C。下行时每条支路上都是同样的 A、B、C 三块数据，每台光猫只收自己那一块。上行时每台光猫在不同的时刻发自己的一块，到主干上一个接一个排开。">
+<rect class="band" x="14" y="128" width="64" height="44" rx="6"/>
+<text x="46" y="155" text-anchor="middle">OLT</text>
+<text class="m" x="46" y="190" text-anchor="middle">运营商机房</text>
+<polyline class="axis" fill="none" points="78,150 240,150"/>
+<polyline class="axis" fill="none" points="240,150 284,62 430,62"/>
+<polyline class="axis" fill="none" points="240,150 430,150"/>
+<polyline class="axis" fill="none" points="240,150 284,238 430,238"/>
+<circle class="ghost" cx="240" cy="150" r="7"/>
+<text x="228" y="134" text-anchor="end">分光器</text>
+<text class="m" x="134" y="112" text-anchor="middle">下行 1490 nm →</text>
+<rect class="band" x="100" y="124" width="20" height="14" rx="2"/><rect class="band" x="124" y="124" width="20" height="14" rx="2"/><rect class="band" x="148" y="124" width="20" height="14" rx="2"/>
+<text class="t s" x="110" y="135" text-anchor="middle">A</text><text class="t s" x="134" y="135" text-anchor="middle">B</text><text class="t s" x="158" y="135" text-anchor="middle">C</text>
+<rect class="band" x="92" y="162" width="20" height="14" rx="2"/><rect class="band" x="126" y="162" width="20" height="14" rx="2"/><rect class="band" x="160" y="162" width="20" height="14" rx="2"/>
+<text class="t s" x="102" y="173" text-anchor="middle">A</text><text class="t s" x="136" y="173" text-anchor="middle">B</text><text class="t s" x="170" y="173" text-anchor="middle">C</text>
+<text class="m" x="136" y="214" text-anchor="middle">← 上行 1310 nm</text>
+<text class="m" x="136" y="232" text-anchor="middle">一个接一个，不重叠</text>
+<rect class="hot" x="300" y="42" width="20" height="14" rx="2"/><rect class="band" x="324" y="42" width="20" height="14" rx="2"/><rect class="band" x="348" y="42" width="20" height="14" rx="2"/>
+<text class="t s" x="310" y="53" text-anchor="middle">A</text><text class="t s" x="334" y="53" text-anchor="middle">B</text><text class="t s" x="358" y="53" text-anchor="middle">C</text>
+<rect class="hot" x="300" y="68" width="20" height="14" rx="2"/><text class="t s" x="310" y="79" text-anchor="middle">A</text>
+<rect class="band" x="300" y="130" width="20" height="14" rx="2"/><rect class="hot" x="324" y="130" width="20" height="14" rx="2"/><rect class="band" x="348" y="130" width="20" height="14" rx="2"/>
+<text class="t s" x="310" y="141" text-anchor="middle">A</text><text class="t s" x="334" y="141" text-anchor="middle">B</text><text class="t s" x="358" y="141" text-anchor="middle">C</text>
+<rect class="hot" x="336" y="156" width="20" height="14" rx="2"/><text class="t s" x="346" y="167" text-anchor="middle">B</text>
+<rect class="band" x="300" y="218" width="20" height="14" rx="2"/><rect class="band" x="324" y="218" width="20" height="14" rx="2"/><rect class="hot" x="348" y="218" width="20" height="14" rx="2"/>
+<text class="t s" x="310" y="229" text-anchor="middle">A</text><text class="t s" x="334" y="229" text-anchor="middle">B</text><text class="t s" x="358" y="229" text-anchor="middle">C</text>
+<rect class="hot" x="372" y="244" width="20" height="14" rx="2"/><text class="t s" x="382" y="255" text-anchor="middle">C</text>
+<rect class="band" x="430" y="42" width="70" height="40" rx="6"/><text x="465" y="67" text-anchor="middle">光猫 A</text><text class="a" x="508" y="67">只收 A</text>
+<rect class="band" x="430" y="130" width="70" height="40" rx="6"/><text x="465" y="155" text-anchor="middle">光猫 B</text><text class="a" x="508" y="155">只收 B</text>
+<rect class="band" x="430" y="218" width="70" height="40" rx="6"/><text x="465" y="243" text-anchor="middle">光猫 C</text><text class="a" x="508" y="243">只收 C</text>
+</svg></div>
+    <figcaption>线的上方是下行：OLT 发的每一块数据都被分光器复制给所有光猫，光猫只留下标着自己编号的（边框加重的那一块），其余丢掉。线的下方是上行：每台光猫只在分给它的时间片里发光，三条支路上的色块错开了位置，到主干上正好一个接一个。</figcaption>
+  </figure>
+  <h3>下行广播，上行排队</h3>
+  <ul>
+    <li><strong>下行用 1490 nm，一直亮着。</strong>所有住户收到的光一模一样。每块数据开头有一个编号，光猫只收自己的。因为邻居也收得到你的数据，下行是加密的。</li>
+    <li><strong>上行用 1310 nm，轮流发。</strong>几台光猫同时发光，会在分光器上叠在一起，OLT 认不出来。所以由 OLT 统一排时间表，在下行里告诉每台光猫从第几微秒发到第几微秒，GPON 是每 125 µs 排一次。光猫的激光器平时是灭的，轮到自己才亮。</li>
+    <li><strong>先测距。</strong>各家离机房远近不同，光在路上花的时间不一样。光猫上线时，OLT 先量出到它的往返时间，让近的多等一会儿，保证大家的光到达 OLT 时正好排齐。</li>
+    <li><strong>两个方向的波长不同，</strong>所以一根光纤就能同时双向传。</li>
+  </ul>
+  <h3>光被分薄了</h3>
+<pre><code>分成 32 份：10 × log10(32) ≈ 15 dB
+分成 64 份：10 × log10(64) ≈ 18 dB
+20 km 的光纤，上行 1310 nm：0.35 dB/km × 20 km = 7 dB</code></pre>
+  <p>分光的损耗比光纤本身大得多。GPON 常用的一档光模块允许整条线路衰减 28 dB，所以一般做到 1 分 64、20 km 以内。</p>
+  <h3>几种 PON 的线路速率</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>标准</th><th class="num">下行</th><th class="num">上行</th><th class="num">下行、上行波长</th></tr></thead>
+    <tbody>
+      <tr><td>EPON（IEEE 802.3ah）</td><td class="num">1.25 Gbit/s</td><td class="num">1.25 Gbit/s</td><td class="num">1490、1310 nm</td></tr>
+      <tr><td>GPON（ITU-T G.984）</td><td class="num">2.488 Gbit/s</td><td class="num">1.244 Gbit/s</td><td class="num">1490、1310 nm</td></tr>
+      <tr><td>XG-PON（ITU-T G.987）</td><td class="num">9.953 Gbit/s</td><td class="num">2.488 Gbit/s</td><td class="num">1577、1270 nm</td></tr>
+      <tr><td>XGS-PON（ITU-T G.9807.1）</td><td class="num">9.953 Gbit/s</td><td class="num">9.953 Gbit/s</td><td class="num">1577、1270 nm</td></tr>
+      <tr><td>10G-EPON（IEEE 802.3av）</td><td class="num">10.3125 Gbit/s</td><td class="num">1.25 或 10.3125 Gbit/s</td><td class="num">1577 nm；1310 或 1270 nm</td></tr>
+    </tbody>
+  </table></div>
+  <p>这些是线上的总速率，同一个分光器下的所有住户共用。EPON 用了 8b/10b 编码，1.25 Gbit/s 里净得 1 Gbit/s。你买的 300 兆、1000 兆，是运营商给你这一户限的速，不是一条独占的线路：GPON 的 2488 Mbit/s 分给 64 户，如果所有人同时跑满，每户不到 39 Mbit/s。平时很少有人同时跑满，所以够用。</p>
+  <h3>光猫里面</h3>
+  <p>光猫做的事和第 07 节的热点是一类：一边是 PON 的光口，一边是以太网的电口。它把收到的光变回比特，从 PON 的帧里取出以太网帧，再按网线的规矩重新发出去；反方向同理。现在的光猫常把路由器和 Wi-Fi 也做在里面，这时"路由器到光猫"的那段网线，就缩成了电路板上几厘米的走线。</p>
+  <p>光猫上的 PON 灯常亮，表示它已经在 OLT 上登记成功。LOS 灯亮（一般是红色）表示收不到光：光纤断了、折了，或者接头松了。</p>
+</section>
+
+<section id="cell">
+  <h2><span class="n">10</span>蜂窝网络：第一跳换成基站</h2>
+  <p>用流量上网时，变的只有第一跳：手机的无线电不是发给家里的热点，而是发给几百米到几公里外的基站。基站后面接的还是光纤，再往后的路和前面完全一样。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>Wi-Fi</th><th>蜂窝网络（4G、5G）</th></tr></thead>
+    <tbody>
+      <tr><td>频率</td><td>免执照，谁都能用</td><td>运营商专用的频段，从几百 MHz 到几 GHz</td></tr>
+      <tr><td>谁决定什么时候发</td><td>各自先听再抢</td><td>基站统一调度，4G 是每毫秒排一次</td></tr>
+      <tr><td>怎么分给多台设备</td><td>轮流占用整个信道</td><td>OFDMA：把子载波和时间切成小格，同一时刻不同的格子给不同的手机</td></tr>
+      <tr><td>调制</td><td>最高 1024-QAM 或 4096-QAM</td><td>常见最高 256-QAM</td></tr>
+      <tr><td>发射功率</td><td>约 100 mW</td><td>手机最大约 200 mW，基站几十瓦</td></tr>
+      <tr><td>链路层重发</td><td>没等到 ACK 就重发</td><td>也有，重发的和第一次收到的还会合在一起解</td></tr>
+      <tr><td>覆盖</td><td>几十米</td><td>几百米到几公里</td></tr>
+    </tbody>
+  </table></div>
+  <p>OFDMA 和 OFDM 只差最后一个字母：OFDM 是一台设备用掉全部子载波，OFDMA 是把子载波分给几台设备同时用。4G 里 12 条间隔 15 kHz 的子载波算一格，宽 180 kHz，基站按格子分配。Wi-Fi 6 也学了这一招。</p>
+  <p>基站把无线电变回比特以后，经光纤送到运营商的核心网。手机的 IP 地址是那里分的，IPv4 出公网之前通常同样要换一次地址，和<a href="journey.html#s6">总览页转发那一步</a>里家用路由器做的一样。</p>
+  <p>对应用来说要记住一点：基站的格子是整个小区的人分着用的。信号满格只说明基站的信号到你这里够强，不说明分给你的格子多。</p>
+</section>
+
+<section id="speed">
+  <h2><span class="n">11</span>信号跑多快</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>介质</th><th>速度</th><th>例子（计算值）</th></tr></thead>
+    <tbody>
+      <tr><td>空气里的无线电</td><td>光速 c，约 30 万 km/s</td><td>10 m：33 ns</td></tr>
+      <tr><td>网线里的电信号</td><td>约 0.64 到 0.7 c</td><td>100 m：约 0.5 µs</td></tr>
+      <tr><td>光纤里的光</td><td>c ÷ 1.468 ≈ 20.4 万 km/s，约 c 的三分之二</td><td>1000 km：4.9 ms</td></tr>
+    </tbody>
+  </table></div>
+  <p>1.468 是单模光纤的典型折射率。光在玻璃里比在真空里慢，所以光纤并不是"光速"。</p>
+<pre><code>1000 km ÷ 204,218 km/s ≈ 4.9 ms         每 1000 公里，单程约 5 毫秒
+10,000 km ÷ 204,218 km/s ≈ 49 ms        跨一个大洋，一个来回至少 98 毫秒</code></pre>
+  <p>总览页实测到服务器的一个来回是 10 ms，单程最多 5 ms。按光纤里的速度算，5 ms × 204,218 km/s ≈ 1021 km，线路的长度不会超过这个数。这只是上限：10 ms 里还包括每台路由器排队和转发的时间、Wi-Fi 抢信道的时间、服务器处理的时间。实际的线路比 1021 km 短，短多少，从这一个数看不出来。</p>
+  <div class="key"><strong>延迟和带宽是两回事。</strong>带宽是每秒能送多少比特，延迟是一个比特从这头到那头要多久。把宽带从 100 兆升到 1000 兆，一个来回的时间一毫秒都不会少，因为光还是那么快，路还是那么长。按 1 Gbit/s 算，一个比特在光纤里长约 20 cm，总览页那个 SYN 连前导码共 86 字节，是一列约 140 m 长的光脉冲。提高速率只是把每个比特压得更短，不会让它跑得更快。</div>
+  <p>距离定下了延迟的下限，协议能做的只是少跑几个来回：<a href="dns.html">DNS</a> 靠缓存省掉查询，<a href="tls.html">TLS 1.3</a> 把握手压到一个来回，<a href="http2-http3.html">HTTP/3</a> 把建连接和加密的握手并成一次。</p>
+</section>
+
+<section id="errors">
+  <h2><span class="n">12</span>比特错了怎么办</h2>
+  <p>噪声够大时，接收方会把一个符号认成它的邻居，一个或几个比特就翻了。出错的比例叫误码率。以太网规范对千兆网线的要求是不高于 10⁻¹⁰，也就是一百亿个比特里错一个：</p>
+<pre><code>装满的一帧：1518 字节 = 12,144 比特
+一帧带错的概率：12,144 × 10⁻¹⁰ ≈ 82 万分之一
+千兆跑满每秒 81,274 帧：82 万 ÷ 81,274 ≈ 10，这条底线下大约每 10 秒坏 1 帧</code></pre>
+  <p>正常的有线链路比这条底线好得多，无线则差得多。对付错误有三道防线，一道比一道靠上：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">在哪一层</th><th>手段</th><th>做什么</th><th>管不了的时候</th></tr></thead>
+    <tbody>
+      <tr><td class="num">物理层</td><td>前向纠错（FEC）</td><td>发送时多带一些冗余比特，接收方靠它算出哪几位错了，直接改回来，不用重发</td><td>错得太多就纠不动</td></tr>
+      <tr><td class="num">链路层</td><td>帧校验（FCS）</td><td>只查不修。对不上就把整帧扔掉，不通知任何人</td><td>Wi-Fi 和蜂窝网络自己重发；以太网和光纤不管</td></tr>
+      <tr><td class="num">传输层</td><td>TCP 的序号、确认、重传</td><td>发现少了一段，让对方再发一次</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>纠错码前面已经出现过好几次。</strong>Wi-Fi 的"码率 5/6"是每 6 个比特里 1 个冗余，信号差时退到 1/2，一半都是冗余。千兆网线的 PAM-5 多出来的那一种电平也是干这个的。GPON 每 239 字节数据加 16 字节冗余，能纠正其中任意 8 个字节的错。长途的相干光要拿出 15% 到 25% 的容量做纠错。</li>
+    <li><strong>帧校验是 4 字节的 CRC-32。</strong>连续 32 位以内的错它一定查得出，别的错漏过去的概率约为 2³² 分之一，也就是 43 亿分之一。</li>
+  </ul>
+  <p>帧校验对不上时，以太网的网卡把这一帧直接丢掉，不告诉发送方，也不告诉上面的 IP 和 TCP。对它们来说，这个包就是凭空没了。接下来的事，就是<a href="journey.html#s10">总览页丢包那一步</a>：接收方发现序号不连续，重复确认，发送方补发。</p>
+  <div class="callout"><b>这里有一处错位：</b>TCP 把丢包当成"路上堵了"的信号，会主动降速。但无线上的丢包多半是干扰造成的，路上并不堵。Wi-Fi 和蜂窝网络在链路层拼命重发，就是为了不让 TCP 看到这些丢包。重发也救不回来时，TCP 的速度会掉得比实际需要的多，细节见<a href="tcp-congestion.html">拥塞控制</a>。</div>
+</section>
+
+<section id="chain">
+  <h2><span class="n">13</span>整条路换了几次样子</h2>
+  <p>把前面几节拼起来。路线按总览页的 6 台路由器，再加上两台不改 TTL、所以在那边数不出来的设备：光猫和运营商机房的 OLT。</p>
+  <figure class="fig">
+    <div class="card"><svg class="wide" viewBox="0 0 700 254" role="img" aria-label="一帧从手机到服务器的路线。横向依次是手机、带热点的路由器、光猫、OLT、运营商的四台路由器、机房路由器、服务器；纵向三行是无线电、电、光。在每台设备内部信号都是电；手机到路由器之间升到无线电一行；路由器到光猫之间是网线，仍在电这一行；从光猫往后，每两台设备之间都降到光这一行，到下一台设备再回到电。一共 16 次换行，9 段链路依次标着 1 到 9。">
+<defs><marker id="ah5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker></defs>
+<rect class="band" x="58" y="62" width="40" height="160" rx="6"/><rect class="band" x="122" y="62" width="40" height="160" rx="6"/><rect class="band" x="186" y="62" width="40" height="160" rx="6"/><rect class="band" x="250" y="62" width="40" height="160" rx="6"/><rect class="band" x="314" y="62" width="40" height="160" rx="6"/><rect class="band" x="378" y="62" width="40" height="160" rx="6"/><rect class="band" x="442" y="62" width="40" height="160" rx="6"/><rect class="band" x="506" y="62" width="40" height="160" rx="6"/><rect class="band" x="570" y="62" width="40" height="160" rx="6"/><rect class="band" x="634" y="62" width="40" height="160" rx="6"/>
+<line class="grid" x1="50" y1="84" x2="690" y2="84"/><line class="grid" x1="50" y1="142" x2="690" y2="142"/><line class="grid" x1="50" y1="200" x2="690" y2="200"/>
+<text x="4" y="88">无线电</text><text x="4" y="146">电</text><text x="4" y="204">光</text>
+<text x="78" y="34" text-anchor="middle">手机</text>
+<text x="142" y="34" text-anchor="middle">路由器</text><text class="m s" x="142" y="52" text-anchor="middle">带热点</text>
+<text x="206" y="34" text-anchor="middle">光猫</text>
+<text x="270" y="34" text-anchor="middle">OLT</text><text class="m s" x="270" y="52" text-anchor="middle">运营商机房</text>
+<text x="430" y="34" text-anchor="middle">运营商的路由器，第 2–5 台</text>
+<line class="lead" x1="314" y1="46" x2="546" y2="46"/><line class="lead" x1="314" y1="46" x2="314" y2="54"/><line class="lead" x1="546" y1="46" x2="546" y2="54"/>
+<text x="590" y="34" text-anchor="middle">机房路由器</text><text class="m s" x="590" y="52" text-anchor="middle">第 6 台</text>
+<text x="654" y="34" text-anchor="middle">服务器</text>
+<polyline class="out" points="68,142 90,142 90,84 130,84 130,142 218,142 218,200 258,200 258,142 282,142 282,200 322,200 322,142 346,142 346,200 386,200 386,142 410,142 410,200 450,200 450,142 474,142 474,200 514,200 514,142 538,142 538,200 578,200 578,142 602,142 602,200 642,200 642,142 664,142" marker-end="url(#ah5)"/>
+<circle class="dot" cx="90" cy="142" r="4"/><circle class="dot" cx="130" cy="142" r="4"/><circle class="dot" cx="218" cy="142" r="4"/><circle class="dot" cx="258" cy="142" r="4"/><circle class="dot" cx="282" cy="142" r="4"/><circle class="dot" cx="322" cy="142" r="4"/><circle class="dot" cx="346" cy="142" r="4"/><circle class="dot" cx="386" cy="142" r="4"/><circle class="dot" cx="410" cy="142" r="4"/><circle class="dot" cx="450" cy="142" r="4"/><circle class="dot" cx="474" cy="142" r="4"/><circle class="dot" cx="514" cy="142" r="4"/><circle class="dot" cx="538" cy="142" r="4"/><circle class="dot" cx="578" cy="142" r="4"/><circle class="dot" cx="602" cy="142" r="4"/><circle class="dot" cx="642" cy="142" r="4"/>
+<text class="t" x="110" y="76" text-anchor="middle">1</text>
+<text class="t" x="174" y="134" text-anchor="middle">2</text>
+<text class="t" y="217" text-anchor="middle"><tspan x="238">3</tspan><tspan x="302">4</tspan><tspan x="366">5</tspan><tspan x="430">6</tspan><tspan x="494">7</tspan><tspan x="558">8</tspan><tspan x="622">9</tspan></text>
+<text class="m" x="430" y="244" text-anchor="middle">长途的几段走波分，途中的光放大器不做转换</text>
+</svg></div>
+    <figcaption>横向是设备，纵向是信号的样子。在每台设备内部，比特都是芯片里的电信号（中间一行）。每个圆点是一次换行，共 16 个。两台设备之间的数字是段号，和下面的表对应：1 是 Wi-Fi，2 是网线，3 是 PON，往后都是光纤。光每到一台路由器，都要先变回电，查完路由表，再变成光发出去。</figcaption>
+  </figure>
+  <div class="tbl"><table class="w">
+    <thead><tr><th class="num">段</th><th>从哪到哪</th><th>介质</th><th>线上的信号</th><th>两端由谁转换</th><th class="num">换几次</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>手机 → 热点</td><td>空气</td><td>5 GHz 无线电，OFDM 加 QAM</td><td>两边的 Wi-Fi 芯片和天线</td><td class="num">2</td></tr>
+      <tr><td class="num">2</td><td>路由器 → 光猫</td><td>网线</td><td>4 对线上的 5 级电压</td><td>两边网口的收发芯片</td><td class="num">0，一直是电</td></tr>
+      <tr><td class="num">3</td><td>光猫 → OLT</td><td>单模光纤，和邻居共用</td><td>1310 nm 的光，按时间片发</td><td>两边的 PON 光模块</td><td class="num">2</td></tr>
+      <tr><td class="num">4</td><td>OLT → 运营商的第一台路由器</td><td>单模光纤</td><td>光的亮和暗</td><td>两边的光模块</td><td class="num">2</td></tr>
+      <tr><td class="num">5–8</td><td>运营商的路由器之间，4 段</td><td>单模光纤</td><td>亮和暗，或相干光的相位和偏振</td><td>两边的光模块</td><td class="num">8</td></tr>
+      <tr><td class="num">9</td><td>机房的路由器 → 服务器</td><td>光纤；短距离也常用铜缆</td><td>光的亮和暗</td><td>两边的光模块</td><td class="num">2</td></tr>
+      <tr><td></td><td>合计</td><td>3 种</td><td></td><td></td><td class="num">16</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>介质只换了 2 次，信号却重新生成了 9 次。</strong>每一段的接收端都把信号彻底变回比特，验过帧校验，再从头发一遍。噪声因此不会一段段累积：上一段的干扰只要没让比特翻转，到这里就清零了。数字传输能跨越上万公里，靠的是这一点。</li>
+    <li><strong>16 是下限。</strong>路由器之间可能还隔着交换机和波分设备，每多一台就多两次。热点和路由器分开放，中间多一段网线。反过来，路由器和光猫合成一台，第 2 段就没有了；最后一段用铜缆，就少两次。</li>
+    <li><strong>回来的包再走一遍。</strong>链路是同一批，方向相反。PON 那一段换成 1490 nm 的下行光。</li>
+  </ul>
+  <p>每一段的帧也跟着换，<a href="journey.html#s6">总览页转发那一步</a>说过：路由器拆掉旧帧，装一个新帧。物理层在这下面又多做了一层翻译。而里面的 IP 包除了 TTL、校验和，以及家里那次换地址，一路没动。</p>
+  <p>这一层也看不出上面在干什么。开了 <a href="vpn.html">VPN</a>，只是 IP 包外面多套了一层头，线上跑的还是同样的光和电，每帧多几十个字节而已。</p>
+</section>
+
+<section id="android">
+  <h2><span class="n">14</span>落到 Android 和播放器</h2>
+  <p>应用碰不到物理层，系统只露出几个读数：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>读数和 API</th><th>单位</th><th>它说的其实是</th></tr></thead>
+    <tbody>
+      <tr><td>Wi-Fi 信号强度<br><code>WifiInfo.<wbr>getRssi()</code></td><td>dBm。贴着热点约 −30，快断时约 −90</td><td>手机收到的热点信号有多强。不含噪声，不是信噪比</td></tr>
+      <tr><td>Wi-Fi 链路速率<br><code>WifiInfo.<wbr>getLinkSpeed()</code><br>API 29 起分 <code>getTxLinkSpeedMbps()</code>、<code>getRxLinkSpeedMbps()</code></td><td>Mbit/s</td><td>当前调制档位对应的速率，就是第 06 节那张表。不是吞吐量</td></tr>
+      <tr><td>Wi-Fi 频率<br><code>WifiInfo.<wbr>getFrequency()</code></td><td>MHz</td><td>在 2.4 还是 5 GHz，哪个信道</td></tr>
+      <tr><td>蜂窝信号<br><code>TelephonyManager.<wbr>getSignalStrength()</code><br>细项如 <code>CellSignalStrengthLte.<wbr>getRsrp()</code></td><td>dBm；<code>getLevel()</code> 给 0 到 4 格</td><td>基站参考信号的强度</td></tr>
+      <tr><td>带宽估计<br><code>NetworkCapabilities.<wbr>getLinkDownstreamBandwidthKbps()</code></td><td>kbit/s</td><td>系统的粗略估计，文档自己也说不保证准确；老版本上常常只是按网络类型填的固定值</td></tr>
+      <tr><td>是否按流量计费<br><code>NET_CAPABILITY_NOT_METERED</code></td><td>有或没有</td><td>定策略用：要不要自动选高码率</td></tr>
+    </tbody>
+  </table></div>
+<pre><code>// 需要 ACCESS_NETWORK_STATE 权限
+val cm = getSystemService(ConnectivityManager::class.java)
+cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+    override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+        val down = caps.linkDownstreamBandwidthKbps   // 系统的估计
+        // API 31 起 Wi-Fi 的信息从这里拿，之前用 WifiManager.getConnectionInfo()
+        val wifi = caps.transportInfo as? WifiInfo
+        val rssi = wifi?.rssi                         // dBm
+        val link = wifi?.rxLinkSpeedMbps              // 链路速率，不是吞吐量
+    }
+})</code></pre>
+  <h3>信号满格但很卡</h3>
+  <p>格数只说明一件事：手机收到的信号够强。从"够强"到"真的快"，中间还隔着五件事：</p>
+  <ul>
+    <li><strong>强不等于干净。</strong>−50 dBm 很强，但邻居的热点在同一个信道上也很强的话，信噪比照样低，只能用低档的调制。</li>
+    <li><strong>信道是大家共用的。</strong>同一个信道上的设备轮流发，邻居在下载，你就得等。</li>
+    <li><strong>格数只量了下行。</strong>手机的发射功率比热点小，热点听手机可能很吃力，上行一直在重发。</li>
+    <li><strong>链路速率不是吞吐量。</strong>扣掉抢信道、前导码、ACK 和重发，实际常常只有显示值的一半上下。</li>
+    <li><strong>瓶颈在别处。</strong>Wi-Fi 这一段哪怕有 1201 Mbit/s，后面是 100 兆的宽带、被邻居占满的 PON，或者一台忙不过来的服务器，速度由最慢的一段决定。</li>
+  </ul>
+  <h3>对播放器选码率的含义</h3>
+  <p>music_demo 现在只播本地文件：清单里没有申请 <code>INTERNET</code> 权限，FFmpeg 只启用了 <code>file</code> 和 <code>fd</code> 两个协议。以后做边下边播，同一个视频会有几档码率让播放器挑，这一层能给的启发有四条：</p>
+  <ul>
+    <li><strong>不要用信号强度或链路速率选码率。</strong>它们和实际能下多快，只有很弱的关系。</li>
+    <li><strong>量真实的吞吐量。</strong>记下最近几个分片"下了多少字节、花了多久"，算出速率，留出余量，再结合缓冲区里还剩几秒来选。Media3 的 <code>AdaptiveTrackSelection</code> 默认只用估计值的 70%。</li>
+    <li><strong>系统的读数只用来猜开头和定策略。</strong>刚启动还没下过数据时，按网络类型给一个初始码率；按流量计费的网络上默认不选最高档。Media3 的 <code>DefaultBandwidthMeter</code> 就是这么做的：先按网络类型给一个初始估计，之后全靠实测。</li>
+    <li><strong>一直量，缓冲留够。</strong>无线网络的吞吐量几秒钟内就能变几倍：走进电梯，有人开了微波炉，换了一个基站。</li>
+  </ul>
+  <p>码率档位和分片的格式见<a href="streaming-protocols.html">流媒体协议</a>，吞吐量为什么会突然掉下来见<a href="tcp-congestion.html">拥塞控制</a>。</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">15</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象或想法</th><th>实际是</th><th>怎么办</th></tr></thead>
+    <tbody>
+      <tr><td>100 兆宽带，下载只有 12 MB/s</td><td>宽带的单位是 Mbit/s，下载软件显示的是 MB/s，差 8 倍：100 ÷ 8 = 12.5 MB/s，扣掉各层的头约 11.8 MB/s</td><td>这已经是满速</td></tr>
+      <tr><td>Wi-Fi 显示连接速度 866 Mbps，测速只有 400</td><td>显示的是链路速率。抢信道、前导码、ACK 都要占时间</td><td>以实测的吞吐量为准</td></tr>
+      <tr><td>以为 5 GHz 一定比 2.4 GHz 快</td><td>5 GHz 信道宽、干扰少，近处快得多；但衰减大，隔两堵墙后可能还不如 2.4 GHz</td><td>近处用 5 GHz，远处交给设备自己切</td></tr>
+      <tr><td>把信道宽度调到最大</td><td>信道每宽一倍，收进来的噪声也多一倍（3 dB），和邻居重叠的机会更大</td><td>热点密集的环境里，窄一点反而稳</td></tr>
+      <tr><td>−70 dBm 和 −50 dBm"差不多"</td><td>差 20 dB 是 100 倍</td><td>分贝是对数，每 10 dB 差 10 倍</td></tr>
+      <tr><td>以为 Wi-Fi 能同时收发</td><td>半双工。上传和下载、你和别的设备，抢的是同一个信道</td><td>大量上传时下载变慢是正常的</td></tr>
+      <tr><td>千兆宽带测出来不到 100 Mbit/s</td><td>某一段网线只有 2 对线是通的（4 芯线、水晶头没压好、断了一对），千兆建不起来，退到了只用 2 对线的百兆；或者是老的 Cat5 线；或者中间某个网口本身就是百兆</td><td>看路由器或网卡上显示的协商速率；换 Cat5e 以上的线</td></tr>
+      <tr><td>光纤盘得太紧、被门夹、拐直角</td><td>弯得太急，光从拐弯处漏出去，衰减变大甚至不通</td><td>普通单模光纤弯曲半径留 3 cm 以上；光猫 LOS 灯亮先查光纤</td></tr>
+      <tr><td>对着光纤头看里面有没有光</td><td>用的全是红外激光，看不见，但能伤眼睛</td><td>不要看。有没有光，看光猫的指示灯</td></tr>
+      <tr><td>信号满格但很卡</td><td>格数是信号强度，不是信噪比，更不是吞吐量</td><td>见第 14 节的五条</td></tr>
+      <tr><td>以为升级宽带能降低延迟</td><td>带宽是每秒多少比特，延迟由距离和排队决定</td><td>通话、游戏卡顿，先看延迟和丢包</td></tr>
+      <tr><td>用 <code>getLinkSpeed()</code> 或信号格数选码率</td><td>它们不是吞吐量</td><td>量实际的下载速度</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">标着"计算值"的数，以及线上字节数和时间、香农极限、Wi-Fi 各档速率和空中耗时、波长和频率、光纤里的延迟和衰减、分光损耗、误码估算，都是按正文里写出的算式算的。帧长、前导码、帧间隔、各代以太网的编码、Wi-Fi 的子载波数和时隙、PON 的速率和波长，取自 IEEE 802.3、IEEE 802.11 和 ITU-T G.984、G.987、G.9807.1 的规定值。折射率 1.468、光纤和网线的衰减、穿墙损耗、所需信噪比、放大器间距、"吞吐量约为链路速率的一半"是常见的典型值，随器件和环境变化。74 字节的帧、10 ms 的一个来回和 6 台路由器引自总览页；这一页没有做任何新的测量。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

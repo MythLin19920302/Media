@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DNS：域名是怎么查到 IP 的</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+<style>
+/* 本页独有：报文布局条、字节拆解 */
+.lay{display:flex;gap:3px;margin:0 0 8px;font-family:var(--font-mono);font-size:12px;line-height:1.4}
+.lay div{background:var(--accent-soft);border-radius:4px;padding:8px 8px;min-width:0;overflow:hidden;white-space:nowrap}
+.lay .idx{background:var(--warn-soft)}
+.lay b{display:block;font-weight:500;color:var(--fg)}
+.lay span{color:var(--muted)}
+.bytes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0 0 16px;font-family:var(--font-mono);font-size:13px}
+.bytes.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bytes div{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:8px 10px;line-height:1.5;min-width:0}
+.bytes b{display:block;color:var(--accent);font-weight:500;overflow-wrap:anywhere}
+.bytes span{font-family:var(--font-body);font-size:12.5px;color:var(--muted)}
+@media (max-width:520px){.bytes,.bytes.c3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.fig text.mn{font-family:var(--font-mono);font-size:12px}
+/* kb.css 里首页卡片的 .card .m、.card .t 会波及图里的文字，这里改回来 */
+.fig text.m{font-family:var(--font-body);font-size:13px}
+.fig text.t{font-weight:400}
+td.nw{white-space:nowrap}
+.caption+p{margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a class="back" href="index.html">← 网络</a>
+  <div class="tl">目录</div>
+  <ol>
+    <li><a href="#why">为什么要有域名</a></li>
+    <li><a href="#name">域名从右往左读</a></li>
+    <li><a href="#who">谁在问，谁在答</a></li>
+    <li><a href="#trace">从根问起的一次查询</a></li>
+    <li><a href="#records">记录类型</a></li>
+    <li><a href="#message">报文：43 字节问，107 字节答</a></li>
+    <li><a href="#cache">TTL 和几层缓存</a></li>
+    <li><a href="#transport">UDP、TCP 和 512 字节</a></li>
+    <li><a href="#encrypted">明文的问题和加密 DNS</a></li>
+    <li><a href="#geo">同一个名字，不同的答案</a></li>
+    <li><a href="#hosts">hosts 文件</a></li>
+    <li><a href="#android">Android 上的解析</a></li>
+    <li><a href="#dual">IPv4 和 IPv6 都拿到之后</a></li>
+    <li><a href="#pitfalls">常见坑</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Android 音视频学习笔记</div>
+  <h1>DNS：域名是怎么查到 IP 的</h1>
+  <p class="lede">网络上的机器靠 IP 地址找到对方，人记的却是域名。把域名换成 IP 的这一步叫 DNS 解析，每次连接之前都要先做它。这份笔记拿这个知识库自己的域名当例子，把一次查询从头跟到尾：问了谁，问题和答案的每个字节是什么，答案能用多久，在 Android 上又是谁替你问的。</p>
+  <div class="journey" aria-label="一次 DNS 查询的大小和结果">
+    <div class="step"><span class="k">手机发出的问题</span><span class="v hex">43 字节</span></div>
+    <span class="arrow" aria-hidden="true">→</span>
+    <div class="step"><span class="k">收到的回答</span><span class="v">107 字节</span></div>
+    <span class="arrow" aria-hidden="true">=</span>
+    <div class="step"><span class="k">里面是</span><span class="v">4 个地址</span></div>
+    <span class="arrow" aria-hidden="true">+</span>
+    <div class="step"><span class="k">可以记住</span><span class="v">3600 秒</span></div>
+  </div>
+  <p class="caption">示例是这个知识库的域名 <code>mythlin19920302.github.io</code>（托管在 GitHub Pages）。记录、TTL、报文大小和耗时，是用 dig、python3 和 curl 向公共 DNS 服务器实测的；报文按 RFC 1035 逐字节拆开。这一页是 <a href="journey.html#s2">一个请求是怎么送到的</a> 里"域名"那一步的展开。</p>
+</header>
+
+<section id="why">
+  <h2><span class="n">01</span>为什么要有域名</h2>
+  <p>IP 包的头里，目的地是一个 4 字节的数字（<a href="journey.html#s5">装包</a>那一帧里是 <code>b9 c7 6c 99</code>，即 185.199.108.153）。路由器只认它。域名是加在上面的一层名字，解决四件事：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>需求</th><th>只有 IP 会怎样</th><th>有了域名</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">好记</td><td>要记 185.199.108.153</td><td>记 <code>mythlin19920302.github.io</code></td></tr>
+      <tr><td class="nw">地址能换</td><td>服务器搬一次家，写着旧地址的链接和 App 全部失效</td><td>名字不变，改一条记录</td></tr>
+      <tr><td class="nw">一个名字对多台机器</td><td>一个地址只能指一处</td><td>一个名字可以给出几个地址，还能按提问的人在哪给不同的地址</td></tr>
+      <tr><td class="nw">一个地址放很多网站</td><td>服务器分不出你要哪一个</td><td>请求里带着域名。实测 <code>github.io</code> 前面换成任何用户名，解析到的都是同样的四个地址，服务器靠域名区分是谁的站</td></tr>
+    </tbody>
+  </table></div>
+  <p>管这层名字的系统叫 DNS（Domain Name System，域名系统）。它是一个分散在全世界的数据库：拿"名字 + 类型"去查，得到一条或几条记录。没有哪台机器存着全部数据，每一段名字由它的主人自己管，查的时候一级一级问下去。</p>
+  <p>它排在所有连接之前。先解析出 IP，才轮得到<a href="journey.html#s7">握手</a>；解析失败，后面什么都不会发生。</p>
+</section>
+
+<section id="name">
+  <h2><span class="n">02</span>域名从右往左读</h2>
+  <p>域名用点分成几段，每一段叫一个标签（label）。越靠右管的范围越大，所以要从右往左读：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 252" role="img" aria-label="域名是一棵树：最上面是根，根下面是 com、org、io、cn 等顶级域，io 下面是 github，github.io 下面是 mythlin19920302。从根往下每走一层，就在名字左边加一段">
+      <g class="lead" fill="none"><path d="M330 46L150 82"/><path d="M330 46L240 82"/><path d="M330 46L420 82"/><path d="M330 46L510 82"/><path d="M330 112L440 148"/></g>
+      <g class="snap" fill="none"><path d="M330 46V82"/><path d="M330 112V148"/><path d="M330 178V214"/></g>
+      <rect class="hot" x="300" y="16" width="60" height="30" rx="6"/>
+      <rect class="ghost" x="118" y="82" width="64" height="30" rx="6"/><rect class="ghost" x="208" y="82" width="64" height="30" rx="6"/>
+      <rect class="hot" x="298" y="82" width="64" height="30" rx="6"/>
+      <rect class="ghost" x="388" y="82" width="64" height="30" rx="6"/><rect class="ghost" x="478" y="82" width="64" height="30" rx="6"/>
+      <rect class="hot" x="288" y="148" width="84" height="30" rx="6"/><rect class="ghost" x="418" y="148" width="44" height="30" rx="6"/>
+      <rect class="hot" x="267" y="214" width="126" height="30" rx="6"/>
+      <g text-anchor="middle">
+        <text x="330" y="36" class="mn">.</text>
+        <text x="150" y="102" class="t">com</text><text x="240" y="102" class="t">org</text><text x="330" y="102" class="mn">io</text><text x="420" y="102" class="t">cn</text><text x="510" y="102" class="t">…</text>
+        <text x="330" y="168" class="mn">github</text><text x="440" y="168" class="t">…</text>
+        <text x="330" y="234" class="mn">mythlin19920302</text>
+      </g>
+      <text x="8" y="36" class="m">根</text><text x="8" y="102" class="m">顶级域</text><text x="8" y="168" class="m">二级域</text><text x="8" y="234" class="m">主机名</text>
+      <g text-anchor="end"><text x="596" y="36" class="t">.</text><text x="596" y="102" class="t">io.</text><text x="596" y="168" class="t">github.io.</text><text x="596" y="234" class="t">mythlin19920302.github.io.</text></g>
+    </svg>
+    </div>
+    <figcaption>从根往下每走一层，名字左边多一段。右边一列是走到这一层时的完整写法。</figcaption>
+  </figure>
+  <p>最右边其实还有一个点，代表根，平时省略不写。写全了是 <code>mythlin19920302.github.io.</code>，叫完全限定域名（FQDN）。dig 输出里的名字都带着这个点。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>层</th><th>这个域名里</th><th>谁管</th><th>它的服务器（实测）</th></tr></thead>
+    <tbody>
+      <tr><td>根</td><td><code>.</code></td><td>全球共用的一份根区</td><td><code>a.root-servers.net</code> 到 <code>m.root-servers.net</code>，13 个名字</td></tr>
+      <tr><td>顶级域（TLD）</td><td><code>io</code></td><td>io 的注册局</td><td><code>a0.nic.io</code>、<code>a2</code>、<code>b0</code>、<code>c0</code>，4 台</td></tr>
+      <tr><td>二级域</td><td><code>github.io</code></td><td>GitHub</td><td>8 台，分在两家托管商：<code>dns1</code>–<code>dns4.p05.nsone.net</code> 和 4 台 <code>awsdns</code></td></tr>
+      <tr><td>主机名</td><td><code>mythlin19920302</code></td><td>还是 GitHub</td><td>是 <code>github.io</code> 里的记录，不再往下分</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>上一级不存下一级的数据</strong>，只存"这一段归哪几台服务器管"。这叫授权（delegation）。根只知道 <code>io</code> 归谁，<code>io</code> 的服务器只知道 <code>github.io</code> 归谁。</li>
+    <li><strong>一个管理者负责的那一片名字叫一个区（zone）。</strong><code>github.io</code> 是一个区，所有 <code>xxx.github.io</code> 的记录都在 GitHub 的那 8 台服务器上。</li>
+    <li><strong>这个区里放的是一条通配记录。</strong>实测在 <code>github.io</code> 前面随便编一个名字，得到的都是同样的四个地址。GitHub 没有给每个用户单独建一条。</li>
+    <li><strong>每个标签最多 63 字节，整个名字最多 255 字节</strong>，不区分大小写。63 这个数的来历见第 06 节。</li>
+  </ul>
+</section>
+
+<section id="who">
+  <h2><span class="n">03</span>谁在问，谁在答</h2>
+  <p>一次解析里有三种角色。手机只和第一种、第二种打交道。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>角色</th><th>在哪</th><th>做什么</th><th>不做什么</th></tr></thead>
+    <tbody>
+      <tr><td>存根解析器（stub resolver）</td><td>手机、电脑的系统里</td><td>把问题发给配置好的那台解析器，等最终答案</td><td>不会自己从根问起</td></tr>
+      <tr><td>递归解析器（recursive resolver），下文简称解析器</td><td>运营商的机房，或者公共的 1.1.1.1、8.8.8.8、223.5.5.5</td><td>从根开始一级级问到答案，把沿途问到的都缓存下来</td><td>不存任何域名的原始数据</td></tr>
+      <tr><td>权威服务器（authoritative server）</td><td>域名的主人或托管商那里</td><td>回答自己那个区里的名字；不归自己管的，告诉对方该去问谁</td><td>不替别人查</td></tr>
+    </tbody>
+  </table></div>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 262" role="img" aria-label="手机向递归解析器问一次；解析器先问根服务器，被告知去问 io；再问 io 的服务器，被告知去问 github.io；最后问 github.io 的服务器，拿到 4 个地址，交还给手机">
+      <defs><marker id="dns-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="ghost" x="10" y="100" width="100" height="70" rx="8"/>
+      <rect class="hot" x="210" y="20" width="110" height="230" rx="8"/>
+      <rect class="band" x="460" y="20" width="130" height="44" rx="8"/><rect class="band" x="460" y="113" width="130" height="44" rx="8"/><rect class="band" x="460" y="206" width="130" height="44" rx="8"/>
+      <g marker-end="url(#dns-arrow)">
+        <path class="lead" d="M110 128H208"/><path class="ghostline" d="M210 144H112"/>
+        <path class="lead" d="M320 35H458"/><path class="ghostline" d="M460 50H322"/>
+        <path class="lead" d="M320 128H458"/><path class="ghostline" d="M460 143H322"/>
+        <path class="lead" d="M320 221H458"/><path class="ghostline" d="M460 236H322"/>
+      </g>
+      <g text-anchor="middle">
+        <text x="60" y="131">手机</text><text x="60" y="151" class="m">存根解析器</text>
+        <text x="265" y="96">递归解析器</text><text x="265" y="182" class="m">问到的都缓存</text>
+        <text x="525" y="47">根服务器</text><text x="525" y="140">io 的服务器</text><text x="525" y="233">github.io 的服务器</text>
+        <text x="160" y="119" class="a">① A 记录？</text><text x="160" y="163" class="m">⑧ 4 个地址</text>
+        <text x="390" y="27" class="a">② 同样的问题</text><text x="390" y="67" class="m">③ 去问 io</text>
+        <text x="390" y="120" class="a">④ 同样的问题</text><text x="390" y="160" class="m">⑤ 去问 github.io</text>
+        <text x="390" y="213" class="a">⑥ 同样的问题</text><text x="390" y="253" class="m">⑦ 4 个地址</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>实线是问，虚线是答。手机只问了一次，剩下三问都是解析器替它跑的。解析器有缓存时，② 到 ⑦ 可以全部省掉。</figcaption>
+  </figure>
+  <ul>
+    <li><strong>手机用哪台解析器，是连上网时 DHCP 发下来的</strong>（<a href="journey.html#s1">入网</a>）。家里一般是路由器自己，例如 192.168.1.1。路由器并不递归，它把问题转给运营商的解析器，顺便缓存一下，这种叫转发器（forwarder）。</li>
+    <li><strong>手机问解析器，是递归查询</strong>：头里有一位写着"请替我查到底"（RD，见第 06 节），对方要给最终答案。</li>
+    <li><strong>解析器问权威服务器，是迭代查询</strong>：对方只回答自己这一级知道的，下一步由解析器自己接着问。</li>
+  </ul>
+  <div class="key">所以"DNS 慢"可能慢在两段：手机到解析器（每次都有，一个来回），解析器到各级权威服务器（缓存没命中时才有，好几个来回）。换一台解析器，两段都跟着变。</div>
+</section>
+
+<section id="trace">
+  <h2><span class="n">04</span>从根问起的一次查询</h2>
+  <p><code>dig +trace</code> 让 dig 自己当一回解析器：从根开始一级级问，把每一级的回答打印出来。</p>
+<pre><code>$ dig @1.1.1.1 +trace +tcp +nodnssec mythlin19920302.github.io A
+
+.                          515533  IN  NS  a.root-servers.net.
+                           …… 中间 b 到 l 共 11 行，略 ……
+.                          515533  IN  NS  m.root-servers.net.
+;; Received 239 bytes from 1.1.1.1#53(1.1.1.1) in 13 ms
+
+io.                        172800  IN  NS  b0.nic.io.
+io.                        172800  IN  NS  a2.nic.io.
+io.                        172800  IN  NS  a0.nic.io.
+io.                        172800  IN  NS  c0.nic.io.
+;; Received 302 bytes from 192.112.36.4#53(g.root-servers.net) in 230 ms
+
+github.io.                 3600    IN  NS  dns2.p05.nsone.net.
+github.io.                 3600    IN  NS  ns-1622.awsdns-10.co.uk.
+github.io.                 3600    IN  NS  ns-692.awsdns-22.net.
+github.io.                 3600    IN  NS  dns1.p05.nsone.net.
+github.io.                 3600    IN  NS  dns3.p05.nsone.net.
+;; Received 192 bytes from 65.22.161.17#53(b0.nic.io) in 14 ms
+
+mythlin19920302.github.io. 3600    IN  A   185.199.108.153
+mythlin19920302.github.io. 3600    IN  A   185.199.109.153
+mythlin19920302.github.io. 3600    IN  A   185.199.110.153
+mythlin19920302.github.io. 3600    IN  A   185.199.111.153
+;; Received 118 bytes from 198.51.44.5#53(dns1.p05.nsone.net) in 17 ms</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>步</th><th>问了谁</th><th>它回答的是</th><th class="num">字节</th><th class="num">耗时</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">准备</td><td>公共解析器 1.1.1.1</td><td>根服务器的名单。真正的解析器把这份名单写在程序里，不用问</td><td class="num">239</td><td class="num">13 ms</td></tr>
+      <tr><td>1</td><td>根：<code>g.root-servers.net</code></td><td>不知道，<code>io</code> 归这 4 台管，并附上它们的地址</td><td class="num">302</td><td class="num">230 ms</td></tr>
+      <tr><td>2</td><td>顶级域：<code>b0.nic.io</code></td><td>不知道，<code>github.io</code> 归这 5 台管，没附地址</td><td class="num">192</td><td class="num">14 ms</td></tr>
+      <tr><td>3</td><td>权威：<code>dns1.p05.nsone.net</code></td><td>4 条 A 记录，这是最终答案</td><td class="num">118</td><td class="num">17 ms</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>每一级问的都是同一个完整的问题。</strong>根不知道答案，但知道 <code>io</code> 归谁，于是回一份名单。这种"我不知道，去问它们"的回答叫转介（referral）。新一些的解析器为了少泄露信息，问根时只问到 <code>io</code> 为止。</li>
+    <li><strong>根的回答附带了地址，叫胶水记录（glue）。</strong><code>a0.nic.io</code> 这个名字本身就在 <code>io</code> 下面，不给地址就成了死循环。所以根把 4 台服务器的 IPv4 和 IPv6 地址一起给了，共 8 条。</li>
+    <li><strong><code>io</code> 的回答没有地址。</strong>那 5 台服务器的名字在 <code>nsone.net</code>、<code>awsdns-10.co.uk</code> 这些别的域下面，<code>io</code> 管不着。解析器要另外把 <code>dns1.p05.nsone.net</code> 的地址查出来，才能问第 3 步。</li>
+    <li><strong>只有第 3 步的回答带 <code>aa</code> 标志</strong>（authoritative answer）。从解析器转手拿到的同一份答案没有它，nslookup 会注明 <code>Non-authoritative answer</code>。</li>
+    <li><strong>耗时看问到了哪一台。</strong>dig 每一级随机挑一台。另外三次里，根这一步分别是 10、99、12 ms，最后一步问到 nsone 是 17 到 24 ms，问到 awsdns 是 171 ms。真正的解析器会记住哪台快。</li>
+  </ul>
+  <p>真正的解析器很少走完这几步，因为每一级的名单都能缓存：根的名单 518400 秒（6 天），<code>io</code> 的 172800 秒（2 天），<code>github.io</code> 的 3600 秒。平时只用问最后一步，热门的域名连最后一步也省了。</p>
+  <p class="caption">命令里的 <code>+tcp</code> 让每一步都走 TCP。有些网络会替别人回答 UDP 53 上的查询（见第 09 节），走 TCP 能保证每个答案确实来自被问的那台服务器。<code>+nodnssec</code> 是不显示签名记录，免得输出太长。</p>
+</section>
+
+<section id="records">
+  <h2><span class="n">05</span>记录类型</h2>
+  <p>DNS 里存的不只是 IP。每条记录有五个字段：名字、TTL（能缓存多少秒）、类（几乎只用 <code>IN</code>，Internet）、类型、数据。类型决定了数据是什么。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>类型</th><th class="num">编号</th><th>存的是</th><th>实测的例子</th></tr></thead>
+    <tbody>
+      <tr><td>A</td><td class="num">1</td><td>IPv4 地址，4 字节</td><td><code>mythlin19920302.github.io. A 185.199.108.153</code>，共 4 条</td></tr>
+      <tr><td>AAAA</td><td class="num">28</td><td>IPv6 地址，16 字节</td><td><code>… AAAA 2606:50c0:8000::153</code>，到 <code>8003::153</code> 共 4 条</td></tr>
+      <tr><td>CNAME</td><td class="num">5</td><td>别名：这个名字等同于另一个名字</td><td><code>www.github.com. CNAME github.com.</code></td></tr>
+      <tr><td>NS</td><td class="num">2</td><td>这个区归哪些服务器管</td><td><code>github.io. NS dns1.p05.nsone.net.</code> 等 8 条</td></tr>
+      <tr><td>SOA</td><td class="num">6</td><td>区的管理信息：主服务器、管理员邮箱、版本号、几个定时器</td><td><code>github.io. SOA dns1.p05.nsone.net. hostmaster.nsone.net. 1647625169 43200 7200 1209600 3600</code></td></tr>
+      <tr><td>TXT</td><td class="num">16</td><td>任意文本，常用来证明域名归属、声明谁能用这个域名发邮件</td><td><code>github.io. TXT "v=spf1 a -all"</code></td></tr>
+      <tr><td>MX</td><td class="num">15</td><td>收邮件的服务器和优先级</td><td><code>github.com. MX 0 github-com.mail.protection.outlook.com.</code>；<code>github.io</code> 没有</td></tr>
+      <tr><td>PTR</td><td class="num">12</td><td>反过来查：IP 对应什么名字</td><td><code>153.108.199.185.in-addr.arpa. PTR cdn-185-199-108-153.github.com.</code></td></tr>
+      <tr><td>HTTPS、SVCB</td><td class="num">65、64</td><td>连这个服务要用的参数：支持哪些协议、地址提示</td><td>这个域名没有。<code>cloudflare.com. HTTPS 1 . alpn="h3,h2" ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=…</code></td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>一次查询只问一种类型。</strong>App 要同时拿到 IPv4 和 IPv6 地址，系统就发 A 和 AAAA 两个查询。</li>
+    <li><strong>CNAME 让解析多走一步。</strong>解析器查到别名，会接着查它指向的名字，两条记录一起返回。给 GitHub Pages 绑自己的域名，就是加一条 <code>www.自己的域名 CNAME 用户名.github.io</code>。同一个名字有了 CNAME 就不能再有别的记录，所以不带 <code>www</code> 的根域名用不了它。</li>
+    <li><strong>PTR 的名字是把 IP 倒过来写</strong>，再接上 <code>in-addr.arpa</code>。日志里把 IP 显示成主机名靠的是它。它由 IP 的主人设置，和正向的 A 记录不保证对得上。</li>
+    <li><strong>HTTPS 记录让浏览器在连接之前就知道对方支持 HTTP/3</strong>，不用先连一次 HTTP/2 再升级，见 <a href="http2-http3.html">HTTP/2 与 HTTP/3</a>。旧版 dig 不认识这个类型名，要写成 <code>dig 域名 TYPE65</code>。</li>
+  </ul>
+</section>
+
+<section id="message">
+  <h2><span class="n">06</span>报文：43 字节问，107 字节答</h2>
+  <p>问和答用的是同一种格式：12 字节的头，后面最多四段，每段有几条由头里的四个计数说明。</p>
+<pre><code>头（12 字节）  问题  回答  权威  附加</code></pre>
+  <h3>问题：43 个字节</h3>
+  <p>手机问"<code>mythlin19920302.github.io</code> 的 A 记录是什么"，发出去的就是这些：</p>
+<pre><code>1a 2b 01 00 00 01 00 00 00 00 00 00 0f 6d 79 74
+68 6c 69 6e 31 39 39 32 30 33 30 32 06 67 69 74
+68 75 62 02 69 6f 00 00 01 00 01</code></pre>
+  <p>前 12 个字节是头，6 个 16 位的数，都是大端序：</p>
+  <div class="bytes">
+    <div><b>1a 2b</b><span>ID。随便挑的数，回答原样带回，靠它把答案和问题对上</span></div>
+    <div><b>01 00</b><span>标志位，拆开见下表</span></div>
+    <div><b>00 01</b><span>问题段有 1 条</span></div>
+    <div><b>00 00 00 00 00 00</b><span>回答、权威、附加三段都是 0 条</span></div>
+  </div>
+  <p>后 31 个字节是问题。域名在里面没有点，而是一段一段存的，每段前面一个字节写长度：</p>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">偏移</th><th>字节</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td class="num">12</td><td><code>0f</code> <code>6d 79 … 30 32</code></td><td>长度 15，后面 15 个字节是 <code>mythlin19920302</code></td></tr>
+      <tr><td class="num">28</td><td><code>06</code> <code>67 69 74 68 75 62</code></td><td>长度 6，<code>github</code></td></tr>
+      <tr><td class="num">35</td><td><code>02</code> <code>69 6f</code></td><td>长度 2，<code>io</code></td></tr>
+      <tr><td class="num">38</td><td><code>00</code></td><td>长度 0，就是根。名字到此结束，共 27 字节</td></tr>
+      <tr><td class="num">39</td><td><code>00 01</code></td><td>要的类型：1，即 A</td></tr>
+      <tr><td class="num">41</td><td><code>00 01</code></td><td>类：1，即 IN</td></tr>
+    </tbody>
+  </table></div>
+  <p>长度字节的最高两位必须是 00，剩 6 位，所以一个标签最多 63 字节。最高两位是 11 时另有含义，下面的回答里就会遇到。</p>
+  <h3>标志位：16 位</h3>
+  <div class="tbl"><table>
+    <thead><tr><th class="num">位数</th><th>名字</th><th class="num">问 <code>0100</code></th><th class="num">答 <code>8180</code></th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>QR</td><td class="num">0</td><td class="num">1</td><td>0 是问，1 是答</td></tr>
+      <tr><td class="num">4</td><td>Opcode</td><td class="num">0</td><td class="num">0</td><td>0 是普通查询</td></tr>
+      <tr><td class="num">1</td><td>AA</td><td class="num">0</td><td class="num">0</td><td>这个回答来自权威服务器。解析器转手的是 0</td></tr>
+      <tr><td class="num">1</td><td>TC</td><td class="num">0</td><td class="num">0</td><td>回答太长被截断了，见第 08 节</td></tr>
+      <tr><td class="num">1</td><td>RD</td><td class="num">1</td><td class="num">1</td><td>请替我递归查到底</td></tr>
+      <tr><td class="num">1</td><td>RA</td><td class="num">0</td><td class="num">1</td><td>这台服务器肯替人递归</td></tr>
+      <tr><td class="num">3</td><td>保留</td><td class="num">0</td><td class="num">0</td><td>其中两位后来给了 DNSSEC</td></tr>
+      <tr><td class="num">4</td><td>RCODE</td><td class="num">0</td><td class="num">0</td><td>结果码。0 成功；2 服务器出错（SERVFAIL）；3 名字不存在（NXDOMAIN）；5 拒绝（REFUSED）</td></tr>
+    </tbody>
+  </table></div>
+  <h3>回答：107 个字节</h3>
+  <div class="lay" role="img" aria-label="回答的布局：头 12 字节，问题 31 字节，4 条回答各 16 字节">
+    <div class="idx" style="flex:12"><b>头</b><span>12</span></div>
+    <div style="flex:31"><b>问题</b><span>31 · 原样抄回</span></div>
+    <div style="flex:16"><b>回答</b><span>16</span></div>
+    <div style="flex:16"><b>回答</b><span>16</span></div>
+    <div style="flex:16"><b>回答</b><span>16</span></div>
+    <div style="flex:16"><b>回答</b><span>16</span></div>
+  </div>
+<pre><code>1a 2b 81 80 00 01 00 04 00 00 00 00                 头：ID 没变，回答段有 4 条
+0f 6d 79 74 … 02 69 6f 00 00 01 00 01               问题，和发出去的 31 字节一样
+c0 0c 00 01 00 01 00 00 0e 10 00 04 b9 c7 6c 99     第 1 条
+c0 0c 00 01 00 01 00 00 0e 10 00 04 b9 c7 6d 99     第 2 条
+c0 0c 00 01 00 01 00 00 0e 10 00 04 b9 c7 6e 99     第 3 条
+c0 0c 00 01 00 01 00 00 0e 10 00 04 b9 c7 6f 99     第 4 条</code></pre>
+  <p>每条记录的格式相同，拆开第 1 条：</p>
+  <div class="bytes c3">
+    <div><b>c0 0c</b><span>名字。不是长度，是指针</span></div>
+    <div><b>00 01</b><span>类型 A</span></div>
+    <div><b>00 01</b><span>类 IN</span></div>
+    <div><b>00 00 0e 10</b><span>TTL，3600 秒</span></div>
+    <div><b>00 04</b><span>数据长 4 字节</span></div>
+    <div><b>b9 c7 6c 99</b><span>185.199.108.153</span></div>
+  </div>
+  <p><code>c0 0c</code> 写成二进制是 <code>11</code><code>00 0000 0000 1100</code>。最高两位是 11，表示这是一个指针，后面 14 位是从报文开头数起的偏移：12，正好是问题里那个名字的位置。意思是"名字和那里的一样"。这叫名字压缩。不压缩的话，每条记录要把 27 字节的名字重写一遍，4 条多出 100 字节。</p>
+  <ul>
+    <li><strong>四个地址的顺序每次都可能不一样。</strong>连着问几次，108 到 111 轮流排在第一个。只取第一个地址的程序因此会被分散到不同的地址上。</li>
+    <li><strong>dig 报的是 <code>MSG SIZE rcvd: 118</code>，多 11 字节。</strong>dig 发的查询在附加段里多带一条 11 字节的记录（EDNS，见第 08 节），回答里也回了一条。AAAA 的回答 dig 报 166 字节：每条记录的数据从 4 字节变成 16 字节，12 + 31 + 4 × 28 + 11。</li>
+    <li><strong>ID 只有 16 位，报文没有任何签名。</strong>谁先把一个 ID 对得上的回答送到，谁就算数。第 09 节的问题都是从这里来的。</li>
+  </ul>
+</section>
+
+<section id="cache">
+  <h2><span class="n">07</span>TTL 和几层缓存</h2>
+  <p>每条记录带一个 TTL，单位是秒：拿到之后可以存这么久，过期前不用再问。这个域名的 A 记录是 3600。缓存里的 TTL 会倒着数：</p>
+<pre><code>$ dig @8.8.8.8 +tcp mythlin19920302.github.io A      连问 6 次，每次隔 2 秒，只看 TTL
+
+3225   3063   3221   3569   3600   2943</code></pre>
+  <p>没有一个数超过 3600。出现 3600 的那次，多半是回答的机器手里没有缓存，刚现查的；其余几次是各自那份缓存还剩的秒数。数字忽大忽小，是因为 8.8.8.8 背后有很多台机器，每台各存各的。</p>
+  <p>从手机到权威服务器，中间每一层都可能存一份：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>哪一层</th><th>存多久</th><th>怎么清</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">浏览器</td><td>自己存一份</td><td>Chrome 在 <code>chrome://net-internals/#dns</code></td></tr>
+      <tr><td class="nw">App 的运行时</td><td>Android 的 <code>InetAddress</code> 存 2 秒，最多 16 条。OkHttp 不缓存解析结果，但连接复用期间不会再解析</td><td>等 2 秒</td></tr>
+      <tr><td class="nw">操作系统</td><td>按 TTL</td><td>Android 换一个网络就是新的一份；macOS 用 <code>sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder</code></td></tr>
+      <tr><td class="nw">路由器</td><td>按 TTL。家用路由器多半是带缓存的转发器</td><td>重启</td></tr>
+      <tr><td class="nw">递归解析器</td><td>按 TTL，一群机器各存各的</td><td>等它过期</td></tr>
+    </tbody>
+  </table></div>
+  <p>命中缓存和没命中差得很远。在这台电脑上用系统的解析接口实测：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>情况</th><th class="num">耗时</th><th>发生了什么</th></tr></thead>
+    <tbody>
+      <tr><td>刚查过的名字再查一次</td><td class="num">0.5–0.9 ms</td><td>系统缓存里有，不发任何包</td></tr>
+      <tr><td>一个从没查过的 <code>xxx.github.io</code>，第一次</td><td class="num">15 ms</td><td>到解析器一个来回，解析器再去问权威</td></tr>
+      <tr><td>同一个名字第二次</td><td class="num">0.7 ms</td><td>又回到系统缓存</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">全流程那一页里的 2 毫秒属于第一种情况。解析器自己也没缓存、要从根问起时，就是第 04 节那几步，几十到几百毫秒。</p>
+  <h3>"不存在"也会被缓存</h3>
+  <p>把 <code>io</code> 错打成 <code>oi</code>，根服务器回答"没有这个顶级域"，结果码是 NXDOMAIN，同时在权威段里附上自己的 SOA 记录：</p>
+<pre><code>$ dig @1.1.1.1 +tcp mythlin19920302.github.oi A
+;; ->>HEADER&lt;&lt;- opcode: QUERY, status: NXDOMAIN
+.   86400  IN  SOA  a.root-servers.net. nstld.verisign-grs.com.
+                    2026112000 1800 900 604800 86400</code></pre>
+  <p>"不存在"这个结论能缓存多久，取 SOA 的 TTL 和它最后一个数里较小的那个。这里两个都是 86400，也就是一天。<code>io</code> 下面不存在的名字是 3600 秒。系统这一层同样会记：上面那个拼错的名字第一次查用了 32 ms，第二次 0.8 ms 就返回了失败。</p>
+  <div class="callout"><b>拼错了不一定报错。</b><code>github.io</code> 是通配的，用户名拼错照样解析成功，连上去才得到 HTTP 404。不要用"能不能解析"来判断一个地址存不存在。</div>
+  <h3>改了记录要多久生效</h3>
+  <p>没有一个统一的生效时刻。权威服务器上改完立刻就是新的，但每一份缓存都会把手里的旧记录用到过期为止。最坏的情况是：有人在你修改的前一秒刚查过，那他还要用旧地址 3600 秒，再加上各层缓存自己多留的时间。</p>
+  <ul>
+    <li><strong>迁移之前先把 TTL 改小</strong>，比如 300，并且至少等够一个旧 TTL，让所有缓存都换成短的。切换完成后再改回去。</li>
+    <li><strong>旧地址上的服务多留一段时间。</strong>已经建好的长连接不会重新解析，会一直连着旧地址。</li>
+    <li><strong>TTL 是一个取舍。</strong>短了切换快，但缓存命中少，首次连接慢的机会多；长了相反。实测维基百科按地区调度的那条记录是 180 秒，这个域名是 3600 秒。</li>
+    <li><strong>换权威服务器（改 NS）看的是上一级的 TTL。</strong><code>io</code> 里 <code>github.io</code> 的授权是 3600 秒，<code>com</code> 里 <code>github.com</code> 的授权是 172800 秒。"改 DNS 服务器要等 48 小时"的说法就是这么来的。</li>
+  </ul>
+</section>
+
+<section id="transport">
+  <h2><span class="n">08</span>UDP、TCP 和 512 字节</h2>
+  <p>DNS 默认走 UDP，对方端口 53。一问一答各一个包，不用先握手，一个来回就结束。代价是 UDP 不管丢没丢，问题或答案丢了，只能由提问的一方等超时后再发一遍。</p>
+  <p>最早的规定是 UDP 上的 DNS 报文不超过 512 字节。根服务器只有 13 个名字，就是当年为了让名单和地址能放进一个 512 字节的回答。现在这份名单加上 IPv6 地址，实测是 992 字节。放不下的时候有两个办法：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>办法</th><th>怎么做</th><th>实测</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">EDNS</td><td>提问的一方在附加段里放一条特殊的 OPT 记录（类型 41，11 字节），写上"我能收多大的 UDP 报文"。对方就可以发超过 512 字节的回答</td><td>各家服务器回答里写的上限：1.1.1.1 是 1232，根服务器 1472，awsdns 4096</td></tr>
+      <tr><td class="nw">改走 TCP</td><td>还是放不下，服务器把 TC 位置 1，回一个截短的回答。提问的一方看到 TC，改用 TCP 53 重问一次。TCP 上每个报文前面多 2 字节的长度</td><td>见下面</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>github.com</code> 有 24 条 TXT 记录，回答是 1928 字节，UDP 放不下：</p>
+<pre><code>$ dig @1.1.1.1 github.com TXT +bufsize=1232 +ignore        +ignore：看到 TC 也不重试
+;; flags: qr tc rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+;; MSG SIZE  rcvd: 39
+
+$ dig @1.1.1.1 github.com TXT +bufsize=1232
+;; Truncated, retrying in TCP mode.
+;; flags: qr rd ra; QUERY: 1, ANSWER: 24, AUTHORITY: 0, ADDITIONAL: 1
+;; MSG SIZE  rcvd: 1928</code></pre>
+  <ul>
+    <li><strong>1232 这个数是算出来的。</strong>IPv6 保证能通过的最小包是 1280 字节，减去 IPv6 头 40 字节和 UDP 头 8 字节。再大的 UDP 包可能在路上被分片，分片的包很容易被防火墙丢掉。</li>
+    <li><strong>改走 TCP 要多花一个来回握手</strong>，所以常用的记录都尽量做小。这个域名的 A 回答 107 字节，AAAA 回答 155 字节，离 512 很远。</li>
+    <li><strong>TCP 53 必须是通的。</strong>只放行 UDP 53 的防火墙会让大的回答永远拿不到，表现是个别域名解析失败，别的都正常。</li>
+  </ul>
+</section>
+
+<section id="encrypted">
+  <h2><span class="n">09</span>明文的问题和加密 DNS</h2>
+  <p>UDP 53 上的 DNS 是明文，也没有签名。路上的每一台设备都能看到你在查哪个域名，也都能替对方回答。有些网络就是这么做的：把经过的 DNS 查询截下来，交给自己的解析器代答。</p>
+  <p>想知道自己的网络有没有这样做，可以向一个根本不存在的服务器提问。192.0.2.1 是留给文档举例用的地址，那里没有任何机器：</p>
+<pre><code>$ dig @192.0.2.1 mythlin19920302.github.io A
+$ dig @192.0.2.1 mythlin19920302.github.io A +tcp</code></pre>
+  <p>正常的结果是两条都超时。如果第一条居然很快拿到了答案，而第二条超时，说明路上有设备把 UDP 53 上的查询截走代答了。代答的地址多半是对的，但它想给什么都可以。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>问题</th><th>是什么</th><th>后果</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">劫持</td><td>路上的设备或者解析器自己，把回答换成别的地址</td><td>打开的是别的页面；不存在的域名被指到广告页</td></tr>
+      <tr><td class="nw">污染</td><td>有人抢在真回答之前，送来一个 ID 对得上的假回答</td><td>假地址还会被缓存，过期之前一直错</td></tr>
+      <tr><td class="nw">窥探</td><td>查了哪些域名，路上都看得见</td><td>即使后面的连接是 HTTPS，访问了哪些网站也是公开的</td></tr>
+    </tbody>
+  </table></div>
+  <h3>把报文装进加密的连接</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>名字</th><th>端口</th><th>做法</th><th>路上的设备看到的</th></tr></thead>
+    <tbody>
+      <tr><td>DoT，DNS over TLS</td><td>TCP 853</td><td>先建一条 TLS 连接，里面还是原来的报文，前面加 2 字节长度</td><td>看得出是 DNS，看不到内容。可以把 853 整个封掉</td></tr>
+      <tr><td>DoH，DNS over HTTPS</td><td>TCP 443</td><td>报文当作 HTTP 请求的内容发出去，类型是 <code>application/dns-message</code></td><td>和普通的 HTTPS 流量混在一起，分不出来</td></tr>
+      <tr><td>DoQ，DNS over QUIC</td><td>UDP 853</td><td>换成 QUIC 来装</td><td>同 DoT</td></tr>
+    </tbody>
+  </table></div>
+  <p>把第 06 节那 43 个字节原样发给 1.1.1.1，三种走法拿回来的都是同一个 107 字节的报文，区别只在外面套了什么：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>走法</th><th class="num">第一次查询</th><th>时间花在哪</th></tr></thead>
+    <tbody>
+      <tr><td>TCP 53，明文</td><td class="num">24 ms</td><td>TCP 握手 11 + 一问一答 13</td></tr>
+      <tr><td>DoT，TCP 853</td><td class="num">54 ms</td><td>TCP 握手 14 + TLS 握手 26 + 一问一答 14</td></tr>
+      <tr><td>DoH，HTTP/2</td><td class="num">54 ms</td><td>TCP 握手 15 + TLS 握手 20 + 请求和响应 19</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">到 1.1.1.1 的一个来回在 11 到 15 毫秒之间。DoT 那次用的测试脚本只支持 TLS 1.2，握手要两个来回；curl 发的 DoH 用的是 TLS 1.3。UDP 只有最后那一个来回。握手的细节见 <a href="tls.html">TLS 握手</a>。</p>
+  <p>加密只在第一次贵。连接建好之后留着复用，后面每次查询还是一个来回。DoH 用 GET 时，报文做成 base64url 放在网址里。上面那 43 个字节变成 58 个字符：</p>
+<pre><code>GET /dns-query?dns=GisBAAABAAAAAAAAD215dGhsaW4xOTkyMDMwMgZnaXRodWICaW8AAAEAAQ</code></pre>
+  <h3>Android 的"私人 DNS"</h3>
+  <p>Android 9 起，设置里的"私人 DNS"就是 DoT，有三档：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>选项</th><th>行为</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">关闭</td><td>明文，UDP 53</td></tr>
+      <tr><td class="nw">自动</td><td>当前网络给的解析器支持 DoT 就用，不支持就退回明文</td></tr>
+      <tr><td class="nw">指定主机名</td><td>只用这台服务器的 DoT，例如 <code>dns.google</code>、<code>one.one.one.one</code>。连不上 853 端口时不会退回明文，所有解析都失败</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>它只对走系统解析的 App 生效。</strong>自己发 UDP 53 或者自带 DoH 的 App 不受这个开关影响。代码里可以用 <code>LinkProperties.isPrivateDnsActive()</code> 看当前网络是不是在用它。</li>
+    <li><strong>加密的只是手机到解析器这一段。</strong>解析器再去问权威服务器，多数还是明文。之后连网站时，TLS 握手里的域名也还是明文。</li>
+    <li><strong>另一条路是给记录签名（DNSSEC）</strong>，让解析器能验出回答被改过。它要求域名一路签下来。实测根和 <code>io</code> 签了，<code>github.io</code> 没签，所以这个域名的回答验不了。</li>
+    <li><strong>开了 VPN 之后，DNS 一般也跟着换成 VPN 那边的解析器</strong>，见 <a href="vpn.html">VPN</a>。</li>
+  </ul>
+</section>
+
+<section id="geo">
+  <h2><span class="n">10</span>同一个名字，不同的答案</h2>
+  <p>同一个域名，在不同地方、不同时间查，得到的 IP 可以不一样。有三种做法，可以叠着用：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>做法</th><th>谁在做选择</th><th>实测的例子</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">轮转</td><td>权威服务器或解析器每次把几个地址换个顺序</td><td>这个域名的 4 个地址</td></tr>
+      <tr><td class="nw">按提问者的位置给地址</td><td>权威服务器看是谁在问，给离他近的机房的地址。CDN 的调度多半是这样做的</td><td><code>www.wikipedia.org</code>，见下表</td></tr>
+      <tr><td class="nw">任播（anycast）</td><td>DNS 不选。同一个 IP 在很多机房同时对外宣告，路由器把包送到最近的一处</td><td>这个域名的 4 个地址；1.1.1.1、8.8.8.8 和根服务器也是</td></tr>
+    </tbody>
+  </table></div>
+  <h3>权威服务器看到的是谁</h3>
+  <p>它看到的是解析器的地址，不是手机的。如果你用的解析器离你很远，就会被分到离解析器近、离你远的机房。补救办法是 EDNS 客户端子网（ECS）：解析器把用户地址的前面一段（一般是前 24 位）附在查询里，一起交给权威服务器。</p>
+  <p>dig 的 <code>+subnet</code> 可以假装自己从别的网段来。通过 8.8.8.8 问 <code>www.wikipedia.org</code>：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>假装来自</th><th>得到的地址</th><th>反查这个地址得到的名字</th></tr></thead>
+    <tbody>
+      <tr><td><code>114.114.114.0/24</code>，中国的网段</td><td><code>103.102.166.224</code></td><td><code>text-lb.eqsin.wikimedia.org</code>，新加坡</td></tr>
+      <tr><td><code>208.67.222.0/24</code>，美国的网段</td><td><code>208.80.153.224</code></td><td><code>text-lb.codfw.wikimedia.org</code>，美国得克萨斯</td></tr>
+      <tr><td><code>194.25.0.0/24</code>，德国的网段</td><td><code>185.15.59.224</code></td><td><code>text-lb.esams.wikimedia.org</code>，阿姆斯特丹</td></tr>
+    </tbody>
+  </table></div>
+  <p class="caption">这条记录的 TTL 是 180 秒。回答里还写着这个结果适用的范围，三次分别是 /15、/22、/18，解析器按这个范围分开缓存。</p>
+  <p>用同样三个网段问这个知识库的域名，得到的都是那四个地址，适用范围写的是 /0，意思是"对谁都一样"。GitHub Pages 的就近访问不靠 DNS，靠任播：全流程那一页里到 185.199.108.153 的一个来回只有 10 毫秒，回答的机器显然就在附近，而不是在大洋对岸。这在<a href="journey.html#s11">到站</a>那一步也提到过。</p>
+  <div class="key">对播放器来说，这一节决定了视频从哪个机房下载。解析器选得不对，会被调度到很远的 CDN 节点，起播慢、容易卡，而问题根本不在码率和缓冲策略上。流媒体怎么分片下载见 <a href="streaming-protocols.html">流媒体协议</a>。</div>
+</section>
+
+<section id="hosts">
+  <h2><span class="n">11</span>hosts 文件</h2>
+  <p>hosts 是本机上一张手写的"名字对 IP"的表。系统解析一个名字时先查它，查到就不再问 DNS。DNS 出现之前，整个网络靠的就是一份这样的文件。</p>
+<pre><code>127.0.0.1         localhost
+::1               localhost
+185.199.108.153   mythlin19920302.github.io     # 加上这一行，这个域名就不再走 DNS</code></pre>
+  <div class="tbl"><table>
+    <thead><tr><th>系统</th><th>位置</th><th>能不能改</th></tr></thead>
+    <tbody>
+      <tr><td>macOS、Linux</td><td><code>/etc/hosts</code></td><td>要管理员权限</td></tr>
+      <tr><td>Windows</td><td><code>C:\Windows\System32\drivers\etc\hosts</code></td><td>要管理员权限</td></tr>
+      <tr><td>Android</td><td><code>/system/etc/hosts</code></td><td>在只读的系统分区里，没有 root 改不了</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>没有 TTL，没有通配。</strong>一行只管一个确切的名字，改完就生效，只对这台机器有效。</li>
+    <li><strong>常见用途：</strong>开发时把线上域名指到测试服务器；把不想访问的域名指到 <code>0.0.0.0</code>。</li>
+    <li><strong>Android 上改不了 hosts，同样的事在 App 里做。</strong>调试时要把域名指到某个 IP，用第 12 节 OkHttp 的 <code>Dns</code> 接口。</li>
+  </ul>
+  <p>把前面几节连起来，一个名字的完整查找顺序是：本身就是 IP 的不用查 → App 运行时的缓存 → hosts → 系统缓存 → 解析器 → 各级权威服务器。哪一步有答案就停。</p>
+</section>
+
+<section id="android">
+  <h2><span class="n">12</span>Android 上的解析</h2>
+  <p>App 里一句 <code>InetAddress.getAllByName(host)</code>，往下经过四层：</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">① App</div><ol><li><code>InetAddress</code>，或者 OkHttp 的 <code>Dns.SYSTEM</code></li><li>在调用它的线程上阻塞</li></ol></div>
+    <div class="lane"><div class="who">② Java 层</div><ol><li>查自己的缓存：16 条，2 秒</li><li>没有就调 <code>getaddrinfo</code></li></ol></div>
+    <div class="lane"><div class="who">③ 系统的解析器</div><ol><li>在系统进程 netd 里</li><li>hosts、按 TTL 的缓存、私人 DNS</li></ol></div>
+    <div class="lane"><div class="who">④ 网络给的解析器</div><ol><li>DHCP 发的，如 192.168.1.1</li><li>UDP 53 或 DoT 853</li></ol></div>
+  </div>
+  <p>App 进程自己不发 DNS 包。<code>getaddrinfo</code> 把请求通过本地 socket 交给 netd，由它去查、去缓存。所以系统这层缓存是所有 App 共用的，并且按网络分开：Wi-Fi 一份，蜂窝一份，换了网络不会用到上一个网络查来的结果。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>接口</th><th>返回</th><th>用在哪</th></tr></thead>
+    <tbody>
+      <tr><td><code>InetAddress.getByName(host)</code></td><td>一个地址，就是下面那个数组的第一项</td><td>简单场景。别的地址都被丢了</td></tr>
+      <tr><td><code>InetAddress.getAllByName(host)</code></td><td>全部地址，IPv4 和 IPv6 都在，系统已经排好序</td><td>OkHttp 默认用它</td></tr>
+      <tr><td><code>Network.getAllByName(host)</code></td><td>同上，但指定在哪个网络上解析</td><td>手机同时连着 Wi-Fi 和蜂窝时</td></tr>
+      <tr><td><code>android.net.DnsResolver</code>（Android 10 起）</td><td>异步回调，可以取消</td><td>要指定类型、跳过缓存，或者发自己构造的报文（<code>rawQuery</code>）</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>前三个是阻塞调用。</strong>在主线程上调会抛 <code>NetworkOnMainThreadException</code>。</li>
+    <li><strong>查不到抛 <code>UnknownHostException</code></strong>，失败的结果同样在 Java 层缓存 2 秒。没声明 <code>INTERNET</code> 权限时抛的是 <code>SecurityException</code>。</li>
+    <li><strong>传进去的如果本身就是 IP</strong>，只检查格式，不发查询。</li>
+    <li><strong>想知道手机现在用的是哪台解析器：</strong><code>adb shell dumpsys connectivity</code> 里每个网络的 <code>DnsAddresses</code>。</li>
+  </ul>
+  <h3>OkHttp 的 Dns 接口</h3>
+  <p>OkHttp 把"域名怎么变成地址"抽成一个只有一个方法的接口。默认实现 <code>Dns.SYSTEM</code> 就是调 <code>InetAddress.getAllByName</code>：</p>
+<pre><code>interface Dns {
+    // 返回的顺序，就是 OkHttp 尝试连接的顺序
+    fun lookup(hostname: String): List&lt;InetAddress&gt;
+}
+
+val client = OkHttpClient.Builder()
+    .dns(myDns)        // 换成自己的实现
+    .build()</code></pre>
+  <ul>
+    <li><strong>换解析方式：</strong>在 <code>lookup</code> 里用 HttpDNS，或者用官方的 <code>okhttp-dnsoverhttps</code> 模块走 DoH，失败时再退回 <code>Dns.SYSTEM</code>。</li>
+    <li><strong>改顺序、加缓存、做预解析：</strong>启动时把要用的域名先查一遍，第一个请求就不用等。</li>
+    <li><strong>调试时指定 IP：</strong>对某个域名直接返回测试服务器的地址，相当于一份只在这个 App 里生效的 hosts。</li>
+    <li><strong>量耗时：</strong><code>EventListener</code> 的 <code>dnsStart</code> 和 <code>dnsEnd</code> 之间就是这一次解析花的时间。连接被复用时不会解析，这两个回调不触发。</li>
+  </ul>
+  <h3>为什么大的 App 用 HttpDNS</h3>
+  <p>HttpDNS 是绕开系统解析的一种做法：App 用 HTTP 或 HTTPS 直接访问服务商的一个固定 IP，问"这个域名该连哪个地址"，拿到结果后通过上面的 <code>Dns</code> 接口交给网络库。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>系统解析的问题</th><th>HttpDNS 怎么绕开</th></tr></thead>
+    <tbody>
+      <tr><td>被劫持、被污染（第 09 节）</td><td>不走 UDP 53，用 HTTPS 时路上改不了</td></tr>
+      <tr><td>调度不准：权威服务器只看到解析器的地址（第 10 节）</td><td>服务端直接看到手机的出口 IP，按它调度</td></tr>
+      <tr><td>偶尔很慢：解析器缓存过期要重新递归，UDP 丢了要等超时</td><td>App 自己缓存、提前刷新，过期的结果先用着同时去更新</td></tr>
+      <tr><td>改了记录迟迟不生效：各层缓存不一定守 TTL</td><td>缓存多久由自己定</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><b>用 Dns 接口接入，不要改网址。</b>把网址里的域名直接换成 IP，TLS 握手时发给服务器的名字和证书校验用的名字都成了 IP，结果是证书错误，Cookie 和 Host 头也跟着乱。走 <code>Dns</code> 接口时网址里还是域名，只有"连哪个地址"换了。另外要自己处理三件事：失败时退回系统解析；网络切换时清掉缓存；WebView 和播放器不走 OkHttp，要另外接。</div>
+  <p>music_demo 里的 FFmpeg 只开了 <code>file</code> 和 <code>fd</code> 两个协议，不联网，没有这一步。以后要播网络流，打开 <code>tcp</code>、<code>http</code> 协议时，解析发生在 native 层：<code>libavformat/tcp.c</code> 直接调 <code>getaddrinfo</code>，走的是上面第 ③ 层，不经过 OkHttp，自定义的 <code>Dns</code> 对它不起作用。</p>
+</section>
+
+<section id="dual">
+  <h2><span class="n">13</span>IPv4 和 IPv6 都拿到之后</h2>
+  <p>这个域名有 4 条 A 记录和 4 条 AAAA 记录。手机如果同时有 IPv4 和 IPv6 地址，<code>getAllByName</code> 会把 8 个地址都返回，系统按规则排好序，一般 IPv6 在前。手机没有 IPv6 地址时，系统不返回 IPv6 的结果（<code>getaddrinfo</code> 的 <code>AI_ADDRCONFIG</code> 选项）。</p>
+  <p>麻烦出在"有 IPv6 地址，但 IPv6 的路不通"：路由器发了地址，上游却没接通。按顺序一个个试的程序先连 IPv6，等到连接超时才换下一个。OkHttp 的连接超时默认是 10 秒，最坏的情况是每个 IPv6 地址各等一次。</p>
+  <p>Happy Eyeballs（RFC 8305）是解决这件事的标准做法：不等前一个失败，隔一小会儿就并行开始下一个。</p>
+  <div class="lanes">
+    <div class="lane"><div class="who">① 同时问</div><ol><li>A 和 AAAA 一起发</li><li>A 先回来，就再等 AAAA 最多 50 ms</li></ol></div>
+    <div class="lane"><div class="who">② 交错排序</div><ol><li>IPv6、IPv4、IPv6、IPv4…</li><li>第一个是 IPv6</li></ol></div>
+    <div class="lane"><div class="who">③ 错开着连</div><ol><li>先连第一个</li><li>250 ms 没连上，不取消它，同时开始连下一个</li></ol></div>
+    <div class="lane"><div class="who">④ 谁先通用谁</div><ol><li>哪个先完成握手就用哪个</li><li>其余的取消</li></ol></div>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>谁</th><th>拿到多个地址后怎么连</th></tr></thead>
+    <tbody>
+      <tr><td><code>getByName</code> 之后 <code>Socket(addr, port)</code></td><td>只有第一个地址，连不上就失败</td></tr>
+      <tr><td><code>Socket(host, port)</code></td><td>Android 上按顺序把每个地址试一遍，前一个失败才试下一个</td></tr>
+      <tr><td>OkHttp 4.x</td><td>按 <code>lookup</code> 返回的顺序一个个试，前一个失败或超时才试下一个</td></tr>
+      <tr><td>OkHttp 5.x</td><td>默认开启 Happy Eyeballs（它叫 fast fallback）：IPv6 先走 250 ms，然后 IPv4 并行跟上。<code>fastFallback(false)</code> 关掉</td></tr>
+      <tr><td>FFmpeg 的 <code>tcp</code> 协议</td><td>交错排序，每隔 200 ms 并行开始下一个，最多同时 3 个（<code>libavformat/network.c</code>）</td></tr>
+    </tbody>
+  </table></div>
+  <p>还在用 OkHttp 4.x 时，可以用自定义的 <code>Dns</code> 把 IPv4 排到前面，让 IPv6 只当后备：</p>
+<pre><code>class Ipv4First(private val base: Dns = Dns.SYSTEM) : Dns {
+    override fun lookup(hostname: String): List&lt;InetAddress&gt; =
+        // false 排在 true 前面：IPv4 在前，同类之间顺序不变
+        base.lookup(hostname).sortedBy { it is Inet6Address }
+}</code></pre>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">14</span>常见坑</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td><code>UnknownHostException: Unable to resolve host</code></td><td>没有网；解析器连不上；私人 DNS 指定的主机不通；名字确实不存在；或者 2 秒内刚失败过，拿到的是缓存的失败</td><td>先 <code>adb shell ping -c 1 域名</code>，分清是整台手机都解析不了还是只有这个 App；检查私人 DNS；重试之间隔开几秒</td></tr>
+      <tr><td><code>SecurityException: Permission denied (missing INTERNET permission?)</code></td><td>清单里没声明 <code>INTERNET</code> 权限</td><td>加上</td></tr>
+      <tr><td><code>NetworkOnMainThreadException</code></td><td>在主线程上调了 <code>getByName</code></td><td>放到后台线程或者协程的 IO 调度器</td></tr>
+      <tr><td>改了记录，一部分用户还在连旧地址</td><td>各层缓存还没过期；已有的长连接不会重新解析</td><td>提前把 TTL 改小；旧地址多留一段时间</td></tr>
+      <tr><td>第一个请求比后面的慢几十到几百毫秒</td><td>解析没命中缓存。实测命中不到 1 ms，没命中 15 ms 起，要从根问起就更久</td><td>启动时预解析；少用几个域名；复用连接</td></tr>
+      <tr><td>偶尔一次解析卡住好几秒</td><td>UDP 的查询或回答丢了，只能等超时重发</td><td>自己的缓存兜底；HttpDNS</td></tr>
+      <tr><td>解析出的地址不对，打开是别的页面</td><td>劫持或污染</td><td>全站 HTTPS，至少证书会对不上；私人 DNS、DoH 或 HttpDNS</td></tr>
+      <tr><td>Wi-Fi 下第一次连接要等 10 秒，之后正常</td><td>有 AAAA 记录，手机也有 IPv6 地址，但 IPv6 的路不通，网络库按顺序试</td><td>升级到 OkHttp 5，或者用 <code>Dns</code> 把 IPv4 排前面</td></tr>
+      <tr><td>域名拼错了也"解析成功"</td><td>对方是通配记录；或者解析器把 NXDOMAIN 换成了广告页的地址</td><td>不要用能否解析判断域名存不存在</td></tr>
+      <tr><td>视频被分到很远的 CDN 节点</td><td>用的解析器离自己远，又没带客户端子网</td><td>换回运营商的解析器，或者用 HttpDNS</td></tr>
+      <tr><td>个别域名解析失败，别的正常</td><td>回答超过 UDP 的上限要改走 TCP，而 TCP 53 被防火墙拦了</td><td>放行 TCP 53</td></tr>
+      <tr><td>用 IP 直连 HTTPS 报证书错误</td><td>把网址里的域名换成了 IP，握手和校验用的名字都变了</td><td>网址保留域名，用 <code>Dns</code> 接口换地址</td></tr>
+      <tr><td>电脑上 dig 的结果和手机上不一样</td><td>两边用的解析器不同，缓存和调度结果也就不同</td><td>以手机上的为准：<code>adb shell ping</code>，或者在 <code>Dns.lookup</code> 里打日志</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">记录、TTL、报文大小和耗时是 2026 年 11 月在一台 Mac 上实测的，查的是公共解析器 1.1.1.1、8.8.8.8 和各级权威服务器。授权链用 <code>dig @1.1.1.1 +trace +tcp +nodnssec mythlin19920302.github.io A</code>（dig 9.10.6）；各类记录用 <code>dig +tcp</code>；43 字节的查询和 107 字节的回答是用 python3 的 socket 按 RFC 1035 构造、收发的，分别走了 UDP、TCP 和 DoT；DoH 用 curl；客户端子网用 <code>dig +subnet</code>；系统缓存的耗时用 python3 的 <code>socket.getaddrinfo</code> 计时。Android 的行为对照的是 SDK 里 android-36 的源码（<code>java/net/Inet6AddressImpl.java</code>、<code>AddressCache.java</code>），OkHttp 对照 4.12.0 的源码和 5.x 的更新日志，FFmpeg 对照工程里的 n8.1.3 源码。没有在真机上抓包；私人 DNS 的三档行为、netd 的转交方式和 Happy Eyeballs 的两个时间取自文档和 RFC 8305。</p>
+</section>
+</main>
+</div>
+</body>
+</html>

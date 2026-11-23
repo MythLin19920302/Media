@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>网络 · 知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../../assets/kb.css?v=5">
+</head>
+<body>
+<main class="home">
+  <nav class="crumb" aria-label="位置"><a href="../../index.html">知识库</a><span class="sep">/</span>通用<span class="sep">/</span>网络</nav>
+  <header class="hero">
+    <div class="eyebrow">通用</div>
+    <h1>网络</h1>
+    <p class="lede">数据是怎么从一台机器送到另一台的。先看全流程，把十二步串起来；哪一步想细看，再进对应的子页。</p>
+  </header>
+
+  <!-- 这个主题分三组：全流程是主线；"顺着流程细看"按全流程的步骤先后排；"延伸"是在主线上多加一层或换一种用法。
+       新增子页时放进对应的组，并在 .m 里写明对应全流程的第几步。 -->
+  <div class="label">全流程<span class="c">1</span></div>
+  <div class="topics">
+    <a class="topic" href="journey.html">
+      <span class="t">一个请求是怎么送到的</span>
+      <span class="d">从手机连上 Wi-Fi 开始，十二步走到页面回来：领地址、查域名、子网和路由表、ARP、装包、逐跳转发和 NAT、握手、HTTP 请求、序号和窗口、丢包重传、到站拆包、关闭连接。带五个可以动手的小实验和三张会动的时序图。</span>
+      <span class="m">12 步 · 5 个小实验 · 耗时实测自访问本知识库</span>
+    </a>
+  </div>
+
+  <div class="label">顺着流程细看<span class="c">5</span></div>
+  <div class="topics">
+    <a class="topic" href="physical-layer.html">
+      <span class="t">物理层：比特是怎么变成电、光和无线电的</span>
+      <span class="d">同一帧数据，先变成无线电飞到热点，再变成网线上的电压，再变成光纤里的光脉冲。编码和调制、双绞线、Wi-Fi 的子载波和星座图、光纤和光猫、信号跑多快、比特错了怎么办。</span>
+      <span class="m">15 节 · 6 张图 · 全流程每一跳的最底下一层</span>
+    </a>
+    <a class="topic" href="dns.html">
+      <span class="t">DNS：域名是怎么查到 IP 的</span>
+      <span class="d">拿这个知识库的域名从根问起走一遍：谁在问、谁在答，记录类型，问题和答案逐字节拆开，TTL 和几层缓存，加密的 DNS，同一个名字为什么有不同的答案，Android 上是谁替你问的。</span>
+      <span class="m">14 节 · 对应全流程第 2 步</span>
+    </a>
+    <a class="topic" href="tls.html">
+      <span class="t">TLS 握手：加密的连接是怎么建起来的</span>
+      <span class="d">握手的那 15 毫秒里两边各发了哪几条消息、每条多大，证书凭什么可信，密钥怎么当着所有人的面商量出来，握手之后的记录层，路上还看得见什么，抓包和证书锁定。</span>
+      <span class="m">14 节 · 对应全流程第 7 步</span>
+    </a>
+    <a class="topic" href="http2-http3.html">
+      <span class="t">HTTP/2 与 HTTP/3：一条连接上怎么跑很多请求</span>
+      <span class="d">请求和响应在连接上长什么样，状态码、缓存和范围请求，HTTP/1.1 卡在哪，HTTP/2 的帧、流和头压缩，HTTP/3 为什么把 TCP 换成了 QUIC，对播放器意味着什么。</span>
+      <span class="m">14 节 · 对应全流程第 8 步</span>
+    </a>
+    <a class="topic" href="tcp-congestion.html">
+      <span class="t">拥塞控制：TCP 怎么决定发多快</span>
+      <span class="d">拥塞窗口按什么规则涨和降，丢包是怎么发现的，超时要等多久，CUBIC 和 BBR 各是什么思路，延迟确认和 Nagle，以及这些对边下边播的视频意味着什么。</span>
+      <span class="m">13 节 · 对应全流程第 9、10 步</span>
+    </a>
+  </div>
+
+  <div class="label">延伸<span class="c">2</span></div>
+  <div class="topics">
+    <a class="topic" href="vpn.html">
+      <span class="t">VPN：在公网上再套一层</span>
+      <span class="d">开着 VPN 再走一遍十二步：隧道怎么套上去，虚拟网卡和路由表，DNS 从哪条路问，多出来的头和 MTU，各种协议和代理的区别，藏得住什么、藏不住什么，Android 的 VpnService。</span>
+      <span class="m">13 节 · 在全流程第 5 步多套一层</span>
+    </a>
+    <a class="topic" href="streaming-protocols.html">
+      <span class="t">流媒体协议：HLS、RTMP、WebRTC 各管什么</span>
+      <span class="d">点播、直播、通话为什么用不同的协议。把工程里的示例视频真的切成 HLS，再看 DASH、HTTP-FLV、RTMP、WebRTC 各自在线上传的是什么，延迟从哪来，怎么选。</span>
+      <span class="m">14 节 · 网络和音视频两部分的接口</span>
+    </a>
+  </div>
+
+  <div class="label">接着读</div>
+  <div class="demos">
+    <a class="demo" href="../container/index.html"><span class="t">封装格式 →</span><span class="d">数据到手之后：文件里的音视频是怎么装的。</span></a>
+    <a class="demo" href="../../overview/playback.html"><span class="t">一个视频是怎么播出来的 →</span><span class="d">从文件到屏幕和喇叭的六步。</span></a>
+  </div>
+</main>
+</body>
+</html>
