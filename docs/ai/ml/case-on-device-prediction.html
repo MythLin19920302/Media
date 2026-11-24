@@ -33,7 +33,7 @@
     <li><a href="#pipeline">全流程一张图</a></li>
     <li><a href="#input">一条样本：1354 个数</a></li>
     <li><a href="#model">模型：两层 GRU 加三层全连接</a></li>
-    <li><a href="#train">训练：12 轮里发生了什么</a></li>
+    <li><a href="#train">训练：一步、一轮、12 轮</a></li>
     <li><a href="#threshold">从概率到开关：阈值</a></li>
     <li><a href="#device">训练完之后：交给手机</a></li>
     <li><a href="#map">和前几篇怎么对上</a></li>
@@ -242,18 +242,57 @@
 </section>
 
 <section id="train">
-  <h2><span class="n">05</span>训练：12 轮里发生了什么</h2>
+  <h2><span class="n">05</span>训练：一步、一轮、12 轮</h2>
   <div class="tbl"><table>
     <thead><tr><th>设置</th><th>取值</th><th>说明</th></tr></thead>
     <tbody>
       <tr><td class="nw">每批样本</td><td class="num">1024</td><td>一批算一次梯度，更新一次参数</td></tr>
       <tr><td class="nw">轮数</td><td class="num">最多 12</td><td>验证 AUC 连续 5 轮不涨就提前停</td></tr>
-      <tr><td class="nw">损失、优化器</td><td class="nw">对数损失、Adam</td><td>和<a href="gradient-descent.html">梯度下降</a>那一篇是同一个损失</td></tr>
+      <tr><td class="nw">损失、优化器</td><td class="nw">对数损失、Adam</td><td>和<a href="gradient-descent.html">梯度下降</a>那一篇是同一个损失；多任务时两项相加</td></tr>
       <tr><td class="nw">打乱</td><td class="nw">文件级 + 样本级</td><td>先打乱文件顺序，再用一个 204.8 万条的缓冲区打乱样本</td></tr>
-      <tr><td class="nw">验证集</td><td class="nw">最后 1 个文件</td><td>一次实际训练里是 153 个文件：152 个训练，1 个验证</td></tr>
+      <tr><td class="nw">验证集</td><td class="nw">最后 1 个文件</td><td>一次实际训练里，137 万条样本训练，最后一个文件的 9005 条做验证</td></tr>
       <tr><td class="nw">样本权重</td><td class="nw">不用</td><td>数据里带了样本权重，这次训练统一当 1</td></tr>
     </tbody>
   </table></div>
+
+  <h3>一步：一批样本让参数挪一点</h3>
+  <p>训练就是把下面这五件事重复上万次。每一次叫一步：</p>
+  <figure class="fig">
+    <div class="card">
+    <svg viewBox="0 0 600 134" role="img" aria-label="一步训练的五个环节：取一批 1024 条样本；前向算出每条 2 个概率；两项对数损失相加取平均；反向从输出往回算出梯度；Adam 把约 3 万个参数各挪一小步。然后换下一批，再来一次">
+      <defs><marker id="cs-ar3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor" fill-opacity=".6"/></marker></defs>
+      <rect class="band" x="12" y="14" width="104" height="62" rx="6"/>
+      <rect class="band" x="130" y="14" width="104" height="62" rx="6"/>
+      <rect class="band" x="248" y="14" width="104" height="62" rx="6"/>
+      <rect class="hot" x="366" y="14" width="104" height="62" rx="6"/>
+      <rect class="band" x="484" y="14" width="104" height="62" rx="6"/>
+      <g class="lead" fill="none" marker-end="url(#cs-ar3)">
+        <path d="M116 45H128"/><path d="M234 45H246"/><path d="M352 45H364"/><path d="M470 45H482"/>
+        <path d="M536 76V104H64V78"/>
+      </g>
+      <g text-anchor="middle">
+        <text x="64" y="37">① 取一批</text><text x="64" y="55" class="s">1024 条样本</text><text x="64" y="69" class="s">每条 1354 个数</text>
+        <text x="182" y="37">② 前向</text><text x="182" y="55" class="s">算出概率</text><text x="182" y="69" class="s">每条 2 个</text>
+        <text x="300" y="37">③ 损失</text><text x="300" y="55" class="s">两项对数损失</text><text x="300" y="69" class="s">相加取平均</text>
+        <text x="418" y="37">④ 反向</text><text x="418" y="55" class="s">从输出往回</text><text x="418" y="69" class="s">算出每个梯度</text>
+        <text x="536" y="37">⑤ 更新</text><text x="536" y="55" class="s">Adam 挪一小步</text><text x="536" y="69" class="s">约 3 万个参数</text>
+        <text x="300" y="124" class="m">换下一批，再来一次</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>①②③ 和预测时一样，只是一次算 1024 条；④⑤ 只在训练时有。</figcaption>
+  </figure>
+  <p>④ 是关键。梯度从输出往回传，和<a href="neural-network.html#backward">神经网络</a>那一篇的反向传播是同一个办法，只是这个模型多了几处岔路：</p>
+  <ul>
+    <li><strong>全连接三层</strong>：和那一篇一样，一层一层往回分。</li>
+    <li><strong>拼接处分两路</strong>：47 个数里，15 个的梯度回到静态特征的查表，只有这一批里出现过的那几行被改；32 个回到 GRU。</li>
+    <li><strong>GRU 要倒着走 50 步</strong>：它是一步一步读完 50 行才交出结果的，梯度也得从第 50 步一路传回第 1 步。50 步用的是同一组参数，每一步算出的梯度加起来，才是这组参数这一次的梯度。全是 −1、被跳过的步不出力。</li>
+    <li><strong>两个任务共用一段</strong>：两个输出头各自只收到自己那一项损失的梯度；GRU 和全连接收到的是两项之和，所以 4 小时的标签也在帮着训练共用的部分。</li>
+  </ul>
+  <p>⑤ 用的是 Adam：每个参数自己记着最近梯度的平均和波动，按它定步子，基础步长 0.001（见<a href="gradient-descent.html#optim">动量和 Adam</a>）。训练时每一步还会随机关掉全连接层 20% 的单元（Dropout），逼模型别只靠少数几个单元；预测时全部打开。</p>
+
+  <h3>一轮和 12 轮</h3>
+  <p>137 万条训练样本全部走过一遍叫一轮，是 1,338 步；12 轮一共约 1.6 万步。在 CPU 上一轮大约 5 分钟。每轮结束，拿验证集算一次 AUC，比之前的都好就存一份。</p>
   <p>下面是一次实际训练（多任务版）的 AUC，一轮一个点：</p>
   <figure class="fig">
     <div class="card">
@@ -285,7 +324,8 @@
   <ul>
     <li><strong>第 1 轮结束，验证 AUC 就到了 0.82。</strong>训练集第 1 轮只有 0.736，是因为它是边学边算的，前半轮模型还很差，被平均进去了。</li>
     <li><strong>之后 11 轮一共只涨了 0.013。</strong>1 小时任务从 0.8246 到第 11 轮的 0.8376。大部分规律第 1 轮就学到了。</li>
-    <li><strong>训练集一直涨，验证集在第 12 轮回落。</strong>到第 12 轮，1 小时任务训练 0.8453、验证 0.8368，差距在拉开，这是<a href="evaluation.html#fit">过拟合</a>刚开始的样子。按两个任务验证 AUC 的平均值算，最好的是第 11 轮（0.8352），第 12 轮是 0.8342。</li>
+    <li><strong>最后几轮的高低，验证集分辨不出来。</strong>验证集只有 9005 条，1 小时任务里正样本 542 条。单看一个 AUC，95% 的误差范围大约是 ±0.02（<a href="evaluation.html#noise">样本少能分出多少高低</a>）；同一批样本上比两轮，误差会小一些，但第 11 轮和第 12 轮差的 0.001 分不出高低。</li>
+    <li><strong>训练集一直涨，和验证集的差距在拉开。</strong>到第 12 轮，1 小时任务训练 0.8453、验证 0.8368，这是<a href="evaluation.html#fit">过拟合</a>刚开始的样子。</li>
     <li><strong>4 小时比 1 小时难一点。</strong>验证 AUC 一直低 0.005 左右。看得越远越难猜。</li>
   </ul>
 </section>
@@ -294,7 +334,7 @@
   <h2><span class="n">06</span>从概率到开关：阈值</h2>
   <p>手机上要的不是概率，是"准备"或"不准备"。中间差一个阈值。这里不用 0.5，而是从误报率反推：先把目标误报率定成 16.7%，在验证集上画 ROC 曲线，找误报率最接近 16.7% 的那个点，它对应的概率就是阈值。</p>
   <p>误报率（FPR）是"实际没有展示的时刻里，被判成会展示的比例"。定成 16.7%，等于事先说好：不会展示的时候，大约每 6 次允许白准备 1 次。这个比例定下来以后，模型越好，同样的白准备次数能抓住的真展示就越多。<a href="evaluation.html#roc">评估</a>那一篇讲过 ROC 上每个点对应一个阈值，这里是反过来用：先选点，再读阈值。</p>
-  <p>训练结束后同一步还会算特征重要性：取验证集前 50 批（51,200 条），每次把一个特征在样本之间打乱，看 AUC 掉多少，掉得多的就重要。</p>
+  <p>训练结束后同一步还会算特征重要性：用整个验证集（9005 条），每次把一个特征在样本之间打乱，看 AUC 掉多少，掉得多的就重要。</p>
 </section>
 
 <section id="device">
@@ -310,7 +350,7 @@
     <tbody>
       <tr><td><a href="features-samples.html">特征和样本</a></td><td>一行样本是 1354 个数；周期拆 sin、cos，时间取对数，类别换编号；标签要等 1 小时或 4 小时才知道</td></tr>
       <tr><td><a href="gradient-descent.html">损失和梯度下降</a></td><td>对数损失，Adam，一批 1024 条更新一次</td></tr>
-      <tr><td><a href="neural-network.html">神经网络</a></td><td>后半段的 128 → 64 → 32 就是那一篇的全连接网络；前半段多了按顺序读的 GRU</td></tr>
+      <tr><td><a href="neural-network.html">神经网络</a></td><td>后半段的 128 → 64 → 32 就是那一篇的全连接网络；前半段多了按顺序读的 GRU，反向传播时要倒着走 50 步</td></tr>
       <tr><td><a href="evaluation.html">评估</a></td><td>按文件切出验证集，每轮看 AUC，按误报率在 ROC 上选阈值，训练和验证的差距看过拟合</td></tr>
       <tr><td><a href="ctr-recommendation.html">推荐和点击率预估</a></td><td>类别特征查表；模型装到手机上；训练和线上的特征要算得一样</td></tr>
     </tbody>
